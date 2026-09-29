@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b1826">
+<title>DepthWizard</title>
+<link rel="stylesheet" href="style.css?v=20260929-studio-v1">
+<link rel="stylesheet" href="studio.css?v=20260929-studio-v1">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
+</script>
+</head>
+<body>
+<div id="app">
+  <header id="app-header">
+    <button id="library-toggle" aria-label="Open scenes">☰</button>
+    <a class="brand" href="#" aria-label="DepthWizard home">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3 29 27H3L16 3Z"/><path d="m16 11 7 13H9l7-13Z"/></svg></span>
+      <span><b>DepthWizard</b><small>Terrain intelligence studio</small></span>
+    </a>
+    <div class="scene-context">
+      <strong id="top-scene-name">Choose a scene</strong>
+      <span id="top-scene-meta">Import an optical image to start a reconstruction</span>
+    </div>
+    <div id="project-stepper" class="project-stepper" aria-label="Project workflow checklist">
+      <span class="step done" data-tab-target="upload" title="Optical sensor input">Input ✓</span>
+      <span class="step-arrow">→</span>
+      <span class="step done" title="Relative monocular depth estimation">Depth ✓</span>
+      <span class="step-arrow">→</span>
+      <span class="step done" title="Scale calibration & datum alignment">Calibration ✓</span>
+      <span class="step-arrow">→</span>
+      <span class="step done" title="Digital Surface Model generated">DSM ✓</span>
+      <span class="step-arrow">→</span>
+      <span class="step done" title="LoD1 3D vector model">3D Model ✓</span>
+      <span class="step-arrow">→</span>
+      <span class="step" id="step-val" data-tab-target="validate" title="Validation vs reference & baseline">Validation</span>
+    </div>
+    <div class="header-actions">
+      <button id="help-btn" class="icon-btn" aria-label="Help" title="Help">?</button>
+      <button id="dl-dsm-header" class="primary compact" disabled><span aria-hidden="true">↓</span> Export</button>
+      <button id="export-menu-btn" class="icon-btn" aria-label="Export options" aria-expanded="false" disabled>⌄</button>
+      <div id="export-menu" class="export-menu hidden" role="menu" aria-label="Export formats">
+        <button type="button" data-export="report" role="menuitem">Evidence Report PDF <small>Technical validation dossier</small></button>
+        <button type="button" data-export="dsm" role="menuitem">DSM GeoTIFF <small>Original estimated grid</small></button>
+        <button type="button" data-export="glb" role="menuitem">Textured terrain GLB <small>Portable 3D asset</small></button>
+        <button type="button" data-export="obj" role="menuitem">Textured terrain OBJ <small>ZIP with texture</small></button>
+        <button type="button" data-export="evidence" role="menuitem">Evidence Passport JSON <small>SHA-256 provenance bundle</small></button>
+        <button type="button" data-export="shot" role="menuitem">Viewer screenshot <small>Current camera and layer</small></button>
+      </div>
+    </div>
+  </header>
+
+  <aside id="side" aria-label="Scene library">
+    <div class="library-heading"><h2>Scene library</h2><span id="scene-count">0</span></div>
+    <button id="import-btn" class="import-btn"><span aria-hidden="true">＋</span> Import image</button>
+    <p class="library-hint">Single-view RGB · PNG, JPG or GeoTIFF</p>
+    <div id="scene-list" class="list"><p class="muted">Loading scenes…</p></div>
+    <div class="library-footer"><span class="status-dot"></span><span>Local workspace · files stay on this device</span></div>
+  </aside>
+
+  <main id="stage" aria-label="3D terrain viewer">
+    <canvas id="gl"></canvas>
+    <div id="toolbar">
+      <div class="seg" id="view-mode" aria-label="View geometry mode">
+        <button data-view="surface" class="active" title="Full continuous DSM surface mesh">DSM Mesh</button>
+        <button data-view="city" id="btn-city-view" title="LoD1 3D extruded city model on bare earth DTM">LoD1 City</button>
+      </div>
+      <div class="seg" id="nav-mode" aria-label="Navigation mode">
+        <button data-nav="orbit" class="active" title="Orbit (O)">Orbit</button>
+        <button data-nav="fly" title="First-person fly (F)">Fly</button>
+        <button data-nav="tour" title="Automatic flythrough (T)">Tour</button>
+      </div>
+      <button id="topdown" title="Top-down view (D)">Top down</button>
+      <button id="reset" class="icon-btn" title="Reset view (R)" aria-label="Reset view">↺</button>
+      <button id="swipe-toggle" title="Swipe compare DSM vs coarse DEM baseline (S)" aria-pressed="false">3D Swipe</button>
+      <button id="compare-toggle" title="Compare optical and height layers (V)" aria-pressed="false">2D Compare</button>
+      <button id="fullscreen" class="icon-btn" title="Fullscreen viewer" aria-label="Fullscreen viewer">⛶</button>
+    </div>
+    <div id="scene-badge" class="scene-badge hidden"></div>
+    <div id="hud">
+      <span id="hud-scene">No scene loaded</span>
+      <span id="hud-cam"></span>
+      <span id="hud-fps"></span>
+    </div>
+
+    <!-- 3D Swipe Slider Divider -->
+    <div id="swipe-divider" class="swipe-divider hidden">
+      <div class="swipe-handle">◀ ▶</div>
+    </div>
+    <div id="swipe-label-left" class="swipe-label left hidden">Copernicus / SRTM 30m DEM (Baseline)</div>
+    <div id="swipe-label-right" class="swipe-label right hidden">DepthWizard Calibrated DSM (Our Reconstruction)</div>
+
+    <!-- North Arrow & Dynamic Scale Bar -->
+    <div id="scale-bar-container">
+      <div id="north-arrow" title="North Arrow">▲<span>N</span></div>
+      <div id="scale-bar">
+        <div id="scale-bar-line"></div>
+        <span id="scale-bar-text">50 m</span>
+      </div>
+    </div>
+
+    <!-- Real-time Analyst Cursor HUD -->
+    <div id="analyst-hud" class="analyst-hud">
+      <div class="hud-item"><small>COORDS</small><span id="hud-coords">–</span></div>
+      <div class="hud-item"><small>PIXEL</small><span id="hud-pixel">–</span></div>
+      <div class="hud-item"><small>DSM ELEV</small><span id="hud-dsm">–</span></div>
+      <div class="hud-item"><small>BARE DTM</small><span id="hud-dtm">–</span></div>
+      <div class="hud-item"><small>nDSM STRUCT</small><span id="hud-ndsm">–</span></div>
+      <div class="hud-item"><small>SLOPE</small><span id="hud-slope">–</span></div>
+      <div class="hud-item"><small>CONFIDENCE</small><span id="hud-conf">–</span></div>
+    </div>
+
+    <canvas id="minimap" width="180" height="180" aria-label="Scene minimap"></canvas>
+    <section id="comparison" class="comparison hidden" aria-label="Linked optical and elevation comparison">
+      <div class="comparison-head"><div><strong>Optical ↔ Height</strong><span>Linked source coordinates · click either image to probe the 3D surface</span></div><button id="compare-close" class="icon-btn" title="Close comparison" aria-label="Close comparison">×</button></div>
+      <div class="comparison-panes">
+        <div class="comparison-pane" data-compare="rgb"><div class="comparison-label">Source RGB</div><canvas id="compare-rgb" width="512" height="512" aria-label="Source optical image"></canvas><div class="comparison-crosshair hidden"></div></div>
+        <div class="comparison-pane" data-compare="height"><div class="comparison-label">Estimated height <span id="compare-units"></span></div><canvas id="compare-height" width="512" height="512" aria-label="Estimated height map"></canvas><div class="comparison-crosshair hidden"></div></div>
+      </div>
+      <div class="comparison-foot"><span id="compare-readout">Move across either image to inspect aligned pixels</span><span id="compare-range"></span></div>
+    </section>
+    <div id="fly-hint" class="hidden">Click to look around · WASD move · Q/E down/up · Shift fast · Esc release</div>
+    <div id="busy" class="hidden"><div class="spinner"></div><span id="busy-text">Loading scene…</span></div>
+  </main>
+
+  <aside id="inspector" aria-label="Scene analysis">
+    <nav class="tabs" aria-label="Analysis panels">
+      <button data-tab="analyse" class="active">Explore</button>
+      <button data-tab="validate">Validate</button>
+    </nav>
+
+    <section class="panel" id="tab-analyse">
+      <div class="inspector-title"><div><h1>Surface analysis</h1><p>Inspect the reconstruction</p></div><span class="live-indicator"><i></i> Live</span></div>
+      <div class="group">
+        <h3>Surface layer</h3>
+        <div class="seg surface-modes" id="shade-mode">
+          <button data-mode="optical" class="active">Optical</button>
+          <button data-mode="height">Height</button>
+          <button data-mode="slope">Slope</button>
+          <button data-mode="confidence" id="btn-conf">Confidence</button>
+          <button data-mode="ndsm" id="btn-ndsm">nDSM</button>
+          <button data-mode="curvature">Curvature</button>
+          <button data-mode="error" id="btn-error" disabled>Error</button>
+        </div>
+        <div id="legend" class="legend"></div>
+        <label class="row">Vertical exaggeration <output id="exag-v">1.0×</output>
+          <input type="range" id="exag" min="0.5" max="10" step="0.1" value="1"></label>
+        <label class="row">Mesh smoothing <output id="smooth-v">0.0 m</output>
+          <input type="range" id="smooth" min="0" max="3" step="0.25" value="0"></label>
+        <p class="note">Display only · the DSM export and validation use original heights.</p>
+        <label class="row">Sun azimuth <output id="sun-v">315°</output>
+          <input type="range" id="sun" min="0" max="360" step="1" value="315"></label>
+        <label class="row check"><input type="checkbox" id="contours"> Contours every <input type="number" id="contour-int" value="5" min="0.01" step="0.5" class="mini"> <span id="contour-unit">m</span></label>
+        <label class="row check"><input type="checkbox" id="wire"> Wireframe</label>
+      </div>
+
+      <div class="group">
+        <h3>Measure</h3>
+        <div class="seg" id="tool">
+          <button data-tool="probe" class="active"><span aria-hidden="true">⌖</span> Probe</button>
+          <button data-tool="distance" id="btn-dist"><span aria-hidden="true">📏</span> 3D Distance</button>
+          <button data-tool="profile"><span aria-hidden="true">⌁</span> Profile</button>
+        </div>
+        <div id="probe-info" class="kv muted">Click the terrain to read elevation, slope and coordinates.</div>
+        <canvas id="profile" width="560" height="220" class="hidden"></canvas>
+      </div>
+
+      <!-- LoD1 Building Inspector -->
+      <div class="group" id="building-inspector-group">
+        <div class="group-heading"><h3>Building Inspector (LoD1)</h3><span class="experimental" id="b-count-badge">0 BUILDINGS</span></div>
+        <div id="building-info" class="kv muted">Click any building in 3D to inspect storeys, height, footprint area and volume.</div>
+      </div>
+
+      <!-- Disaster & Flood Simulation -->
+      <div class="group">
+        <div class="group-heading"><h3>Connected Flood Scenario</h3><span class="experimental">DISASTER SIM</span></div>
+        <label class="row">Water elevation <output id="flood-v">—</output>
+          <input type="range" id="flood-level" min="0" max="1" step="0.1" value="0"></label>
+        <div class="flood-controls">
+          <button id="flood-play" class="compact-btn" type="button">▶ Animate Rise</button>
+          <button id="flood-reset" class="compact-btn" type="button">↺ Drain</button>
+        </div>
+        <div class="flood-metrics">
+          <div class="metric-box">
+            <div class="num" id="flood-submerged-pct">0.0%</div>
+            <div class="lbl">Area Inundated</div>
+          </div>
+          <div class="metric-box">
+            <div class="num" id="flood-buildings-count">0</div>
+            <div class="lbl">Buildings Flooded</div>
+          </div>
+        </div>
+        <div id="flood-info" class="kv muted" style="margin-top:8px;">Available for metric height scenes.</div>
+      </div>
+
+      <div class="group">
+        <h3>Cut / fill</h3>
+        <p class="note" id="volume-info">Load a scene with a reference DSM to compare surfaces.</p>
+      </div>
+
+      <div class="group export-group">
+        <h3>Export</h3>
+        <div class="btns">
+          <button id="dl-report" class="primary">Validation Report PDF</button>
+          <button id="dl-dsm">DSM GeoTIFF</button>
+          <button id="shot">Save view</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel hidden" id="tab-validate">
+      <div class="inspector-title"><div><h1>Validation</h1><p>Compare against reference data & DEM baseline</p></div></div>
+      <div id="metrics"><p class="muted">Upload a reference DSM with the image to see RMSE, MAE and correlation here.</p></div>
+    </section>
+  </aside>
+
+  <div id="upload-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="upload-title">
+    <div class="modal-backdrop" data-close-upload></div>
+    <section class="upload-dialog" id="tab-upload">
+      <div class="modal-heading"><div><h2 id="upload-title">Create a DSM</h2><p>Start with a single-view optical satellite image.</p></div><button id="upload-close" class="icon-btn" aria-label="Close import">×</button></div>
+      <form id="upload-form">
+        <label class="drop" id="drop">
+          <input type="file" name="image" accept=".png,.jpg,.jpeg,.tif,.tiff" required>
+          <span id="drop-text"><b>Drop satellite image</b><br>PNG · JPG · TIFF · GeoTIFF</span>
+        </label>
+        <details open>
+          <summary>Absolute scale (georeferenced imagery)</summary>
+          <label>Low-resolution DEM (SRTM / CartoDEM GeoTIFF)<input type="file" name="dem" accept=".tif,.tiff"></label>
+          <label class="row check"><input type="checkbox" name="fetch_dem" value="true"> Auto-download DEM if none given</label>
+          <label>DEM source for download<select name="dem_source"><option value="COP30">Copernicus GLO-30</option><option value="SRTMGL1">SRTM 30 m</option></select></label>
+          <label>Ground control points (CSV x,y,z)<input type="file" name="gcp" accept=".csv"></label>
+        </details>
+        <details>
+          <summary>Reference validation</summary>
+          <label>Reference DSM / LiDAR raster<input type="file" name="reference" accept=".tif,.tiff"></label>
+        </details>
+        <details>
+          <summary>Processing options</summary>
+          <label>Depth backbone<select name="model"><option value="small">Depth Anything V2 · Small (fast)</option><option value="base">Depth Anything V2 · Base</option><option value="large">Depth Anything V2 · Large (best)</option></select></label>
+          <p class="note" id="local-model-status">Checking local fine-tuned model…</p>
+          <label>Fine-tuned checkpoint (optional)<input type="text" name="custom_model" placeholder="D:\DepthWizard\checkpoints\da2-gamus-full"></label>
+          <label>Scene prior<select name="scene"><option>auto</option><option>urban</option><option>sparse</option><option>forest</option><option>hilly</option></select></label>
+          <label>Horizontal pixel size for non-georeferenced display (m/px)<input type="number" name="gsd" value="1.0" step="any" min="0.05"></label>
+          <p class="note">This sets the viewer's horizontal distance only. Relative heights stay unitless.</p>
+        </details>
+        <button class="primary" type="submit">Generate DSM</button>
+      </form>
+      <pre id="job-log" class="log hidden"></pre>
+    </section>
+  </div>
+
+  <div id="help" class="hidden">
+    <h2>Controls</h2>
+    <table><tr><td>Orbit</td><td>Left-drag rotate · Right-drag pan · Wheel zoom · Click to probe</td></tr>
+      <tr><td>Fly</td><td>Click to capture mouse · WASD move · Q/E down/up · Shift ×4 speed · Esc exit</td></tr>
+      <tr><td>Tour</td><td>Automatic circling flythrough for demos</td></tr>
+      <tr><td>Compare</td><td>Optical and height maps share a cursor and 3D probe</td></tr>
+      <tr><td>Keys</td><td>O orbit · F fly · T tour · D top down · V compare · R reset · 1–4 surface mode · C contours · H help</td></tr></table>
+    <p class="muted">The camera stays above terrain in Fly mode.</p>
+    <button id="help-close" class="primary">Got it</button>
+  </div>
+</div>
+<script type="module" src="app.js?v=20260929-studio-v1"></script>
+</body>
+</html>

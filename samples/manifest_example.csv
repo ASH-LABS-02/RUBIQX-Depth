@@ -1,0 +1,3 @@
+image,reference,dem,scene
+synthetic/scene_rgb.tif,synthetic/truth_dsm.tif,synthetic/srtm_like.tif,urban
+synthetic/scene_rgb.png,synthetic/truth_dsm.tif,,

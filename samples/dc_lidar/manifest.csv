@@ -1,0 +1,3 @@
+image,dem,reference,scene
+glover_park/rgb.tif,glover_park/dtm_2018_32m.tif,glover_park/lidar_dsm_2024.tif,urban
+capitol_hill_east/rgb.tif,capitol_hill_east/dtm_2018_32m.tif,capitol_hill_east/lidar_dsm_2024.tif,urban

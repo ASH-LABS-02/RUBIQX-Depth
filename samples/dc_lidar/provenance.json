@@ -1,0 +1,72 @@
+{
+  "services": {
+    "rgb": "https://imagery.dcgis.dc.gov/dcgis/rest/services/Ortho/Ortho_2023/ImageServer",
+    "reference": "https://imagery.dcgis.dc.gov/dcgis/rest/services/Lidar/DSM_2024/ImageServer",
+    "calibration_terrain": "https://imagery.dcgis.dc.gov/dcgis/rest/services/Lidar/Hydro_Enforced_DTM_2018/ImageServer"
+  },
+  "crs": "EPSG:26985",
+  "scenes": {
+    "glover_park": {
+      "bbox_epsg26985": [
+        394200,
+        138100,
+        394712,
+        138612
+      ],
+      "export_urls": {
+        "rgb": "https://imagery.dcgis.dc.gov/dcgis/rest/services/Ortho/Ortho_2023/ImageServer/exportImage?f=image&bbox=394200%2C138100%2C394712%2C138612&bboxSR=26985&imageSR=26985&size=1024%2C1024&format=tiff&interpolation=RSP_BilinearInterpolation",
+        "reference": "https://imagery.dcgis.dc.gov/dcgis/rest/services/Lidar/DSM_2024/ImageServer/exportImage?f=image&bbox=394200%2C138100%2C394712%2C138612&bboxSR=26985&imageSR=26985&size=512%2C512&format=tiff&interpolation=RSP_BilinearInterpolation",
+        "calibration_terrain": "https://imagery.dcgis.dc.gov/dcgis/rest/services/Lidar/Hydro_Enforced_DTM_2018/ImageServer/exportImage?f=image&bbox=394200%2C138100%2C394712%2C138612&bboxSR=26985&imageSR=26985&size=512%2C512&format=tiff&interpolation=RSP_BilinearInterpolation"
+      },
+      "files": {
+        "dtm_2018_1m.tif": {
+          "size_bytes": 587546,
+          "sha256": "53463bbf696a4568fa8a99e8bd17d8a079130ba70e8f62d24c1daa6c193a48c2"
+        },
+        "dtm_2018_32m.tif": {
+          "size_bytes": 1309,
+          "sha256": "6692b21db3b2856bedf16d76a53dde03f0448d4dc0e884606d5ea993f455cf15"
+        },
+        "lidar_dsm_2024.tif": {
+          "size_bytes": 716998,
+          "sha256": "82fab7de8ab1c10247219871efad334f4a92e0f12270e315c0f452a883b89b1c"
+        },
+        "rgb.tif": {
+          "size_bytes": 2627198,
+          "sha256": "d5ec4fb4e42b9654f20f356e54affb9d92bddb297e878c8ede251682524c6544"
+        }
+      }
+    },
+    "capitol_hill_east": {
+      "bbox_epsg26985": [
+        400000,
+        135500,
+        400512,
+        136012
+      ],
+      "export_urls": {
+        "rgb": "https://imagery.dcgis.dc.gov/dcgis/rest/services/Ortho/Ortho_2023/ImageServer/exportImage?f=image&bbox=400000%2C135500%2C400512%2C136012&bboxSR=26985&imageSR=26985&size=1024%2C1024&format=tiff&interpolation=RSP_BilinearInterpolation",
+        "reference": "https://imagery.dcgis.dc.gov/dcgis/rest/services/Lidar/DSM_2024/ImageServer/exportImage?f=image&bbox=400000%2C135500%2C400512%2C136012&bboxSR=26985&imageSR=26985&size=512%2C512&format=tiff&interpolation=RSP_BilinearInterpolation",
+        "calibration_terrain": "https://imagery.dcgis.dc.gov/dcgis/rest/services/Lidar/Hydro_Enforced_DTM_2018/ImageServer/exportImage?f=image&bbox=400000%2C135500%2C400512%2C136012&bboxSR=26985&imageSR=26985&size=512%2C512&format=tiff&interpolation=RSP_BilinearInterpolation"
+      },
+      "files": {
+        "dtm_2018_1m.tif": {
+          "size_bytes": 575120,
+          "sha256": "59c9f5d20784dea08b85900dcba1c5fa12b9e2e1c82fcef67f4cf1821e1dd5e4"
+        },
+        "dtm_2018_32m.tif": {
+          "size_bytes": 1293,
+          "sha256": "8f1ad841c246262369fd9c3b65eefa878fc9d7824a3db457e35686a38298be0e"
+        },
+        "lidar_dsm_2024.tif": {
+          "size_bytes": 753041,
+          "sha256": "b27f2ed7eb2509f3b8047d86b17552705b75288530d504046d8b3cebcbb1c695"
+        },
+        "rgb.tif": {
+          "size_bytes": 2705271,
+          "sha256": "74182ff0524169e27af814640e00811657f60cd3f09d9310e00365147c7d0b82"
+        }
+      }
+    }
+  }
+}

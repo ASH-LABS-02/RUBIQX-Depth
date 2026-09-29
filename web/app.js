@@ -1,0 +1,1251 @@
+// DepthWizard viewer – terrain mesh from DSM + optical drape, orbit / fly / tour navigation,
+// height probe, elevation profiles, slope & error shading, validation dashboard.
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/OrbitControls.js';
+import { PointerLockControls } from 'three/addons/PointerLockControls.js';
+
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
+
+// ------------------------------------------------------------------ colour maps
+const RAMPS = {
+  height: [[0, [0.16, 0.20, 0.45]], [0.3, [0.10, 0.55, 0.55]], [0.6, [0.55, 0.78, 0.30]], [0.85, [0.96, 0.84, 0.35]], [1, [1, 0.97, 0.92]]],
+  slope: [[0, [0.18, 0.55, 0.34]], [0.33, [0.95, 0.85, 0.35]], [0.66, [0.93, 0.45, 0.20]], [1, [0.62, 0.10, 0.18]]],
+  curvature: [[0, [0.18, 0.35, 0.8]], [0.5, [0.92, 0.92, 0.88]], [1, [0.78, 0.18, 0.16]]],
+  error: [[0, [0.13, 0.35, 0.75]], [0.5, [0.96, 0.96, 0.96]], [1, [0.80, 0.16, 0.16]]],
+  confidence: [[0, [0.85, 0.20, 0.20]], [0.5, [0.95, 0.85, 0.25]], [1, [0.15, 0.78, 0.45]]],
+  ndsm: [[0, [0.10, 0.14, 0.22]], [0.2, [0.20, 0.55, 0.65]], [0.5, [0.92, 0.82, 0.28]], [1, [0.98, 0.96, 0.92]]],
+};
+function ramp(name, t) {
+  const r = RAMPS[name] || RAMPS.height; t = Math.min(1, Math.max(0, t));
+  for (let i = 1; i < r.length; i++) {
+    if (t <= r[i][0]) {
+      const [t0, c0] = r[i - 1], [t1, c1] = r[i], f = (t - t0) / (t1 - t0 || 1);
+      return [c0[0] + (c1[0] - c0[0]) * f, c0[1] + (c1[1] - c0[1]) * f, c0[2] + (c1[2] - c0[2]) * f];
+    }
+  }
+  return r[r.length - 1][1];
+}
+const cssRamp = (name) => 'linear-gradient(90deg,' + (RAMPS[name] || RAMPS.height).map(([t, c]) =>
+  `rgb(${c.map((v) => Math.round(v * 255)).join(',')}) ${t * 100}%`).join(',') + ')';
+const pct = (arr, p) => { const a = Float32Array.from(arr).filter(Number.isFinite).sort(); return a[Math.floor((a.length - 1) * p)]; };
+const fmt = (v, d = 2) => (v === undefined || v === null || Number.isNaN(v)) ? '–' : Number(v).toFixed(d);
+const escapeHtml = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
+
+// ------------------------------------------------------------------ renderer / scene
+const canvas = $('#gl');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+const SKY = new THREE.Color(0x0d1117);
+scene.background = SKY;
+scene.fog = new THREE.Fog(SKY, 1e6, 2e6);
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 1e5);
+const hemi = new THREE.HemisphereLight(0xdfe9ff, 0x3a3226, 1.6);
+const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+scene.add(hemi, sun);
+
+const orbit = new OrbitControls(camera, canvas);
+orbit.enableDamping = true; orbit.dampingFactor = 0.08;
+orbit.maxPolarAngle = Math.PI * 0.495;
+orbit.screenSpacePanning = false;
+const fly = new PointerLockControls(camera, canvas);
+
+// ------------------------------------------------------------------ state
+const S = {
+  id: null, meta: null, gw: 0, gh: 0, W: 1, H: 1, h: null, dtm: null, confidence: null,
+  renderH: null, ref: null, base: 0,
+  exag: 1, smoothingM: 0, mode: 'optical', tool: 'probe', nav: 'orbit',
+  viewGeometry: 'surface',
+  mesh: null, skirt: null, water: null, floodActive: false, tex: null, texImg: null,
+  marker: null, profileLine: null, profilePts: [],
+  distPts: [], distLine: null,
+  buildings: null, buildingGroup: null, selectedMesh: null,
+  swipeActive: false, swipeX: 0.5, floodAnimating: false,
+  keys: {}, tourT: 0, extent: 1,
+};
+const uniforms = {
+  uContourOn: { value: 0 },
+  uContourInt: { value: 5 },
+  uExag: { value: 1 },
+  uBase: { value: 0 },
+  uSwipeOn: { value: 0 },
+  uSwipeX: { value: 0.5 },
+  uResolution: { value: new THREE.Vector2(1000, 800) },
+};
+
+// ------------------------------------------------------------------ terrain
+function elev(r, c) { return S.h[r * S.gw + c]; }
+function sampleGrid(arr, x, z) {           // bilinear, world x/z -> value
+  const c = (x / S.W + 0.5) * (S.gw - 1), r = (z / S.H + 0.5) * (S.gh - 1);
+  const c0 = Math.max(0, Math.min(S.gw - 2, Math.floor(c))), r0 = Math.max(0, Math.min(S.gh - 2, Math.floor(r)));
+  const fc = Math.min(1, Math.max(0, c - c0)), fr = Math.min(1, Math.max(0, r - r0));
+  const i = r0 * S.gw + c0;
+  return (arr[i] * (1 - fc) + arr[i + 1] * fc) * (1 - fr) + (arr[i + S.gw] * (1 - fc) + arr[i + S.gw + 1] * fc) * fr;
+}
+const worldY = (hm) => (hm - S.base) * S.exag;
+const terrainY = (x, z) => worldY(sampleGrid(S.renderH || S.h, x, z));
+const verticalDisplayFactor = () => S.meta?.units === 'relative' ? Math.max(+S.meta.display_height_m || 1, 1e-9) : 1;
+const reportedHeight = (viewHeight) => viewHeight / verticalDisplayFactor();
+
+function smoothGrid(source, sigmaPixels) {
+  if (sigmaPixels < 0.5) return source;
+  const radius = Math.ceil(sigmaPixels * 3), kernel = new Float32Array(radius * 2 + 1);
+  let total = 0;
+  for (let k = -radius; k <= radius; k++) { const v = Math.exp(-0.5 * (k / sigmaPixels) ** 2); kernel[k + radius] = v; total += v; }
+  for (let k = 0; k < kernel.length; k++) kernel[k] /= total;
+  const temp = new Float32Array(source.length), output = new Float32Array(source.length);
+  for (let r = 0; r < S.gh; r++) for (let c = 0; c < S.gw; c++) {
+    let sum = 0;
+    for (let k = -radius; k <= radius; k++) sum += source[r * S.gw + Math.max(0, Math.min(S.gw - 1, c + k))] * kernel[k + radius];
+    temp[r * S.gw + c] = sum;
+  }
+  for (let r = 0; r < S.gh; r++) for (let c = 0; c < S.gw; c++) {
+    let sum = 0;
+    for (let k = -radius; k <= radius; k++) sum += temp[Math.max(0, Math.min(S.gh - 1, r + k)) * S.gw + c] * kernel[k + radius];
+    output[r * S.gw + c] = sum;
+  }
+  return output;
+}
+
+function updateRenderHeight(rebuild = true) {
+  S.renderH = smoothGrid(S.h, S.smoothingM / Math.max(S.W / (S.gw - 1), 1e-6));
+  if (rebuild && S.mesh) applyHeights();
+}
+
+function slopeAt(r, c) {                    // degrees, true metres (no exaggeration)
+  const dx = S.W / (S.gw - 1), dz = S.H / (S.gh - 1);
+  const cl = Math.max(0, c - 1), cr = Math.min(S.gw - 1, c + 1), ru = Math.max(0, r - 1), rd = Math.min(S.gh - 1, r + 1);
+  const gx = (elev(r, cr) - elev(r, cl)) / ((cr - cl) * dx), gz = (elev(rd, c) - elev(ru, c)) / ((rd - ru) * dz);
+  const gradient = Math.hypot(gx, gz) / verticalDisplayFactor();
+  return { slope: S.meta?.units === 'metre' ? Math.atan(gradient) * 180 / Math.PI : gradient,
+    aspect: (Math.atan2(gx, -gz) * 180 / Math.PI + 360) % 360 };
+}
+
+function curvatureAt(r, c) {                // Laplacian approximation, 1/m
+  const dx = S.W / (S.gw - 1), dz = S.H / (S.gh - 1);
+  const l = Math.max(0, c - 1), rr = Math.min(S.gw - 1, c + 1);
+  const u = Math.max(0, r - 1), d = Math.min(S.gh - 1, r + 1);
+  const dxx = (elev(r, rr) - 2 * elev(r, c) + elev(r, l)) / Math.max(dx * dx, 1e-9);
+  const dzz = (elev(d, c) - 2 * elev(r, c) + elev(u, c)) / Math.max(dz * dz, 1e-9);
+  return (dxx + dzz) / verticalDisplayFactor();
+}
+
+function buildTerrain() {
+  for (const o of [S.mesh, S.skirt]) if (o) { scene.remove(o); o.geometry.dispose(); o.material.dispose(); }
+  const geo = new THREE.PlaneGeometry(S.W, S.H, S.gw - 1, S.gh - 1);
+  geo.rotateX(-Math.PI / 2);
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(S.gw * S.gh * 3).fill(1), 3));
+  const mat = new THREE.MeshStandardMaterial({ map: S.tex, vertexColors: true, roughness: 1, metalness: 0, side: THREE.DoubleSide });
+  mat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, uniforms);
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying float vElev;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvElev = position.y;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>',
+      '#include <common>\nvarying float vElev;\nuniform float uContourOn, uContourInt, uExag, uSwipeOn, uSwipeX;\nuniform vec2 uResolution;')
+      .replace('#include <dithering_fragment>', `#include <dithering_fragment>
+      if (uContourOn > 0.5) {
+        float e = vElev / max(uExag, 1e-4) / uContourInt;
+        float d = abs(fract(e + 0.5) - 0.5) / max(fwidth(e), 1e-5);
+        float em = e / 5.0;
+        float dm = abs(fract(em + 0.5) - 0.5) / max(fwidth(em), 1e-5);
+        float line = max(1.0 - smoothstep(0.0, 1.0, d), 1.0 - smoothstep(0.0, 1.8, dm));
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.05, 0.05, 0.06), line * 0.75);
+      }
+      if (uSwipeOn > 0.5) {
+        float screenX = gl_FragCoord.x / max(uResolution.x, 1.0);
+        if (screenX < uSwipeX) {
+          float gray = dot(gl_FragColor.rgb, vec3(0.299, 0.587, 0.114));
+          gl_FragColor.rgb = mix(vec3(gray), gl_FragColor.rgb * vec3(0.75, 0.88, 1.0), 0.5);
+        }
+        if (abs(screenX - uSwipeX) < 0.0015) {
+          gl_FragColor.rgb = vec3(0.28, 0.74, 0.91);
+        }
+      }`);
+  };
+  S.mesh = new THREE.Mesh(geo, mat);
+  scene.add(S.mesh);
+  S.skirt = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 1, side: THREE.DoubleSide }));
+  scene.add(S.skirt);
+  applyHeights();
+  applyShading();
+}
+
+function applyHeights() {
+  const pos = S.mesh.geometry.attributes.position;
+  for (let i = 0; i < S.gw * S.gh; i++) pos.setY(i, worldY(S.renderH[i]));
+  pos.needsUpdate = true;
+  S.mesh.geometry.computeVertexNormals();
+  S.mesh.geometry.computeBoundingSphere(); S.mesh.geometry.computeBoundingBox();
+  uniforms.uExag.value = S.exag;
+  // skirt: walls from each edge down to a floor below the lowest point
+  const floor = -Math.max(S.extent * 0.02, (S.hmax - S.hmin) * S.exag * 0.15);
+  const v = [];
+  const edge = (pts) => { for (let k = 0; k < pts.length - 1; k++) {
+    const [a, b] = [pts[k], pts[k + 1]];
+    v.push(a[0], a[1], a[2], b[0], b[1], b[2], a[0], floor, a[2], b[0], b[1], b[2], b[0], floor, b[2], a[0], floor, a[2]); } };
+  const P = (r, c) => { const i = r * S.gw + c; return [pos.getX(i), pos.getY(i), pos.getZ(i)]; };
+  const top = [], bot = [], lef = [], rig = [];
+  for (let c = 0; c < S.gw; c++) { top.push(P(0, c)); bot.push(P(S.gh - 1, c)); }
+  for (let r = 0; r < S.gh; r++) { lef.push(P(r, 0)); rig.push(P(r, S.gw - 1)); }
+  [top, bot, lef, rig].forEach(edge);
+  const g = S.skirt.geometry;
+  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3)); g.computeVertexNormals();
+  if (S.marker) placeMarker(S.marker.userData.x, S.marker.userData.z);
+  if (S.profilePts.length === 2) drawProfileLine();
+  if (S.water) S.water.position.y = worldY(+$('#flood-level').value);
+}
+
+function applyShading() {
+  const col = S.mesh.geometry.attributes.color, n = S.gw * S.gh;
+  const mat = S.mesh.material;
+  let legend = null;
+  if (S.mode === 'optical') {
+    col.array.fill(1); mat.map = S.tex;
+  } else {
+    mat.map = null;
+    let vals = new Float32Array(n), lo, hi, name = S.mode;
+    if (S.mode === 'height') {
+      vals = S.h; lo = pct(S.h, 0.01); hi = pct(S.h, 0.99);
+      legend = { name, lo: reportedHeight(lo), hi: reportedHeight(hi), unit: S.units };
+    } else if (S.mode === 'slope') {
+      for (let r = 0; r < S.gh; r++) for (let c = 0; c < S.gw; c++) vals[r * S.gw + c] = slopeAt(r, c).slope;
+      lo = 0; hi = S.meta?.units === 'metre' ? 45 : Math.max(0.001, pct(vals, 0.98));
+      legend = { name, lo, hi, unit: S.meta?.units === 'metre' ? '°' : 'relative / m' };
+    } else if (S.mode === 'confidence') {
+      vals = S.confidence || new Float32Array(n).fill(0.95);
+      lo = 0.5; hi = 1.0;
+      legend = { name: 'confidence', lo: 50, hi: 100, unit: '% confidence' };
+    } else if (S.mode === 'ndsm') {
+      const dtmBase = S.dtm || S.renderH;
+      for (let i = 0; i < n; i++) vals[i] = Math.max(0, S.h[i] - dtmBase[i]);
+      lo = 0; hi = Math.max(5, pct(vals, 0.98));
+      legend = { name: 'ndsm', lo: 0, hi: reportedHeight(hi), unit: `${S.units} structure` };
+    } else if (S.mode === 'curvature') {
+      for (let r = 0; r < S.gh; r++) for (let c = 0; c < S.gw; c++) vals[r * S.gw + c] = curvatureAt(r, c);
+      const e = Math.max(1e-5, pct(vals.map(Math.abs), 0.95));
+      lo = -e; hi = e; legend = { name, lo, hi, unit: S.meta?.units === 'metre' ? '1/m (Laplacian)' : 'relative/m² (Laplacian)' };
+    } else if (S.mode === 'error' && S.ref) {
+      for (let i = 0; i < n; i++) vals[i] = S.h[i] - S.ref[i];
+      const abs = vals.map(Math.abs); const e = Math.max(0.5, pct(abs, 0.95));
+      lo = -e; hi = e; legend = { name, lo, hi, unit: 'm (est − ref)' };
+    }
+    for (let i = 0; i < n; i++) {
+      const c = ramp(name, (vals[i] - lo) / (hi - lo || 1));
+      col.array[i * 3] = c[0]; col.array[i * 3 + 1] = c[1]; col.array[i * 3 + 2] = c[2];
+    }
+  }
+  col.needsUpdate = true; mat.needsUpdate = true;
+  const L = $('#legend');
+  L.innerHTML = legend ? `<div class="bar" style="background:${cssRamp(legend.name)}"></div>
+    <div class="ticks"><span>${fmt(legend.lo, 1)}</span><span>${legend.unit}</span><span>${fmt(legend.hi, 1)}</span></div>` : '';
+}
+
+function updateAnalysisTools() {
+  const slider = $('#flood-level'), info = $('#flood-info'), levelOut = $('#flood-v');
+  const metric = S.meta?.units === 'metre';
+  slider.disabled = !metric || !S.h;
+  if (!metric || !S.h) {
+    if (S.water) S.water.visible = false;
+    levelOut.textContent = '—';
+    info.textContent = 'Flood scenarios require a metric DSM.';
+  } else {
+    const lo = S.hmin, hi = S.hmax;
+    slider.min = lo; slider.max = hi; slider.step = Math.max((hi - lo) / 200, 0.1);
+    if (+slider.value < lo || +slider.value > hi) slider.value = lo + (hi - lo) * 0.25;
+    const level = +slider.value;
+    levelOut.textContent = `${fmt(level, 1)} m`;
+    if (!S.water) {
+      const geo = new THREE.PlaneGeometry(S.W, S.H); geo.rotateX(-Math.PI / 2);
+      S.water = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.42, depthWrite: false, side: THREE.DoubleSide }));
+      S.water.renderOrder = 2; scene.add(S.water);
+    }
+    S.water.visible = S.floodActive; S.water.position.y = worldY(level);
+    let count = 0;
+    for (let i = 0; i < S.h.length; i++) if (S.h[i] <= level) count++;
+    const area = count * S.W * S.H / S.h.length;
+    const subPct = (count / S.h.length) * 100;
+    $('#flood-submerged-pct').textContent = `${subPct.toFixed(1)}%`;
+    let bInundated = 0;
+    if (S.buildings && S.buildings.buildings) {
+      for (const b of S.buildings.buildings) {
+        if (b.ground_elevation_m <= level) bInundated++;
+      }
+    }
+    $('#flood-buildings-count').textContent = String(bInundated);
+    info.innerHTML = S.floodActive
+      ? `<b>Below water</b><span>${subPct.toFixed(1)}%</span><b>Surface area</b><span>≈ ${fmt(area, 0)} m²</span><span class="note" style="grid-column:1/-1">Terrain & LoD1 building inundation simulated.</span>`
+      : 'Move the water elevation slider to preview a flood plane.';
+  }
+  const volume = $('#volume-info');
+  if (!S.ref || !metric) {
+    volume.textContent = 'Load a metric scene with a reference DSM to compare cut and fill volumes.';
+  } else {
+    let cut = 0, fill = 0, n = 0;
+    for (let i = 0; i < S.h.length; i++) {
+      const d = S.h[i] - S.ref[i];
+      if (!Number.isFinite(d)) continue;
+      n++;
+      if (d > 0) fill += d; else cut -= d;
+    }
+    const cellArea = S.W * S.H / S.h.length;
+    volume.innerHTML = `<b>Fill</b> ${fmt(fill * cellArea, 1)} m³<br><b>Cut</b> ${fmt(cut * cellArea, 1)} m³<br><span class="note">Estimated from ${n.toLocaleString()} mesh cells against the reference DSM.</span>`;
+  }
+}
+
+$('#flood-level').addEventListener('input', () => { S.floodActive = true; updateAnalysisTools(); });
+
+let floodAnimTimer = null;
+$('#flood-play').onclick = () => {
+  if (S.floodAnimating) {
+    clearInterval(floodAnimTimer);
+    S.floodAnimating = false;
+    $('#flood-play').textContent = '▶ Animate Rise';
+  } else {
+    S.floodAnimating = true;
+    S.floodActive = true;
+    $('#flood-play').textContent = '⏸ Pause';
+    const slider = $('#flood-level');
+    const min = +slider.min, max = +slider.max;
+    if (+slider.value >= max - 0.5) slider.value = min;
+    const step = (max - min) / 100;
+    floodAnimTimer = setInterval(() => {
+      let v = +slider.value + step;
+      if (v >= max) {
+        v = max;
+        clearInterval(floodAnimTimer);
+        S.floodAnimating = false;
+        $('#flood-play').textContent = '▶ Animate Rise';
+      }
+      slider.value = v;
+      updateAnalysisTools();
+    }, 50);
+  }
+};
+$('#flood-reset').onclick = () => {
+  if (S.floodAnimating) {
+    clearInterval(floodAnimTimer);
+    S.floodAnimating = false;
+    $('#flood-play').textContent = '▶ Animate Rise';
+  }
+  const slider = $('#flood-level');
+  slider.value = slider.min;
+  S.floodActive = false;
+  if (S.water) S.water.visible = false;
+  $('#flood-v').textContent = '—';
+  $('#flood-submerged-pct').textContent = '0.0%';
+  $('#flood-buildings-count').textContent = '0';
+};
+
+function setSun(deg) {
+  const a = deg * Math.PI / 180, R = S.extent;
+  sun.position.set(Math.sin(a) * R, R * 0.9, -Math.cos(a) * R);
+}
+
+// ------------------------------------------------------------------ loading scenes
+async function loadScene(id) {
+  busy(true, 'Loading terrain & 3D buildings…');
+  try {
+    const base = `jobs/${id}/viewer/`;
+    const meta = await (await fetch(base + 'meta.json?' + Date.now())).json();
+    const hBuf = await (await fetch(base + 'height.bin')).arrayBuffer();
+    const ref = meta.has_reference && meta.units === 'metre'
+      ? new Float32Array(await (await fetch(base + 'ref.bin')).arrayBuffer()) : null;
+
+    let dtm = null;
+    try {
+      const dtmRes = await fetch(base + 'dtm.bin');
+      if (dtmRes.ok) dtm = new Float32Array(await dtmRes.arrayBuffer());
+    } catch {}
+
+    let confidence = null;
+    try {
+      const confRes = await fetch(base + 'confidence.bin');
+      if (confRes.ok) confidence = new Float32Array(await confRes.arrayBuffer());
+    } catch {}
+
+    let buildings = null;
+    try {
+      const bRes = await fetch(base + 'buildings.json?' + Date.now());
+      if (bRes.ok) buildings = await bRes.json();
+    } catch {}
+
+    const tex = await new THREE.TextureLoader().loadAsync(base + 'texture.jpg?' + Date.now());
+    tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    if (S.tex) S.tex.dispose();
+    if (S.water) { scene.remove(S.water); S.water.geometry.dispose(); S.water.material.dispose(); S.water = null; }
+    Object.assign(S, { id, meta, gw: meta.grid_w, gh: meta.grid_h, W: meta.ground_w_m, H: meta.ground_h_m,
+      h: new Float32Array(hBuf), dtm, confidence, buildings, ref, tex, texImg: tex.image, units: meta.units === 'metre' ? 'm' : 'relative',
+      viewGeometry: 'surface' });
+    S.hmin = Math.min(...[pct(S.h, 0), ref ? pct(ref, 0) : Infinity]);
+    S.hmax = Math.max(pct(S.h, 1), ref ? pct(ref, 1) : -Infinity);
+    S.base = S.hmin; S.extent = Math.max(S.W, S.H);
+    S.smoothingM = meta.scene === 'forest' ? 2 : meta.scene === 'urban' ? 0.5 : 0.75;
+    $('#smooth').value = S.smoothingM;
+    $('#smooth-v').textContent = `${S.smoothingM.toFixed(2)} m`;
+    updateRenderHeight(false);
+    S.floodActive = false;
+    $('#flood-level').value = String(S.hmin + (S.hmax - S.hmin) * 0.25);
+    const relief = S.hmax - S.hmin;
+    S.exag = Math.min(10, Math.max(1, +(0.06 * S.extent / Math.max(relief, 1e-3)).toFixed(1)));
+    $('#exag').value = S.exag; $('#exag-v').textContent = S.exag.toFixed(1) + '×';
+    camera.near = S.extent / 5000; camera.far = S.extent * 30; camera.updateProjectionMatrix();
+    scene.fog.near = S.extent * 1.5; scene.fog.far = S.extent * 6;
+    clearTools();
+    buildTerrain();
+    createBuildingMeshes(S.buildings);
+    updateAnalysisTools();
+    setSun(+$('#sun').value);
+    resetView();
+    $('#btn-error').disabled = !ref;
+    if (!ref && S.mode === 'error') setMode('optical');
+    $('#contour-unit').textContent = meta.units === 'metre' ? 'm' : 'rel';
+    $('#contour-int').value = meta.units === 'metre' ? '5' : '0.1';
+    $('#contour-int').step = meta.units === 'metre' ? '0.5' : '0.01';
+    uniforms.uContourInt.value = +$('#contour-int').value * verticalDisplayFactor();
+    $('#hud-scene').textContent = `${meta.input} · ${meta.units === 'metre' ? 'absolute DSM' : 'relative rDSM'} · ${meta.calibration?.method ?? ''}`;
+    $('#top-scene-name').textContent = meta.input || 'Current scene';
+    const crs = meta.crs ? `CRS ${meta.crs}` : 'No spatial reference';
+    const gsd = meta.gsd_m ? ` · GSD ${fmt(meta.gsd_m, 2)} m/px` : '';
+    const datum = meta.vertical_datum ? ` · Datum ${meta.vertical_datum}` : '';
+    const evidenceLevel = meta.calibration?.evidence_level || (meta.calibration?.method === 'dem+prior' ? 'approximate' : '');
+    const provisional = evidenceLevel === 'approximate' || evidenceLevel === 'provisional-gcp';
+    $('#top-scene-meta').textContent = `${meta.units === 'metre' ? (provisional ? 'Provisional metric DSM' : 'Metric DSM') : 'Relative rDSM'} · ${crs}${gsd}${datum}`;
+    $('#dl-dsm-header').disabled = false;
+    $('#export-menu-btn').disabled = false;
+    const cal = meta.calibration || {};
+    const evidence = meta.units === 'metre' ? `${evidenceLevel ? `${evidenceLevel} evidence · ` : ''}${cal.method || 'calibrated'}${cal.fit_r !== undefined && Number.isFinite(cal.fit_r) ? ` · DEM fit r ${fmt(cal.fit_r, 2)}` : ''}` : 'relative height · no vertical datum';
+    const badge = $('#scene-badge');
+    const label = document.createElement('strong'); label.textContent = meta.units === 'metre' ? (provisional ? 'Provisional DSM' : 'Metric scene') : 'Relative scene';
+    badge.replaceChildren(label, document.createTextNode(` · ${evidence}`));
+    badge.dataset.evidence = evidenceLevel;
+    badge.classList.remove('hidden');
+
+    // Stepper updates
+    $('#step-val')?.classList.toggle('done', Boolean(meta.has_reference));
+
+    $$('#scene-list .item').forEach((el) => {
+      const active = el.dataset.id === id;
+      el.classList.toggle('active', active);
+      el.querySelector('.scene-select')?.setAttribute('aria-pressed', String(active));
+    });
+    renderMetrics();
+    drawMinimap();
+    drawComparison();
+    location.hash = id;
+  } catch (e) {
+    console.error(e); alert('Could not load scene: ' + e.message);
+  } finally { busy(false); }
+}
+
+function resetView() {
+  setNav('orbit');
+  camera.up.set(0, 1, 0);
+  const cy = worldY((S.hmin + S.hmax) / 2);
+  orbit.target.set(0, cy, 0);
+  camera.position.set(0, cy + S.extent * 0.95, S.extent * 0.92);
+  orbit.minDistance = S.extent * 0.01; orbit.maxDistance = S.extent * 4;
+  orbit.update();
+}
+
+function topDownView() {
+  if (!S.mesh) return;
+  setNav('orbit');
+  const cy = worldY((S.hmin + S.hmax) / 2);
+  orbit.target.set(0, cy, 0);
+  camera.position.set(0, cy + S.extent * 1.5, S.extent * 0.0001);
+  camera.up.set(0, 0, -1);
+  camera.lookAt(orbit.target);
+  orbit.update();
+}
+
+// ------------------------------------------------------------------ LoD1 3D city buildings
+function createBuildingMeshes(bData) {
+  if (S.buildingGroup) {
+    scene.remove(S.buildingGroup);
+    S.buildingGroup.traverse((c) => {
+      if (c.geometry) c.geometry.dispose();
+      if (c.material) {
+        if (Array.isArray(c.material)) c.material.forEach((m) => m.dispose());
+        else c.material.dispose();
+      }
+    });
+    S.buildingGroup = null;
+  }
+  if (!bData || !bData.buildings || !bData.buildings.length) {
+    $('#b-count-badge').textContent = '0 BUILDINGS';
+    return;
+  }
+  $('#b-count-badge').textContent = `${bData.count} BUILDINGS`;
+  const group = new THREE.Group();
+  group.name = 'buildingsGroup';
+
+  const wallMat = new THREE.MeshStandardMaterial({
+    color: 0xdae4eb,
+    roughness: 0.7,
+    metalness: 0.1,
+    side: THREE.DoubleSide,
+  });
+
+  const roofMat = new THREE.MeshStandardMaterial({
+    map: S.tex,
+    roughness: 0.85,
+    metalness: 0.05,
+    side: THREE.DoubleSide,
+  });
+
+  for (const b of bData.buildings) {
+    const pts = b.polygon_world;
+    if (!pts || pts.length < 3) continue;
+    const shape = new THREE.Shape();
+    shape.moveTo(pts[0][0], -pts[0][1]);
+    for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], -pts[i][1]);
+
+    const hWorld = Math.max(1.5, b.height_m) * S.exag;
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: hWorld, bevelEnabled: false });
+    geo.rotateX(Math.PI / 2);
+
+    const pos = geo.attributes.position;
+    const uvs = geo.attributes.uv;
+    for (let i = 0; i < pos.count; i++) {
+      uvs.setXY(i, pos.getX(i) / S.W + 0.5, pos.getZ(i) / S.H + 0.5);
+    }
+    uvs.needsUpdate = true;
+    geo.computeVertexNormals();
+
+    const mesh = new THREE.Mesh(geo, [wallMat.clone(), roofMat]);
+    const groundElev = b.ground_elevation_m !== undefined ? b.ground_elevation_m : S.base;
+    mesh.position.y = worldY(groundElev);
+    mesh.userData.building = b;
+    group.add(mesh);
+  }
+  S.buildingGroup = group;
+  scene.add(group);
+  group.visible = (S.viewGeometry === 'city');
+}
+
+function clearBuildingSelection() {
+  if (S.selectedMesh) {
+    if (Array.isArray(S.selectedMesh.material) && S.selectedMesh.material[0]?.emissive) {
+      S.selectedMesh.material[0].emissive.setHex(0x000000);
+    }
+    S.selectedMesh = null;
+  }
+  $('#building-info').classList.add('muted');
+  $('#building-info').textContent = 'Click any building in 3D to inspect storeys, height, footprint area and volume.';
+}
+
+function selectBuilding(mesh) {
+  clearBuildingSelection();
+  S.selectedMesh = mesh;
+  if (Array.isArray(mesh.material) && mesh.material[0]?.emissive) {
+    mesh.material[0].emissive.setHex(0x0284c7);
+  }
+  const b = mesh.userData.building;
+  if (!b) return;
+  const info = $('#building-info');
+  info.classList.remove('muted');
+  info.innerHTML = `
+    <b>Building #${b.id}</b><span><strong style="color:var(--cyan);">${b.storeys} storeys</strong> (~${fmt(b.height_m, 1)} m)</span>
+    <b>Roof elevation</b><span>${fmt(b.roof_elevation_m, 1)} m</span>
+    <b>Ground elevation</b><span>${fmt(b.ground_elevation_m, 1)} m</span>
+    <b>Footprint area</b><span>${fmt(b.area_m2, 1)} m²</span>
+    <b>Structural volume</b><span>${fmt(b.volume_m3, 0)} m³</span>
+    <b>Confidence</b><span>${Math.round(b.confidence * 100)}% (${b.source || 'LoD1'})</span>
+  `;
+}
+
+// ------------------------------------------------------------------ 3D distance measurement
+function clearDistanceTool() {
+  S.distPts = [];
+  if (S.distLine) { scene.remove(S.distLine); S.distLine.geometry.dispose(); S.distLine = null; }
+}
+
+function measureDistance(point) {
+  if (S.distPts.length >= 2) clearDistanceTool();
+  S.distPts.push(point);
+  placeMarker(point.x, point.z);
+  if (S.distPts.length === 1) {
+    $('#probe-info').classList.remove('muted');
+    $('#probe-info').innerHTML = '<span class="muted">Click second point for 3D distance…</span>';
+    return;
+  }
+  const [p1, p2] = S.distPts;
+  const gDist = Math.hypot(p2.x - p1.x, p2.z - p1.z);
+  const y1 = terrainY(p1.x, p1.z), y2 = terrainY(p2.x, p2.z);
+  const dz = (y2 - y1) / S.exag;
+  const dist3d = Math.hypot(gDist, dz);
+  const grade = (Math.abs(dz) / Math.max(gDist, 1e-3)) * 100;
+
+  const pts = [new THREE.Vector3(p1.x, y1 + 0.5, p1.z), new THREE.Vector3(p2.x, y2 + 0.5, p2.z)];
+  if (S.distLine) scene.remove(S.distLine);
+  S.distLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: 0x48bce7, linewidth: 2, depthTest: false }));
+  S.distLine.renderOrder = 15;
+  scene.add(S.distLine);
+
+  $('#probe-info').classList.remove('muted');
+  $('#probe-info').innerHTML = `
+    <b>Ground distance</b><span>${fmt(gDist, 1)} m</span>
+    <b>3D direct line</b><span>${fmt(dist3d, 1)} m</span>
+    <b>Height diff (ΔZ)</b><span>${dz >= 0 ? '+' : ''}${fmt(dz, 1)} m</span>
+    <b>Grade / slope</b><span>${fmt(grade, 1)}% (${fmt(Math.atan(grade / 100) * 180 / Math.PI, 1)}°)</span>
+  `;
+}
+
+// ------------------------------------------------------------------ 3D swipe comparison
+function setSwipe(on) {
+  S.swipeActive = Boolean(on);
+  uniforms.uSwipeOn.value = S.swipeActive ? 1.0 : 0.0;
+  $('#swipe-toggle')?.setAttribute('aria-pressed', String(S.swipeActive));
+  $('#swipe-divider')?.classList.toggle('hidden', !S.swipeActive);
+  $('#swipe-label-left')?.classList.toggle('hidden', !S.swipeActive);
+  $('#swipe-label-right')?.classList.toggle('hidden', !S.swipeActive);
+  if (S.swipeActive) updateSwipePosition(0.5);
+}
+function updateSwipePosition(frac) {
+  S.swipeX = Math.max(0.05, Math.min(0.95, frac));
+  uniforms.uSwipeX.value = S.swipeX;
+  const divider = $('#swipe-divider');
+  if (divider) divider.style.left = `${S.swipeX * 100}%`;
+}
+
+function setViewGeometry(mode) {
+  S.viewGeometry = mode;
+  $$('#view-mode button').forEach((b) => b.classList.toggle('active', b.dataset.view === mode));
+  if (S.buildingGroup) {
+    S.buildingGroup.visible = (mode === 'city');
+  }
+}
+
+// ------------------------------------------------------------------ navigation
+function setNav(mode) {
+  if (mode === S.nav && mode !== 'tour') return;
+  if (S.nav === 'fly') fly.unlock();
+  if (mode !== 'orbit') camera.up.set(0, 1, 0);
+  S.nav = mode;
+  orbit.enabled = mode === 'orbit';
+  $('#fly-hint').classList.toggle('hidden', mode !== 'fly');
+  $$('#nav-mode button').forEach((b) => b.classList.toggle('active', b.dataset.nav === mode));
+  if (mode === 'orbit') {
+    // look at the terrain point in the centre of the view
+    const hit = raycastFrom(new THREE.Vector2(0, 0));
+    if (hit) orbit.target.copy(hit.point);
+    orbit.update();
+  }
+  if (mode === 'tour') S.tourT = Math.atan2(camera.position.x, camera.position.z);
+}
+
+const clock = new THREE.Clock();
+function updateFly(dt) {
+  const speed = S.extent / 12 * (S.keys.ShiftLeft || S.keys.ShiftRight ? 4 : 1) * dt;
+  if (S.keys.KeyW) fly.moveForward(speed);
+  if (S.keys.KeyS) fly.moveForward(-speed);
+  if (S.keys.KeyD) fly.moveRight(speed);
+  if (S.keys.KeyA) fly.moveRight(-speed);
+  if (S.keys.KeyE || S.keys.Space) camera.position.y += speed;
+  if (S.keys.KeyQ) camera.position.y -= speed;
+  clampCamera();
+}
+function clampCamera() {
+  const m = S.extent * 0.6;
+  camera.position.x = Math.max(-m, Math.min(m, camera.position.x));
+  camera.position.z = Math.max(-m, Math.min(m, camera.position.z));
+  const inside = Math.abs(camera.position.x) < S.W / 2 && Math.abs(camera.position.z) < S.H / 2;
+  if (inside) {
+    const g = terrainY(camera.position.x, camera.position.z) + Math.max(S.extent / 800, 1.5 * S.exag);
+    if (camera.position.y < g) camera.position.y = g;
+  }
+  camera.position.y = Math.min(camera.position.y, S.extent * 3);
+}
+function updateTour(dt) {
+  S.tourT += dt * 0.08;
+  const r = S.extent * (0.32 + 0.08 * Math.sin(S.tourT * 2.3));
+  const x = Math.sin(S.tourT) * r, z = Math.cos(S.tourT) * r;
+  const top = worldY(S.hmax);
+  const y = Math.max(terrainY(x, z), 0) + (top - Math.max(terrainY(x, z), 0)) * 0.5 + S.extent * (0.06 + 0.03 * Math.sin(S.tourT * 1.7));
+  camera.position.lerp(new THREE.Vector3(x, y, z), Math.min(1, dt * 2));
+  const ahead = S.tourT + 0.6;
+  const lx = Math.sin(ahead) * r * 0.35, lz = Math.cos(ahead) * r * 0.35;
+  camera.lookAt(lx, Math.max(terrainY(lx, lz), 0), lz);
+}
+
+// ------------------------------------------------------------------ picking & tools
+const raycaster = new THREE.Raycaster();
+function raycastFrom(ndc) {
+  if (!S.mesh) return null;
+  raycaster.setFromCamera(ndc, camera);
+  return raycaster.intersectObject(S.mesh, false)[0] || null;
+}
+function toGrid(x, z) { return { r: Math.round((z / S.H + 0.5) * (S.gh - 1)), c: Math.round((x / S.W + 0.5) * (S.gw - 1)) }; }
+function mapCoords(x, z) {
+  const t = S.meta.transform; if (!t) return null;
+  const col = (x / S.W + 0.5) * S.meta.src_w, row = (z / S.H + 0.5) * S.meta.src_h;
+  return { E: t[0] * col + t[1] * row + t[2], N: t[3] * col + t[4] * row + t[5] };
+}
+
+function placeMarker(x, z) {
+  if (!S.marker) {
+    const g = new THREE.Group();
+    const pin = new THREE.Mesh(new THREE.ConeGeometry(1, 3, 16), new THREE.MeshBasicMaterial({ color: 0xf59e0b }));
+    pin.rotation.x = Math.PI; pin.position.y = 1.5;
+    const ring = new THREE.Mesh(new THREE.RingGeometry(1.2, 1.7, 32), new THREE.MeshBasicMaterial({ color: 0xf59e0b, side: THREE.DoubleSide, depthTest: false }));
+    ring.rotation.x = -Math.PI / 2;
+    g.add(pin, ring); scene.add(g); S.marker = g;
+  }
+  const s = S.extent / 250;
+  S.marker.scale.setScalar(s);
+  S.marker.position.set(x, terrainY(x, z) + s * 0.1, z);
+  S.marker.userData = { x, z };
+}
+
+function probe(point) {
+  const { x, z } = point;
+  placeMarker(x, z);
+  const { r, c } = toGrid(x, z);
+  const h = sampleGrid(S.h, x, z), sa = slopeAt(r, c);
+  const rows = [['Estimated', `${fmt(reportedHeight(h), S.meta.units === 'metre' ? 2 : 3)} ${S.units}`]];
+  if (S.ref) { const rv = sampleGrid(S.ref, x, z); rows.push(['Reference', `${fmt(rv)} m`], ['Error', `<span class="${Math.abs(h - rv) < 2 ? 'better' : 'worse'}">${h - rv >= 0 ? '+' : ''}${fmt(h - rv)} m</span>`]); }
+  rows.push([S.meta?.units === 'metre' ? 'Slope' : 'Relative gradient', S.meta?.units === 'metre' ? `${fmt(sa.slope, 1)}°` : `${fmt(sa.slope, 3)} / m`], ['Aspect', `${fmt(sa.aspect, 0)}°`]);
+  const mc = mapCoords(x, z);
+  if (mc) rows.push(['Easting', fmt(mc.E, 1)], ['Northing', fmt(mc.N, 1)]);
+  else rows.push(['Local x, y', `${fmt(x + S.W / 2, 1)}, ${fmt(z + S.H / 2, 1)} m`]);
+  $('#probe-info').classList.remove('muted');
+  $('#probe-info').innerHTML = rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
+}
+
+function drawProfileLine() {
+  if (S.profileLine) { scene.remove(S.profileLine); S.profileLine.geometry.dispose(); }
+  const [a, b] = S.profilePts, N = 300, pts = [];
+  const lift = S.extent / 1500;
+  for (let i = 0; i <= N; i++) {
+    const x = a.x + (b.x - a.x) * i / N, z = a.z + (b.z - a.z) * i / N;
+    pts.push(new THREE.Vector3(x, terrainY(x, z) + lift, z));
+  }
+  S.profileLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: 0x38bdf8, depthTest: false }));
+  S.profileLine.renderOrder = 10;
+  scene.add(S.profileLine);
+}
+
+function profile(point) {
+  if (S.profilePts.length >= 2) S.profilePts = [];
+  S.profilePts.push({ x: point.x, z: point.z });
+  placeMarker(point.x, point.z);
+  if (S.profilePts.length < 2) { $('#probe-info').innerHTML = '<span class="muted">Click the end point…</span>'; return; }
+  drawProfileLine();
+  const [a, b] = S.profilePts, N = 300, dist = Math.hypot(b.x - a.x, b.z - a.z);
+  const est = [], ref = [];
+  for (let i = 0; i <= N; i++) {
+    const x = a.x + (b.x - a.x) * i / N, z = a.z + (b.z - a.z) * i / N;
+    est.push(reportedHeight(sampleGrid(S.h, x, z))); if (S.ref) ref.push(sampleGrid(S.ref, x, z));
+  }
+  const cv = $('#profile'); cv.classList.remove('hidden');
+  const ctx = cv.getContext('2d'), Wd = cv.width, Hd = cv.height, pad = { l: 46, r: 10, t: 12, b: 26 };
+  ctx.clearRect(0, 0, Wd, Hd);
+  const all = est.concat(ref); let lo = Math.min(...all), hi = Math.max(...all);
+  const span = (hi - lo) || 1; lo -= span * 0.08; hi += span * 0.08;
+  const X = (i) => pad.l + (Wd - pad.l - pad.r) * i / N, Y = (v) => pad.t + (Hd - pad.t - pad.b) * (1 - (v - lo) / (hi - lo));
+  ctx.strokeStyle = '#273241'; ctx.fillStyle = '#8b98a8'; ctx.font = '11px system-ui'; ctx.lineWidth = 1;
+  for (let k = 0; k <= 4; k++) {
+    const v = lo + (hi - lo) * k / 4, y = Y(v);
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(Wd - pad.r, y); ctx.stroke();
+    ctx.fillText(v.toFixed(1), 4, y + 4);
+  }
+  ctx.fillText('0', pad.l, Hd - 8); ctx.fillText(`${dist.toFixed(0)} m`, Wd - pad.r - 40, Hd - 8);
+  const line = (arr, color, w) => { ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath(); arr.forEach((v, i) => i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v))); ctx.stroke(); };
+  // filled estimate
+  ctx.fillStyle = 'rgba(245,158,11,.15)'; ctx.beginPath(); ctx.moveTo(X(0), Y(lo));
+  est.forEach((v, i) => ctx.lineTo(X(i), Y(v))); ctx.lineTo(X(N), Y(lo)); ctx.fill();
+  if (ref.length) line(ref, '#38bdf8', 1.5);
+  line(est, '#f59e0b', 2);
+  ctx.fillStyle = '#f59e0b'; ctx.fillText('estimated', pad.l + 6, pad.t + 10);
+  if (ref.length) { ctx.fillStyle = '#38bdf8'; ctx.fillText('reference', pad.l + 76, pad.t + 10); }
+  const dh = est[N] - est[0];
+  let rows = [['Length', `${fmt(dist, 1)} m`], ['Δ height', `${fmt(dh)} ${S.units}`], [S.meta?.units === 'metre' ? 'Mean grade' : 'Mean relative gradient', S.meta?.units === 'metre' ? `${fmt(Math.atan(Math.abs(dh) / (dist || 1)) * 180 / Math.PI, 1)}°` : `${fmt(Math.abs(dh) / (dist || 1), 3)} / m`],
+    ['Max / min', `${fmt(Math.max(...est))} / ${fmt(Math.min(...est))}`]];
+  if (ref.length) {
+    const e = est.map((v, i) => v - ref[i]);
+    rows.push(['Profile RMSE', `${fmt(Math.sqrt(e.reduce((s, v) => s + v * v, 0) / e.length))} m`]);
+  }
+  $('#probe-info').innerHTML = rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
+}
+
+function clearTools() {
+  if (S.marker) { scene.remove(S.marker); S.marker = null; }
+  if (S.profileLine) { scene.remove(S.profileLine); S.profileLine = null; }
+  S.profilePts = [];
+  clearDistanceTool();
+  clearBuildingSelection();
+  $('#profile').classList.add('hidden');
+  $('#probe-info').classList.add('muted');
+  $('#probe-info').textContent = S.tool === 'probe' ? 'Click the terrain to read height and slope.' : (S.tool === 'distance' ? 'Click first point for 3D distance…' : 'Click a start point, then an end point.');
+}
+
+let down = null;
+canvas.addEventListener('pointerdown', (e) => { down = [e.clientX, e.clientY]; });
+canvas.addEventListener('pointerup', (e) => {
+  if (!S.mesh || !down) return;
+  const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null;
+  if (S.nav === 'fly') { if (!fly.isLocked) fly.lock(); return; }
+  if (S.nav === 'tour') { setNav('orbit'); return; }
+  if (moved > 4 || e.button !== 0) return;
+  const rect = canvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+
+  if (S.buildingGroup && S.buildingGroup.visible) {
+    raycaster.setFromCamera(ndc, camera);
+    const bHits = raycaster.intersectObjects(S.buildingGroup.children, true);
+    if (bHits.length > 0 && bHits[0].object.userData?.building) {
+      selectBuilding(bHits[0].object);
+      showTab('analyse');
+      return;
+    }
+  }
+
+  const hit = raycastFrom(ndc);
+  if (!hit) return;
+  showTab('analyse');
+  if (S.tool === 'probe') probe(hit.point);
+  else if (S.tool === 'distance') measureDistance(hit.point);
+  else profile(hit.point);
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  if (!S.mesh) return;
+  const rect = canvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+  const hit = raycastFrom(ndc);
+  if (hit) {
+    const { x, z } = hit.point;
+    const { r, c } = toGrid(x, z);
+    const h = sampleGrid(S.h, x, z);
+    const dtmVal = S.dtm ? sampleGrid(S.dtm, x, z) : null;
+    const ndsmVal = (dtmVal !== null && h !== null) ? Math.max(0, h - dtmVal) : null;
+    const sa = slopeAt(r, c);
+    const confVal = S.confidence ? sampleGrid(S.confidence, x, z) : null;
+    const mc = mapCoords(x, z);
+    
+    const cEl = $('#hud-coords'); if (cEl) cEl.textContent = mc ? `${mc.E.toFixed(1)}, ${mc.N.toFixed(1)}` : `${x.toFixed(1)}, ${z.toFixed(1)}`;
+    const px = Math.round(((x / S.W) + 0.5) * (S.meta?.src_w || S.gw));
+    const py = Math.round(((z / S.H) + 0.5) * (S.meta?.src_h || S.gh));
+    const pEl = $('#hud-pixel'); if (pEl) pEl.textContent = `${px}, ${py}`;
+    const dEl = $('#hud-dsm'); if (dEl) dEl.textContent = `${fmt(reportedHeight(h), 1)} ${S.units}`;
+    const tEl = $('#hud-dtm'); if (tEl) tEl.textContent = dtmVal !== null ? `${fmt(reportedHeight(dtmVal), 1)} ${S.units}` : '–';
+    const nEl = $('#hud-ndsm'); if (nEl) nEl.textContent = ndsmVal !== null ? `${fmt(ndsmVal, 1)} m` : '–';
+    const sEl = $('#hud-slope'); if (sEl) sEl.textContent = `${fmt(sa.slope, 1)}°`;
+    const cfEl = $('#hud-conf'); if (cfEl) cfEl.textContent = confVal !== null ? `${Math.round(confVal * 100)}%` : '95%';
+  }
+});
+
+// ------------------------------------------------------------------ minimap
+const mm = $('#minimap'), mctx = mm.getContext('2d');
+function drawMinimap() {
+  if (!S.texImg) return;
+  const w = mm.width, h = mm.height, s = Math.min(w / S.W, h / S.H);
+  const dw = S.W * s, dh = S.H * s, ox = (w - dw) / 2, oy = (h - dh) / 2;
+  mctx.fillStyle = '#000'; mctx.fillRect(0, 0, w, h);
+  mctx.drawImage(S.texImg, ox, oy, dw, dh);
+  const px = ox + (camera.position.x / S.W + 0.5) * dw, py = oy + (camera.position.z / S.H + 0.5) * dh;
+  const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+  const ang = Math.atan2(dir.z, dir.x);
+  mctx.fillStyle = 'rgba(245,158,11,.25)';
+  mctx.beginPath(); mctx.moveTo(px, py); mctx.arc(px, py, 40, ang - 0.45, ang + 0.45); mctx.closePath(); mctx.fill();
+  mctx.fillStyle = '#f59e0b'; mctx.beginPath(); mctx.arc(px, py, 4, 0, Math.PI * 2); mctx.fill();
+  mctx.strokeStyle = '#0d1117'; mctx.lineWidth = 1.5; mctx.stroke();
+  if (S.marker) {
+    mctx.fillStyle = '#38bdf8';
+    mctx.fillRect(ox + (S.marker.userData.x / S.W + 0.5) * dw - 3, oy + (S.marker.userData.z / S.H + 0.5) * dh - 3, 6, 6);
+  }
+  mm.dataset.ox = ox; mm.dataset.oy = oy; mm.dataset.dw = dw; mm.dataset.dh = dh;
+}
+mm.addEventListener('click', (e) => {
+  if (!S.mesh) return;
+  const r = mm.getBoundingClientRect(), k = mm.width / r.width;
+  const x = (((e.clientX - r.left) * k - mm.dataset.ox) / mm.dataset.dw - 0.5) * S.W;
+  const z = (((e.clientY - r.top) * k - mm.dataset.oy) / mm.dataset.dh - 0.5) * S.H;
+  const delta = new THREE.Vector3(x, terrainY(x, z), z).sub(S.nav === 'orbit' ? orbit.target : camera.position);
+  if (S.nav === 'orbit') { delta.y = 0; orbit.target.add(delta); camera.position.add(delta); orbit.update(); }
+  else { camera.position.x = x; camera.position.z = z; clampCamera(); }
+});
+
+// ------------------------------------------------------------------ linked 2D source/height comparison
+function drawComparison() {
+  if (!S.h || !S.texImg) return;
+  const rgb = $('#compare-rgb'), height = $('#compare-height');
+  for (const cv of [rgb, height]) { cv.width = S.gw; cv.height = S.gh; }
+  rgb.getContext('2d').drawImage(S.texImg, 0, 0, S.gw, S.gh);
+  const ctx = height.getContext('2d'), data = ctx.createImageData(S.gw, S.gh);
+  const lo = pct(S.h, 0.01), hi = pct(S.h, 0.99);
+  for (let i = 0; i < S.h.length; i++) {
+    const c = Number.isFinite(S.h[i]) ? ramp('height', (S.h[i] - lo) / (hi - lo || 1)) : [0.15, 0.19, 0.23];
+    const k = 4 * i;
+    data.data[k] = Math.round(c[0] * 255); data.data[k + 1] = Math.round(c[1] * 255);
+    data.data[k + 2] = Math.round(c[2] * 255); data.data[k + 3] = 255;
+  }
+  ctx.putImageData(data, 0, 0);
+  $('#compare-units').textContent = S.meta.units === 'metre' ? '(m)' : '(relative)';
+  $('#compare-range').textContent = `P01 ${fmt(reportedHeight(lo), S.meta.units === 'metre' ? 1 : 3)} – P99 ${fmt(reportedHeight(hi), S.meta.units === 'metre' ? 1 : 3)} ${S.units}`;
+  $('#compare-readout').textContent = 'Move across either image to inspect aligned pixels';
+  $$('.comparison-crosshair').forEach((el) => el.classList.add('hidden'));
+}
+
+function setComparison(on) {
+  const active = Boolean(on && S.h);
+  $('#comparison').classList.toggle('hidden', !active);
+  $('#stage').classList.toggle('comparing', active);
+  $('#compare-toggle').setAttribute('aria-pressed', String(active));
+  if (active) drawComparison();
+  requestAnimationFrame(resize);
+}
+
+function comparisonImageRect(cv) {
+  const box = cv.getBoundingClientRect();
+  const scale = Math.min(box.width / S.gw, box.height / S.gh);
+  const w = S.gw * scale, h = S.gh * scale;
+  return { left: box.left + (box.width - w) / 2, top: box.top + (box.height - h) / 2, width: w, height: h };
+}
+
+function showComparisonPoint(u, v, doProbe = false) {
+  const x = (u - 0.5) * S.W, z = (v - 0.5) * S.H;
+  for (const pane of $$('.comparison-pane')) {
+    const cv = pane.querySelector('canvas'), image = comparisonImageRect(cv), outer = pane.getBoundingClientRect();
+    const mark = pane.querySelector('.comparison-crosshair');
+    mark.style.left = `${image.left - outer.left + u * image.width}px`;
+    mark.style.top = `${image.top - outer.top + v * image.height}px`;
+    mark.classList.remove('hidden');
+  }
+  const h = sampleGrid(S.h, x, z);
+  const { r, c } = toGrid(x, z), sa = slopeAt(r, c);
+  const pixel = `${Math.round(u * Math.max(0, S.meta.src_w - 1))}, ${Math.round(v * Math.max(0, S.meta.src_h - 1))}`;
+  const slope = S.meta.units === 'metre' ? `slope ${fmt(sa.slope, 1)}°` : `gradient ${fmt(sa.slope, 3)} / m`;
+  $('#compare-readout').textContent = `Pixel ${pixel} · estimated ${fmt(reportedHeight(h), S.meta.units === 'metre' ? 2 : 3)} ${S.units} · ${slope}`;
+  if (doProbe) {
+    showTab('analyse');
+    S.tool = 'probe'; $$('#tool button').forEach((b) => b.classList.toggle('active', b.dataset.tool === 'probe'));
+    clearTools(); probe(new THREE.Vector3(x, 0, z));
+  }
+}
+
+$$('.comparison-pane canvas').forEach((cv) => {
+  cv.addEventListener('pointermove', (e) => {
+    if (!S.h) return;
+    const image = comparisonImageRect(cv);
+    const u = (e.clientX - image.left) / image.width, v = (e.clientY - image.top) / image.height;
+    if (u < 0 || u > 1 || v < 0 || v > 1) return;
+    showComparisonPoint(u, v);
+  });
+  cv.addEventListener('click', (e) => {
+    if (!S.h) return;
+    const image = comparisonImageRect(cv);
+    const u = (e.clientX - image.left) / image.width, v = (e.clientY - image.top) / image.height;
+    if (u >= 0 && u <= 1 && v >= 0 && v <= 1) showComparisonPoint(u, v, true);
+  });
+});
+
+// ------------------------------------------------------------------ validation panel
+function renderMetrics() {
+  const m = S.meta?.metrics, el = $('#metrics');
+  const warn = S.meta?.backbone === 'heuristic-fallback'
+    ? '<p class="note worse">⚠ Processed with the offline heuristic fallback (depth model weights were not available). Numbers are not representative.</p>' : '';
+  const cal = S.meta?.calibration || {};
+  const calRows = [['Method', cal.method], ['Evidence', cal.evidence_level || (cal.method === 'dem+prior' ? 'approximate' : null)],
+    ['Backbone', S.meta?.backbone], ['Scale source', cal.scale_source],
+    ['Structure scale k', cal.scale_k !== undefined && `${fmt(cal.scale_k, 2)} m / unit`],
+    ['DEM fit r', cal.fit_r !== undefined && fmt(cal.fit_r, 2)],
+    ['DEM coverage', cal.dem_coverage !== undefined && `${fmt(cal.dem_coverage * 100, 1)} %`],
+    ['GCPs used', cal.n_gcp || null],
+    ['GCP fit residual', cal.gcp_residual_rmse_m !== undefined && `${fmt(cal.gcp_residual_rmse_m)} m (in-sample)`],
+    ['GCP leave-one-out', cal.gcp_loo_rmse_m !== undefined && `${fmt(cal.gcp_loo_rmse_m)} m`],
+    ['GCP spatial spread', cal.gcp_spread_fraction !== undefined && `${fmt(cal.gcp_spread_fraction * 100, 1)} %`],
+    ['Note', cal.note]].filter(([, v]) => v);
+  const calHtml = `<h3 style="margin-top:16px">Calibration</h3><div class="kv">${calRows.map(([k, v]) => `<b>${escapeHtml(k)}</b><span>${escapeHtml(v)}</span>`).join('')}</div>`;
+  const calWarning = cal.evidence_level === 'approximate' || cal.method === 'dem+prior'
+    ? '<p class="note">Metric scale uses a scene prior. Treat these heights as approximate until an independent reference confirms them.</p>'
+    : cal.evidence_level === 'provisional-gcp'
+      ? '<p class="note">GCP calibration is provisional: more distributed surveyed points and an independent reference are needed.</p>' : '';
+  if (!m) { el.innerHTML = warn + calWarning + '<p class="muted">No reference supplied for this scene. Upload a reference DSM / LiDAR raster with the image to compute RMSE, MAE and correlation.</p>' + calHtml; return; }
+  const main = m.absolute || m.affine_aligned;
+  const aligned = !m.absolute;
+  const cards = [[aligned ? 'Aligned RMSE' : 'RMSE', fmt(main.rmse), 'm'], [aligned ? 'Aligned MAE' : 'MAE', fmt(main.mae), 'm'], ['Pearson r', fmt(main.r, 3), '']];
+  const rowDefs = [['absolute', 'Our DSM (absolute)'], ['baseline_dem', 'Input DEM only (baseline)'], ['affine_aligned', 'Our DSM, affine-aligned'], ['structure_ndsm', 'Above-ground (nDSM)']];
+  const b = m.baseline_dem;
+  const cls = (k, key, lowerBetter = true) => (!b || k !== 'absolute') ? '' : ((lowerBetter ? m[k][key] < b[key] : m[k][key] > b[key]) ? 'better' : 'worse');
+  const table = `<table class="t"><tr><th></th><th>RMSE</th><th>MAE</th><th>NMAD</th><th>r</th></tr>` +
+    rowDefs.filter(([k]) => m[k]).map(([k, label]) => `<tr><td>${label}</td><td class="${cls(k, 'rmse')}">${fmt(m[k].rmse)}</td><td class="${cls(k, 'mae')}">${fmt(m[k].mae)}</td><td>${fmt(m[k].nmad)}</td><td class="${cls(k, 'r', false)}">${fmt(m[k].r, 3)}</td></tr>`).join('') + '</table>';
+  const land = m.by_landscape || {};
+  const landTable = Object.keys(land).length ? `<h3>Stability across landscapes</h3><table class="t"><tr><th>Class</th><th>Tiles</th><th>RMSE</th><th>MAE</th><th>r</th></tr>` +
+    Object.entries(land).map(([k, v]) => `<tr><td>${k}</td><td>${v.tiles}</td><td>${fmt(v.rmse)}</td><td>${fmt(v.mae)}</td><td>${fmt(v.r, 3)}</td></tr>`).join('') + '</table>' : '';
+  const heights = m.by_height_band || {};
+  const hasBandBaseline = Object.values(heights).some((v) => v.baseline_dem);
+  const heightTable = Object.keys(heights).length ? `<h3>Error by reference height above ground</h3><table class="t"><tr><th>Height band</th><th>Pixels</th><th>Estimate RMSE</th>${hasBandBaseline ? '<th>DEM RMSE</th>' : ''}</tr>` +
+    Object.entries(heights).map(([k, v]) => `<tr><td>${k}</td><td>${v.estimate.n.toLocaleString()}</td><td>${fmt(v.estimate.rmse)} m</td>${hasBandBaseline ? `<td>${fmt(v.baseline_dem?.rmse)} m</td>` : ''}</tr>`).join('') + '</table>' : '';
+  const edgeHtml = m.edge_gradient_rmse !== undefined ? `<h3>Edge detail</h3><div class="kv"><b>Gradient RMSE</b><span>${fmt(m.edge_gradient_rmse, 3)} m/m</span><b>DEM baseline</b><span>${fmt(m.baseline_edge_gradient_rmse, 3)} m/m</span></div>` : '';
+  const acc = `<div class="kv"><b>|error| ≤ 1 m</b><span>${fmt(main.within_1m * 100, 1)} %</span><b>|error| ≤ 2 m</b><span>${fmt(main.within_2m * 100, 1)} %</span><b>|error| ≤ 5 m</b><span>${fmt(main.within_5m * 100, 1)} %</span><b>Bias</b><span>${fmt(main.bias)} m</span></div>`;
+  el.innerHTML = warn + calWarning + (aligned ? '<p class="note">Relative heights are fitted to this reference for shape diagnostics. These values are not operational metric accuracy.</p>' : '') + `<div class="cards">${cards.map(([l, v, u]) => `<div class="card"><div class="v">${v}<small> ${u}</small></div><div class="l">${l}</div></div>`).join('')}</div>` +
+    table + landTable + heightTable + edgeHtml + acc + calHtml +
+    `<p class="note">Switch the surface to <b>Error</b> in Analyse to see where estimates deviate; use <b>Profile</b> to compare cross-sections against the reference.</p>`;
+}
+
+// ------------------------------------------------------------------ UI wiring
+function busy(on, text) { $('#busy').classList.toggle('hidden', !on); if (text) $('#busy-text').textContent = text; }
+function showTab(t) {
+  if (t === 'upload') {
+    $('#help').classList.add('hidden');
+    $('#upload-modal').classList.remove('hidden');
+    $('#upload-close').focus();
+    refreshLocalModel();
+    return;
+  }
+  $('#upload-modal').classList.add('hidden');
+  $$('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === t));
+  $$('.panel').forEach((p) => p.classList.toggle('hidden', p.id !== 'tab-' + t));
+}
+async function refreshLocalModel() {
+  const note = $('#local-model-status');
+  try {
+    const res = await fetch('api/local-model');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const info = await res.json();
+    const select = $('#upload-form').model;
+    const prior = select.value;
+    select.querySelector('option[data-local-model]')?.remove();
+    if (info.ready) {
+      const option = new Option('GAMUS fine-tuned · local prototype', info.path);
+      option.dataset.localModel = 'true';
+      select.add(option);
+      if (prior === info.path) select.value = prior;
+    }
+    note.textContent = info.stage
+      ? `${info.stage}${info.epochs_done ? ` · ${info.epochs_done}/10 epochs complete` : ''}${info.ready ? ' · checkpoint available' : ''}`
+      : info.ready ? 'Local GAMUS checkpoint available.' : 'Use a pretrained backbone or enter a local checkpoint path.';
+  } catch {
+    note.textContent = 'Use a pretrained backbone or enter a local checkpoint path.';
+  }
+}
+$$('.tabs button').forEach((b) => b.onclick = () => showTab(b.dataset.tab));
+$('#import-btn').onclick = () => showTab('upload');
+$('#upload-close').onclick = () => $('#upload-modal').classList.add('hidden');
+$$('[data-close-upload]').forEach((el) => el.onclick = () => $('#upload-modal').classList.add('hidden'));
+$('#library-toggle').onclick = () => $('#app').classList.toggle('library-open');
+function setMode(m) {
+  S.mode = m; $$('#shade-mode button').forEach((b) => b.classList.toggle('active', b.dataset.mode === m));
+  if (S.mesh) applyShading();
+}
+$$('#shade-mode button').forEach((b) => b.onclick = () => setMode(b.dataset.mode));
+$$('#tool button').forEach((b) => b.onclick = () => {
+  S.tool = b.dataset.tool; $$('#tool button').forEach((x) => x.classList.toggle('active', x === b)); clearTools();
+});
+$$('#nav-mode button').forEach((b) => b.onclick = () => setNav(b.dataset.nav));
+$('#exag').oninput = (e) => { S.exag = +e.target.value; $('#exag-v').textContent = S.exag.toFixed(1) + '×'; if (S.mesh) applyHeights(); };
+$('#smooth').oninput = (e) => { S.smoothingM = +e.target.value; $('#smooth-v').textContent = `${S.smoothingM.toFixed(2)} m`; if (S.h) updateRenderHeight(); };
+$('#sun').oninput = (e) => { $('#sun-v').textContent = e.target.value + '°'; setSun(+e.target.value); };
+$('#contours').onchange = (e) => { uniforms.uContourOn.value = e.target.checked ? 1 : 0; };
+$('#contour-int').oninput = (e) => { uniforms.uContourInt.value = Math.max(0.001, (+e.target.value || 0.1) * verticalDisplayFactor()); };
+$('#wire').onchange = (e) => { if (S.mesh) S.mesh.material.wireframe = e.target.checked; };
+$('#reset').onclick = () => S.mesh && resetView();
+$('#topdown').onclick = topDownView;
+$('#compare-toggle').onclick = () => setComparison($('#comparison').classList.contains('hidden'));
+$('#compare-close').onclick = () => setComparison(false);
+$('#fullscreen').onclick = async () => {
+  if (document.fullscreenElement === $('#stage')) await document.exitFullscreen();
+  else await $('#stage').requestFullscreen();
+  requestAnimationFrame(resize);
+};
+document.addEventListener('fullscreenchange', () => requestAnimationFrame(resize));
+$('#help-btn').onclick = () => $('#help').classList.toggle('hidden');
+$('#help-close').onclick = () => $('#help').classList.add('hidden');
+$('#dl-dsm').onclick = () => S.id && (location.href = `api/scenes/${S.id}/dsm`);
+$('#dl-report').onclick = () => S.id && window.open(`api/scenes/${S.id}/report`, '_blank');
+$$('#view-mode button').forEach((b) => b.onclick = () => setViewGeometry(b.dataset.view));
+$('#swipe-toggle').onclick = () => setSwipe(!S.swipeActive);
+let swipeDragging = false;
+const swipeDiv = $('#swipe-divider');
+if (swipeDiv) {
+  swipeDiv.addEventListener('pointerdown', (e) => {
+    swipeDragging = true;
+    swipeDiv.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  window.addEventListener('pointermove', (e) => {
+    if (!swipeDragging) return;
+    const rect = canvas.getBoundingClientRect();
+    const frac = (e.clientX - rect.left) / rect.width;
+    updateSwipePosition(frac);
+  });
+  window.addEventListener('pointerup', () => {
+    swipeDragging = false;
+  });
+}
+$$('#project-stepper [data-tab-target]').forEach((el) => {
+  el.onclick = () => showTab(el.dataset.tabTarget);
+});
+
+function closeExportMenu() { $('#export-menu').classList.add('hidden'); $('#export-menu-btn').setAttribute('aria-expanded', 'false'); }
+function toggleExportMenu() {
+  if (!S.id) return;
+  const open = $('#export-menu').classList.toggle('hidden') === false;
+  $('#export-menu-btn').setAttribute('aria-expanded', String(open));
+}
+$('#dl-dsm-header').onclick = toggleExportMenu;
+$('#export-menu-btn').onclick = toggleExportMenu;
+function saveView() {
+  if (!S.id) return;
+  renderer.render(scene, camera);
+  const out = document.createElement('canvas'); out.width = canvas.width; out.height = canvas.height + 78;
+  const ctx = out.getContext('2d'); ctx.drawImage(canvas, 0, 0);
+  ctx.fillStyle = '#091b29'; ctx.fillRect(0, canvas.height, out.width, 78);
+  ctx.fillStyle = '#e9f4f9'; ctx.font = `600 ${Math.max(20, Math.round(out.width / 72))}px system-ui`;
+  ctx.fillText(`DepthWizard · ${S.meta.input}`, 20, canvas.height + 30);
+  ctx.fillStyle = '#a7c4d4'; ctx.font = `${Math.max(15, Math.round(out.width / 96))}px system-ui`;
+  const provenance = `${S.meta.units === 'metre' ? 'Metric DSM' : 'Relative rDSM'} · ${S.meta.calibration?.method || 'uncalibrated'} · ${S.meta.backbone || 'unknown model'} · ${S.mode} layer · ${S.exag.toFixed(1)}× display Z`;
+  ctx.fillText(provenance, 20, canvas.height + 57, out.width - 40);
+  const a = document.createElement('a'); a.href = out.toDataURL('image/png');
+  a.download = `depthwizard_${S.id}_${S.mode}.png`; a.click();
+}
+$('#shot').onclick = saveView;
+$$('#export-menu [data-export]').forEach((b) => b.onclick = () => {
+  closeExportMenu(); if (!S.id) return;
+  const kind = b.dataset.export;
+  if (kind === 'shot') saveView();
+  else if (kind === 'dsm') location.href = `api/scenes/${S.id}/dsm`;
+  else if (kind === 'report') window.open(`api/scenes/${S.id}/report`, '_blank');
+  else if (kind === 'evidence') location.href = `api/scenes/${S.id}/evidence`;
+  else if (kind === 'glb') location.href = `api/scenes/${S.id}/mesh.glb?resolution=256`;
+  else if (kind === 'obj') location.href = `api/scenes/${S.id}/mesh.obj.zip?resolution=256`;
+});
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest('.header-actions')) closeExportMenu();
+});
+fly.addEventListener('lock', () => $('#fly-hint').textContent = 'WASD move · Q/E down/up · Shift fast · Esc release');
+fly.addEventListener('unlock', () => $('#fly-hint').textContent = 'Click to look around · WASD move · Q/E down/up · Shift fast · Esc release');
+
+addEventListener('keydown', (e) => {
+  if (e.target.matches('input, select, textarea')) return;
+  S.keys[e.code] = true;
+  if (S.nav === 'fly' && ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'Space'].includes(e.code)) { e.preventDefault(); return; }
+  const k = e.key.toLowerCase();
+  if (k === 'o') setNav('orbit'); else if (k === 'f') setNav('fly'); else if (k === 't') setNav('tour');
+  else if (k === 'd') topDownView(); else if (k === 'v') setComparison($('#comparison').classList.contains('hidden'));
+  else if (k === 'r' && S.mesh) resetView(); else if (k === 'h') $('#help').classList.toggle('hidden');
+  else if (k === 'c') { const c = $('#contours'); c.checked = !c.checked; c.onchange({ target: c }); }
+  else if ('1234'.includes(k)) { const m = ['optical', 'height', 'slope', 'error'][+k - 1]; if (m !== 'error' || S.ref) setMode(m); }
+});
+addEventListener('keyup', (e) => { S.keys[e.code] = false; });
+addEventListener('blur', () => { S.keys = {}; });
+
+// scenes list
+async function refreshScenes(selectId) {
+  const list = await (await fetch('api/scenes')).json();
+  const el = $('#scene-list');
+  el.innerHTML = list.length ? '' : '<p class="muted">No scenes yet – use Upload.</p>';
+  for (const s of list) {
+    const d = document.createElement('div'); d.className = 'item'; d.dataset.id = s.id;
+    d.innerHTML = `<img class="scene-thumb" alt=""><button class="scene-select" type="button" aria-pressed="false"><span class="n"></span><span class="m"></span></button><button class="x" type="button" title="Delete">✕</button>`;
+    d.querySelector('.scene-thumb').src = `jobs/${encodeURIComponent(s.id)}/viewer/texture.jpg`;
+    d.querySelector('.n').textContent = s.name;
+    d.querySelector('.n').title = s.name;
+    d.querySelector('.m').textContent = `${s.units === 'metre' ? 'DSM (m)' : 'rDSM'} · ${s.method ?? ''}${s.has_reference ? ' · reference' : ''}`;
+    d.querySelector('.x').setAttribute('aria-label', `Delete ${s.name}`);
+    d.querySelector('.scene-select').onclick = () => { $('#app').classList.remove('library-open'); loadScene(s.id); };
+    d.querySelector('.x').onclick = async (e) => {
+      e.stopPropagation(); if (!confirm(`Delete ${s.name}?`)) return;
+      await fetch(`api/scenes/${s.id}`, { method: 'DELETE' }); refreshScenes();
+    };
+    el.appendChild(d);
+  }
+  $('#scene-count').textContent = list.length;
+  const want = selectId || location.hash.slice(1) || list[0]?.id;
+  if (want && list.some((s) => s.id === want) && want !== S.id) loadScene(want);
+  else $$('#scene-list .item').forEach((x) => {
+    const active = x.dataset.id === S.id;
+    x.classList.toggle('active', active);
+    x.querySelector('.scene-select')?.setAttribute('aria-pressed', String(active));
+  });
+}
+
+// upload
+const form = $('#upload-form'), drop = $('#drop');
+form.image.onchange = () => { $('#drop-text').innerHTML = `<b>${form.image.files[0]?.name ?? 'Drop satellite image'}</b>`; };
+['dragover', 'dragenter'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, () => drop.classList.remove('over')));
+drop.addEventListener('drop', (e) => { e.preventDefault(); form.image.files = e.dataTransfer.files; form.image.onchange(); });
+form.onsubmit = async (e) => {
+  e.preventDefault();
+  const fd = new FormData(form);
+  const customModel = String(fd.get('custom_model') || '').trim();
+  if (customModel) fd.set('model', customModel);
+  fd.delete('custom_model');
+  for (const k of ['dem', 'reference', 'gcp']) if (!form[k].files.length) fd.delete(k);
+  const log = $('#job-log'); log.classList.remove('hidden'); log.textContent = 'Uploading…\n';
+  const btn = form.querySelector('button[type=submit]'); btn.disabled = true;
+  try {
+    const res = await fetch('api/process', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(await res.text());
+    const { id } = await res.json();
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 800));
+      const st = await (await fetch(`api/jobs/${id}`)).json();
+      log.textContent = st.log.join('\n') + (st.state === 'running' ? '\n…' : '');
+      log.scrollTop = log.scrollHeight;
+      if (st.state === 'done') { await refreshScenes(id); showTab('analyse'); break; }
+      if (st.state === 'error') { log.textContent += '\n✕ ' + st.error; break; }
+    }
+  } catch (err) { log.textContent += '\n✕ ' + err.message; }
+  finally { btn.disabled = false; }
+};
+
+// ------------------------------------------------------------------ loop
+function resize() {
+  const r = canvas.getBoundingClientRect();
+  if (r.width < 1 || r.height < 1) return;
+  renderer.setSize(r.width, r.height, false);
+  camera.aspect = r.width / r.height; camera.updateProjectionMatrix();
+  uniforms.uResolution.value.set(r.width, r.height);
+}
+new ResizeObserver(resize).observe(canvas);
+let frames = 0, fpsT = 0, mmT = 0;
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  if (S.mesh) {
+    if (S.nav === 'orbit') { orbit.update(); clampCamera(); }
+    else if (S.nav === 'fly') updateFly(dt);
+    else if (S.nav === 'tour') updateTour(dt);
+    const agl = camera.position.y - (Math.abs(camera.position.x) < S.W / 2 && Math.abs(camera.position.z) < S.H / 2 ? terrainY(camera.position.x, camera.position.z) : 0);
+    $('#hud-cam').textContent = S.meta.units === 'metre' ? `alt ${(agl / S.exag).toFixed(0)} m above surface` : 'relative vertical scale';
+    if ((mmT += dt) > 0.1) { drawMinimap(); mmT = 0; }
+
+    // Rotate north arrow according to camera azimuth
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    const camAngle = Math.atan2(dir.x, -dir.z) * (180 / Math.PI);
+    const arrow = $('#north-arrow');
+    if (arrow) arrow.style.transform = `rotate(${-camAngle}deg)`;
+
+    // Scale bar dynamic calculation
+    const scaleBarLine = $('#scale-bar-line');
+    const scaleBarText = $('#scale-bar-text');
+    if (scaleBarLine && scaleBarText) {
+      const dist = camera.position.distanceTo(orbit.target || new THREE.Vector3());
+      const fovRad = (camera.fov * Math.PI) / 180;
+      const visibleHeightAtDist = 2 * Math.tan(fovRad / 2) * dist;
+      const mPerPixel = visibleHeightAtDist / canvas.clientHeight;
+      const targetPixels = 60;
+      const targetMeters = targetPixels * mPerPixel;
+      const pow10 = Math.pow(10, Math.floor(Math.log10(Math.max(1, targetMeters))));
+      const d = targetMeters / pow10;
+      const nice = d < 1.5 ? 1 : d < 3.5 ? 2 : d < 7.5 ? 5 : 10;
+      const barMeters = nice * pow10;
+      const barPx = Math.max(20, Math.min(150, barMeters / mPerPixel));
+      scaleBarLine.style.width = `${barPx}px`;
+      scaleBarText.textContent = barMeters >= 1000 ? `${(barMeters / 1000).toFixed(1)} km` : `${Math.round(barMeters)} m`;
+    }
+  }
+  renderer.render(scene, camera);
+  frames++; fpsT += dt;
+  if (fpsT > 1) { $('#hud-fps').textContent = `${Math.round(frames / fpsT)} fps`; frames = 0; fpsT = 0; }
+});
+
+refreshScenes().catch(() => { $('#scene-list').innerHTML = '<p class="worse">Server not reachable – start with <code>python run.py</code>.</p>'; });
+if (!localStorage.getItem('dw-help-seen')) { $('#help').classList.remove('hidden'); try { localStorage.setItem('dw-help-seen', '1'); } catch {} }

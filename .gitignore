@@ -1,0 +1,28 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.DS_Store
+
+# Large model weights & training checkpoints
+models/cache/
+checkpoints/
+eval_out/
+output/
+out/
+
+# Large raw datasets (re-downloadable via scripts)
+samples/**/raw/
+samples/quesenbank/raw/
+samples/gamus/raw/
+
+# Temporary and ad-hoc jobs
+data/jobs/20260929-*
+data/jobs/*
+!data/jobs/demo-*
+!data/jobs/dc-*
+!data/jobs/quesenbank-*
+!data/jobs/gamus-*
+

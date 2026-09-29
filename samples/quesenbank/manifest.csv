@@ -1,0 +1,3 @@
+image,reference,dem,scene
+forest_north_rgb.tif,forest_north_reference_dsm.tif,forest_north_dem_30m.tif,forest
+forest_south_rgb.tif,forest_south_reference_dsm.tif,forest_south_dem_30m.tif,forest
