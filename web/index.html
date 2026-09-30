@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#0b1826">
-<title>DepthWizard</title>
+<meta name="theme-color" content="#05080d">
+<title>DepthWizard — Terrain Mission Control</title>
 <link rel="stylesheet" href="style.css?v=20260929-studio-v1">
 <link rel="stylesheet" href="studio.css?v=20260930-mission-studio-v2">
+<link rel="stylesheet" href="mission.css?v=20260930-v9">
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
 </script>
@@ -14,33 +15,20 @@
 <body>
 <div id="app">
   <header id="app-header">
-    <button id="library-toggle" aria-label="Open scenes">☰</button>
     <a class="brand" href="#" aria-label="DepthWizard home">
-      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3 29 27H3L16 3Z"/><path d="m16 11 7 13H9l7-13Z"/></svg></span>
-      <span><b>DepthWizard</b><small>Terrain intelligence studio</small></span>
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none"><path d="M3 20c6-13 28-17 34 0M6 25c5-10 23-14 28-2M9 30c5-7 18-10 23-3M13 34c4-4 12-6 17-3"/><path d="M4 15c10-13 26-13 32-4"/></svg></span>
+      <span><b>DepthWizard</b><small>Single image → 3D surface</small></span>
     </a>
-    <div class="scene-context">
-      <strong id="top-scene-name">Choose a scene</strong>
-      <span id="top-scene-meta">Import an optical image to start a reconstruction</span>
-    </div>
-    <div id="project-stepper" class="project-stepper" aria-label="Project workflow checklist">
-      <span class="step done" data-tab-target="upload" title="Optical sensor input">Input ✓</span>
-      <span class="step-arrow">→</span>
-      <span class="step done" title="Relative monocular depth estimation">Depth ✓</span>
-      <span class="step-arrow">→</span>
-      <span class="step done" title="Scale calibration & datum alignment">Calibration ✓</span>
-      <span class="step-arrow">→</span>
-      <span class="step done" title="Digital Surface Model generated">DSM ✓</span>
-      <span class="step-arrow">→</span>
-      <span class="step done" title="LoD1 3D vector model">3D Model ✓</span>
-      <span class="step-arrow">→</span>
-      <span class="step" id="step-val" data-tab-target="validate" title="Validation vs reference & baseline">Validation</span>
-    </div>
+    <button id="library-toggle" class="scene-picker" type="button" aria-label="Choose scene" aria-expanded="false"><span>Scene</span><strong id="top-scene-name">Choose a scene</strong><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+    <span id="top-scene-meta" class="sr-only">Import an optical image to start a reconstruction</span>
+    <div id="scene-badge" class="scene-badge hidden" role="button" tabindex="0" title="Open calibration evidence"></div>
     <div class="header-actions">
+      <button id="command-open" class="icon-btn" aria-label="Open command palette" title="Search actions (Ctrl+K)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.7"/><path d="m16 16 5 5"/></svg></button>
       <button id="help-btn" class="icon-btn" aria-label="Help" title="Help">?</button>
-      <button id="dl-dsm-header" class="primary compact" disabled><span aria-hidden="true">↓</span> Export</button>
-      <button id="export-menu-btn" class="icon-btn" aria-label="Export options" aria-expanded="false" disabled>⌄</button>
+      <button id="dl-dsm-header" class="compact" aria-label="Open export sheet" title="Export (E)" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 16v4h16v-4"/></svg><span>Export</span></button>
+      <button id="export-menu-btn" class="sr-only" aria-label="Export options" aria-expanded="false" disabled>Export options</button>
       <div id="export-menu" class="export-menu hidden" role="menu" aria-label="Export formats">
+        <div class="export-sheet-head"><div><h2>Export this scene</h2><p>Choose an artifact or take the complete evidence bundle.</p></div><button id="export-sheet-close" type="button" aria-label="Close export sheet">×</button></div>
         <button type="button" data-export="all" role="menuitem">Everything (ZIP) <small>All GeoTIFFs, CityJSON, PLY, GLB, report</small></button>
         <button type="button" data-export="report" role="menuitem">Evidence Report PDF <small>Technical validation dossier</small></button>
         <button type="button" data-export="dsm" role="menuitem">DSM GeoTIFF <small>Original estimated grid</small></button>
@@ -58,6 +46,18 @@
     </div>
   </header>
 
+  <nav id="mode-rail" aria-label="Workspace modes">
+    <div class="rail-main">
+      <button type="button" data-workspace="explore" aria-label="Explore" title="Explore (1)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m15.7 8.3-2.4 5-5 2.4 2.4-5z"/></svg><span>Explore</span></button>
+      <button type="button" data-workspace="measure" aria-label="Measure" title="Measure (2)"><svg viewBox="0 0 24 24"><path d="m4 17 13-13 3 3L7 20zM11 10l3 3M8 13l2 2"/></svg><span>Measure</span></button>
+      <button type="button" data-workspace="disaster" aria-label="Disaster" title="Disaster (3)" class="active"><svg viewBox="0 0 24 24"><path d="M2 8c2.1 0 2.1 2 4.2 2s2.1-2 4.2-2 2.1 2 4.2 2 2.1-2 4.2-2 2.1 2 3.2 2M2 14c2.1 0 2.1 2 4.2 2s2.1-2 4.2-2 2.1 2 4.2 2 2.1-2 4.2-2 2.1 2 3.2 2"/></svg><span>Disaster</span></button>
+      <button type="button" data-workspace="buildings" aria-label="Buildings" title="Buildings (4)"><svg viewBox="0 0 24 24"><path d="M4 21V7l7-3v17M11 9l9-3v15M2 21h20M7 10v2m0 3v2m8-5v2m3-3v2"/></svg><span>Buildings</span></button>
+      <button type="button" data-workspace="calibrate" aria-label="Calibrate" title="Calibrate (5)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 1v3m0 16v3M1 12h3m16 0h3"/></svg><span>Calibrate</span></button>
+      <button type="button" data-workspace="validate" aria-label="Validate" title="Validate (6)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m7.5 12.5 3 3 6-7"/></svg><span>Validate</span></button>
+    </div>
+    <div class="rail-bottom"><button type="button" id="rail-gallery" aria-label="Scene gallery" title="Gallery (G)"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg><span>Gallery</span></button><button type="button" id="rail-import" aria-label="Import image" title="Import image"><svg viewBox="0 0 24 24"><path d="M12 4v16M4 12h16"/></svg><span>Import</span></button></div>
+  </nav>
+
   <aside id="side" aria-label="Scene library">
     <div class="library-heading"><h2>Scene library</h2><span id="scene-count">0</span></div>
     <button id="import-btn" class="import-btn"><span aria-hidden="true">＋</span> Import image</button>
@@ -71,6 +71,8 @@
     <div id="toast-host" class="toast-host" aria-live="polite"></div>
     <canvas id="gl"></canvas>
     <div id="toolbar">
+      <div id="view-pill"></div>
+      <div id="compare-popover" class="hidden"><h3>Compare surfaces</h3><p>Choose one view at a time.</p><div id="compare-actions"></div></div>
       <div class="seg" id="view-mode" aria-label="View geometry mode">
         <button data-view="surface" class="active" title="Full continuous DSM surface mesh">DSM Mesh</button>
         <button data-view="city" id="btn-city-view" title="Fitted flat, plane and gable roof hypotheses on bare-earth terrain">Roof-fit City</button>
@@ -92,7 +94,8 @@
       <button id="present-btn" title="Presentation mode: full-screen scene, big labels, automatic tour (P)">Present</button>
       <button id="fullscreen" class="icon-btn" title="Fullscreen viewer" aria-label="Fullscreen viewer">⛶</button>
     </div>
-    <div id="scene-badge" class="scene-badge hidden"></div>
+    <div id="layer-dock"><div id="layer-legend"></div><div id="layer-dock-actions"></div><button id="dock-more" type="button" title="More surface layers" aria-label="More surface layers">···</button><div id="layer-more-menu"></div></div>
+    <div id="scene-hero" class="scene-hero"><h2 id="hero-title">Choose a scene</h2><div id="hero-stats"></div><span id="hero-caption">Single image → 3D surface</span></div>
     <div id="hud">
       <span id="hud-scene">No scene loaded</span>
       <span id="hud-cam"></span>
@@ -101,7 +104,7 @@
 
     <!-- 3D Swipe Slider Divider -->
     <div id="swipe-divider" class="swipe-divider hidden">
-      <div class="swipe-handle">◀ ▶</div>
+      <div class="swipe-handle"></div>
     </div>
     <div id="swipe-label-left" class="swipe-label left hidden">Input coarse DEM (baseline)</div>
     <div id="swipe-label-right" class="swipe-label right hidden">DepthWizard DSM</div>
@@ -145,17 +148,18 @@
     </section>
     <div id="fly-hint" class="hidden">Click to look around · WASD move · Q/E down/up · Shift fast · Esc release</div>
     <section id="gallery" class="gallery hidden" aria-label="Demo scenes">
-      <div class="gallery-head"><div><strong>RUBIQX-Depth · single image → 3D surface model</strong><span>Pick a scene to explore, or import your own image.</span></div>
+      <div class="gallery-head"><div><strong>One satellite image. A navigable 3D surface.</strong><span>Open a terrain mission or build a new one from optical imagery.</span></div>
         <button id="gallery-close" class="icon-btn" aria-label="Close gallery">×</button></div>
       <div id="gallery-grid" class="gallery-grid"></div>
       <div class="gallery-foot"><button id="gallery-import" class="primary">+ Import your own image</button>
-        <span>Keys: 1–6 layers · T tour · P present · H help</span></div>
+        <span>Keys: 1–6 workspaces · Shift+1–9 layers · T tour · P present · H help</span></div>
     </section>
     <div id="pres-title" class="pres-title hidden"></div>
     <div id="busy" class="hidden"><div class="spinner"></div><span id="busy-text">Loading scene…</span></div>
   </main>
 
   <aside id="inspector" aria-label="Scene analysis">
+    <div id="drawer-head"><div><h1 id="drawer-title">Flood & response</h1><p id="drawer-subtitle">Explore exposure and plan a response</p></div><button id="drawer-toggle" type="button" aria-label="Collapse context drawer" title="Collapse drawer">›</button></div>
     <nav class="tabs" aria-label="Analysis panels">
       <button data-tab="analyse" class="active">Explore</button>
       <button data-tab="validate">Validate</button>
@@ -169,7 +173,7 @@
           <span id="scale-badge" class="badge hidden" style="margin-top:5px; font-size:10px; background:#29495b; padding:2px 6px; border-radius:4px; color:#edf5f9;"></span>
         </div>
       </div>
-      <div class="group">
+      <div class="group" id="surface-group">
         <h3>Surface layer</h3>
         <div class="seg surface-modes" id="shade-mode">
           <button data-mode="optical" class="active">Optical</button>
@@ -213,7 +217,7 @@
           </select></label>
       </div>
 
-      <div class="group">
+      <div class="group" id="measure-group">
         <h3>Measure</h3>
         <div class="seg" id="tool">
           <button data-tool="probe" class="active"><span aria-hidden="true">⌖</span> Probe</button>
@@ -279,7 +283,7 @@
 
 
       <!-- Disaster & Flood Simulation -->
-      <div class="group">
+      <div class="group" id="flood-group">
         <div class="group-heading"><h3>Connected Flood Scenario</h3><span class="experimental">DISASTER SIM</span></div>
         <label class="row">Water elevation <output id="flood-v">—</output>
           <input type="range" id="flood-level" min="0" max="1" step="0.1" value="0"></label>
@@ -310,6 +314,7 @@
             <div class="lbl" title="Screening proxy: flooded buildings × storeys × footprint ÷ 30 m² per person. Not a census count.">People exposed · estimate</div>
           </div>
         </div>
+        <button id="flood-details-toggle" class="details-toggle" type="button" aria-expanded="false">Scenario details ⌄</button>
         <div id="flood-info" class="kv muted" style="margin-top:8px;">Available for metric height scenes.</div>
       </div>
 
@@ -322,9 +327,10 @@
           <button id="relay-tool" type="button" title="Click a tower or drone location in the 3D scene">Comms relay</button>
         </div>
         <div id="mission-result" class="mission-result note">Choose a tool, then click the terrain where prompted.</div>
+        <button id="change-toggle" class="details-toggle" type="button" aria-expanded="false">Change detection ⌄</button>
       </div>
 
-      <div class="group">
+      <div class="group" id="height-limit-group">
         <div class="group-heading"><h3>Height-limit check</h3><span class="experimental">PLANNING</span></div>
         <div class="row">
           <input id="height-limit" type="number" min="1" max="500" step="0.5" value="15" aria-label="Height limit in metres" style="width:6em">
@@ -335,7 +341,7 @@
         <p class="note" id="height-limit-info">Highlights LoD1 buildings taller than a planning limit (metric scenes).</p>
       </div>
 
-      <div class="group">
+      <div class="group" id="volume-group">
         <h3>Cut / fill</h3>
         <p class="note" id="volume-info">Load a scene with a reference DSM to compare surfaces.</p>
       </div>
@@ -355,6 +361,12 @@
       <div id="metrics"><p class="muted">Upload a reference DSM with the image to see RMSE, MAE and correlation here.</p></div>
     </section>
   </aside>
+  <button id="drawer-reopen" type="button" aria-label="Open context drawer" title="Open tools">‹</button>
+
+  <div id="command-palette" class="command-palette hidden" role="dialog" aria-modal="true" aria-label="Search actions">
+    <div class="command-backdrop" data-close-command></div>
+    <div class="command-box"><div class="command-input-row"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg><input id="command-input" type="search" placeholder="Search actions, scenes, exports…" autocomplete="off" aria-label="Search actions"><kbd>Esc</kbd></div><div id="command-results" role="listbox"></div><p>Try “flood”, “topo”, “export GLB” or a scene name.</p></div>
+  </div>
 
   <div id="upload-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="upload-title">
     <div class="modal-backdrop" data-close-upload></div>
@@ -406,11 +418,11 @@
       <tr><td>2D map</td><td>Open beside a georeferenced scene; click inside the footprint to fly there</td></tr>
       <tr><td>Mission</td><td>Choose a flood source and level, then click to plan a route or place a relay</td></tr>
       <tr><td>Time / VR</td><td>Time slider previews lighting; VR needs a compatible headset and secure browser</td></tr>
-      <tr><td>Keys</td><td>O orbit · F fly · T tour · D top down · V compare · R reset · 1–4 surface mode · C contours · H help</td></tr></table>
+      <tr><td>Keys</td><td>1–6 workspaces · Shift+1–9 layers · O orbit · F fly · T tour · D top down · V compare · R reset · G gallery · E export · Ctrl+K search · H help</td></tr></table>
     <p class="muted">The camera stays above terrain in Fly mode.</p>
     <button id="help-close" class="primary">Got it</button>
   </div>
 </div>
-<script type="module" src="app.js?v=20260930-mission-studio-v2"></script>
+<script type="module" src="app.js?v=20260930-mission-studio-v7"></script>
 </body>
 </html>

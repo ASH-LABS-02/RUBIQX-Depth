@@ -352,9 +352,10 @@ function applyShading() {
   // Topo turns on index contours at an automatic interval; other modes restore the user's choice.
   if (topo) {
     const relief = (pct(S.renderH || S.h, 0.98) - pct(S.renderH || S.h, 0.02)) / verticalDisplayFactor();
-    const step = niceStep(Math.max(relief, 1e-6) / 14);
+    const step = S.topoManualStep || niceStep(Math.max(relief, 1e-6) / 14);
     uniforms.uContourOn.value = 1; uniforms.uContourInt.value = step * verticalDisplayFactor();
     S.topoStep = step;
+    if (!S.topoManualStep) $('#contour-int').value = String(step);
   } else {
     uniforms.uContourOn.value = $('#contours').checked ? 1 : 0;
     uniforms.uContourInt.value = Math.max(0.001, (+$('#contour-int').value || 0.1) * verticalDisplayFactor());
@@ -369,8 +370,7 @@ function applyShading() {
       if (S.mode === 'topogray') { const g = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; c = [g, g, g]; }
       col.array[i * 3] = c[0]; col.array[i * 3 + 1] = c[1]; col.array[i * 3 + 2] = c[2];
     }
-    legend = { name: 'topo', lo: reportedHeight(lo), hi: reportedHeight(hi),
-      unit: `${S.units} · contours every ${fmt(S.topoStep, S.topoStep < 1 ? 2 : 0)} ${S.units}, bold every 5th` };
+    legend = { name: 'topo', lo: reportedHeight(lo), hi: reportedHeight(hi), unit: S.units };
   } else if (S.mode === 'hazard') {
     mat.map = null;
     const counts = [0, 0, 0];
@@ -414,8 +414,12 @@ function applyShading() {
       vals = S.viewshed; lo = 0; hi = 1; legend = { name: 'viewshed', lo: 0, hi: 1, unit: 'visible from observer (yellow)' };
     } else if (S.mode === 'error' && S.ref) {
       for (let i = 0; i < n; i++) vals[i] = S.h[i] - S.ref[i];
-      const abs = vals.map(Math.abs); const e = Math.max(0.5, pct(abs, 0.95));
-      lo = -e; hi = e; legend = { name, lo, hi, unit: 'm (est − ref)' };
+      // A fixed, interpretable metric range keeps outlier pixels from washing
+      // out the useful signed-error detail. Values beyond it saturate.
+      const e = S.meta?.units === 'metre' ? 20 : Math.max(0.5, pct(vals.map(Math.abs), 0.95));
+      lo = -e; hi = e; legend = { name, lo, hi, unit: S.meta?.units === 'metre'
+        ? 'm (est − ref; colours saturate beyond ±20 m)'
+        : 'relative units (est − ref)' };
     }
     for (let i = 0; i < n; i++) {
       const c = ramp(name, (vals[i] - lo) / (hi - lo || 1));
@@ -430,8 +434,11 @@ function applyShading() {
     requestRender();
     return;
   }
+  const errorTicks = S.mode === 'error' && legend;
   L.innerHTML = legend ? `<div class="bar" style="background:${cssRamp(legend.name)}"></div>
-    <div class="ticks"><span>${fmt(legend.lo, 1)}</span><span>${legend.unit}</span><span>${fmt(legend.hi, 1)}</span></div>` : '';
+    ${errorTicks ? `<div class="ticks error-ticks"><span>${fmt(legend.lo, 0)}${S.meta?.units === 'metre' ? ' m' : ''}</span><span>0</span><span>+${fmt(legend.hi, 0)}${S.meta?.units === 'metre' ? ' m' : ''}</span></div>
+      <p class="legend-note">Estimated − reference · colours clip beyond ±${fmt(legend.hi, 0)} ${S.meta?.units === 'metre' ? 'm' : 'relative units'}</p>`
+      : `<div class="ticks"><span>${fmt(legend.lo, 1)}</span><span>${legend.unit}</span><span>${fmt(legend.hi, 1)}</span></div>`}` : '';
 }
 
 function updateAnalysisTools() {
@@ -478,6 +485,9 @@ function updateAnalysisTools() {
       return total + (b ? Math.max(0, b.area_m2 || 0) * Math.max(1, b.storeys || Math.round((b.height_m || 3) / 3)) / FLOOR_AREA_PER_PERSON_M2 : 0);
     }, 0);
     $('#flood-population').textContent = S.floodActive ? `≈${Math.round(people).toLocaleString()}` : '—';
+    S.floodAreaHa = S.floodActive ? area / 1e4 : 0;
+    S.floodPeople = S.floodActive ? Math.round(people) : 0;
+    S.floodBuildings = S.floodActive ? hit.length : 0;
     updateFloodBuildingColors(new Set(hit.map((x) => x.id)));
     updateSceneSummary(hit.length);
     const srcTxt = S.floodSource === 'plane' ? 'every cell below the level (no connectivity)' : S.floodSource === 'point' ? 'spreading from the clicked source' : 'entering from the lowest scene edge';
@@ -505,16 +515,28 @@ function updateAnalysisTools() {
 $('#flood-level').addEventListener('input', () => { S.floodActive = true; updateAnalysisTools(); });
 function floodedBuildings(level) {
   const list = S.buildings?.buildings; if (!list || !S.floodMask) return [];
-  const out = [], cw = S.W / S.gw;
+  const out = [];
+  // Test the actual polygon against the displayed inundation grid. A square
+  // around its centre over-counted buildings beside narrow flooded streets.
   for (const b of list) {
-    const c = Math.round((b.center[0] / S.W + 0.5) * (S.gw - 1)), r = Math.round((b.center[1] / S.H + 0.5) * (S.gh - 1));
-    const rad = Math.max(2, Math.round(Math.sqrt(b.area_m2) / cw / 2) + 2);
-    let wet = false;
-    for (let dr = -rad; dr <= rad && !wet; dr++) for (let dc = -rad; dc <= rad && !wet; dc++) {
-      const rr = r + dr, cc = c + dc;
-      if (rr >= 0 && rr < S.gh && cc >= 0 && cc < S.gw && S.floodMask[rr * S.gw + cc]) wet = true;
+    const ring = b.polygon_uv;
+    if (!ring?.length) continue;
+    const x0 = Math.max(0, Math.floor(Math.min(...ring.map(([u]) => u)) * (S.gw - 1)));
+    const x1 = Math.min(S.gw - 1, Math.ceil(Math.max(...ring.map(([u]) => u)) * (S.gw - 1)));
+    const y0 = Math.max(0, Math.floor(Math.min(...ring.map(([,v]) => v)) * (S.gh - 1)));
+    const y1 = Math.min(S.gh - 1, Math.ceil(Math.max(...ring.map(([,v]) => v)) * (S.gh - 1)));
+    let footprint = 0, wet = 0;
+    for (let r = y0; r <= y1; r++) for (let c = x0; c <= x1; c++) {
+      const u = (c + .5) / S.gw, v = (r + .5) / S.gh;
+      let inside = false;
+      for (let j = 0, k = ring.length - 1; j < ring.length; k = j++) {
+        const [uj, vj] = ring[j], [uk, vk] = ring[k];
+        if ((vj > v) !== (vk > v) && u < (uk - uj) * (v - vj) / (vk - vj) + uj) inside = !inside;
+      }
+      if (inside) { footprint++; if (S.floodMask[r * S.gw + c]) wet++; }
     }
-    if (wet && level > b.ground_elevation_m) out.push({ id: b.id, depth: level - b.ground_elevation_m });
+    if (footprint && wet / footprint >= .05 && level > b.ground_elevation_m)
+      out.push({ id: b.id, depth: level - b.ground_elevation_m });
   }
   return out;
 }
@@ -773,6 +795,7 @@ async function loadScene(id) {
     if (!ref && S.mode === 'error') setMode('optical');
     $('#contour-unit').textContent = meta.units === 'metre' ? 'm' : 'rel';
     $('#contour-int').value = meta.units === 'metre' ? '5' : '0.1';
+    S.topoManualStep = null;
     $('#contour-int').step = meta.units === 'metre' ? '0.5' : '0.01';
     uniforms.uContourInt.value = +$('#contour-int').value * verticalDisplayFactor();
     $('#hud-scene').textContent = `${meta.input} · ${meta.units === 'metre' ? 'absolute DSM' : 'relative rDSM'} · ${meta.calibration?.method ?? ''}`;
@@ -787,10 +810,10 @@ async function loadScene(id) {
     $('#dl-dsm-header').disabled = false;
     $('#export-menu-btn').disabled = false;
     const cal = meta.calibration || {};
-    const evidence = meta.units === 'metre' ? `${evidenceLevel ? `${evidenceLevel} evidence · ` : ''}${cal.method || 'calibrated'}${cal.fit_r !== undefined && Number.isFinite(cal.fit_r) ? ` · DEM fit r ${fmt(cal.fit_r, 2)}` : ''}` : 'relative height · no vertical datum';
+    const evidence = meta.units === 'metre' ? `${evidenceLevel || 'unverified'} · ${cal.method || 'calibrated'}` : 'relative height';
     const badge = $('#scene-badge');
-    const label = document.createElement('strong'); label.textContent = inputDem ? 'Input DEM (not estimated)' : meta.units === 'metre' ? (provisional ? 'Provisional DSM' : 'Metric scene') : 'Relative scene';
-    badge.replaceChildren(label, document.createTextNode(` · ${evidence}`));
+    const label = document.createElement('strong'); label.textContent = inputDem ? 'Input DEM · no estimate' : meta.units === 'metre' ? (provisional ? 'Approximate evidence' : 'Measured evidence') : 'Relative scene';
+    badge.replaceChildren(label, document.createTextNode(` · ${cal.method || evidence}`));
     badge.dataset.evidence = evidenceLevel;
     badge.classList.remove('hidden');
 
@@ -804,9 +827,12 @@ async function loadScene(id) {
     });
     $('#model-swipe-toggle').disabled = !String(meta.backbone || '').toLowerCase().includes('gamus');
     renderMetrics();
+    renderBuildingList();
     drawMinimap();
     drawComparison();
     updateSceneSummary();
+    renderLayerPreviews();
+    setWorkspace(meta.units === 'metre' ? 'disaster' : 'explore');
     updateMapAvailability();
     updateMissionAvailability();
     currentAnchors = (meta.height_anchor?.anchors || []).map((a) => {
@@ -827,8 +853,9 @@ function resetView() {
   setNav('orbit');
   camera.up.set(0, 1, 0);
   const cy = worldY((S.hmin + S.hmax) / 2);
-  orbit.target.set(0, cy, 0);
-  camera.position.set(0, cy + S.extent * 0.95, S.extent * 0.92);
+  const shift = innerWidth > 860 ? S.extent * 0.10 : 0;
+  orbit.target.set(shift, cy, 0);
+  camera.position.set(shift, cy + S.extent * 0.73, S.extent * 0.73);
   orbit.minDistance = S.extent * 0.01; orbit.maxDistance = S.extent * 4;
   orbit.update();
 }
@@ -1037,6 +1064,7 @@ function clearBuildingSelection() {
 }
 
 function selectBuilding(mesh) {
+  setWorkspace('buildings');
   clearBuildingSelection();
   S.selectedMesh = mesh;
   if (Array.isArray(mesh.material) && mesh.material[1]?.emissive) {
@@ -1198,6 +1226,7 @@ function setSwipe(on, kind = 'dem') {
   $('#model-swipe-toggle')?.setAttribute('aria-pressed', String(S.swipeActive && kind === 'model'));
   $('#swipe-toggle')?.setAttribute('aria-pressed', String(S.swipeActive && kind === 'dem'));
   $('#swipe-divider')?.classList.toggle('hidden', !S.swipeActive);
+  $('#swipe-divider').dataset.compare = kind;
   $('#swipe-label-left')?.classList.toggle('hidden', !S.swipeActive);
   $('#swipe-label-right')?.classList.toggle('hidden', !S.swipeActive);
   $('#model-compare-note')?.classList.toggle('hidden', !(S.swipeActive && kind === 'model'));
@@ -1336,6 +1365,36 @@ function probe(point) {
   else rows.push(['Local x, y', `${fmt(x + S.W / 2, 1)}, ${fmt(z + S.H / 2, 1)} m`]);
   $('#probe-info').classList.remove('muted');
   $('#probe-info').innerHTML = rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
+  const hud = $('#hover-hud');
+  hud.innerHTML = rows.slice(0, 6).map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
+  hud.classList.add('pinned'); hud.classList.remove('hidden');
+  placeHoverHud(hud, (S.lastPointer?.x ?? 98) - 16, (S.lastPointer?.y ?? 90) - 16);
+  S.hudPinned = true;
+}
+
+function placeHoverHud(hud, pointerX, pointerY) {
+  const stage = $('#stage'), stageRect = stage.getBoundingClientRect();
+  hud.classList.remove('hidden');
+  const width = hud.offsetWidth || 250, height = hud.offsetHeight || 170, pad = 10;
+  const clamp = (n, max) => Math.max(pad, Math.min(n, Math.max(pad, max - pad)));
+  const obstacles = ['#mode-rail', '#scene-hero', '#layer-dock', '#toolbar', '#layer-legend',
+    '#model-compare-note', '#swipe-label-left', '#swipe-label-right', '#inspector']
+    .map((selector) => $(selector)?.getBoundingClientRect())
+    .filter((r) => r && r.width && r.height)
+    .map((r) => ({ left: r.left - stageRect.left - pad, top: r.top - stageRect.top - pad,
+      right: r.right - stageRect.left + pad, bottom: r.bottom - stageRect.top + pad }));
+  const candidates = [
+    [pointerX + 16, pointerY + 16], [pointerX - width - 16, pointerY + 16],
+    [pointerX + 16, pointerY - height - 16], [pointerX - width - 16, pointerY - height - 16],
+    [stage.clientWidth - width - pad, 80], [pad, 80],
+  ];
+  const placed = candidates.map(([x, y]) => {
+    x = clamp(x, stage.clientWidth - width); y = clamp(y, stage.clientHeight - height);
+    const overlap = obstacles.reduce((sum, r) => sum + Math.max(0, Math.min(x + width, r.right) - Math.max(x, r.left))
+      * Math.max(0, Math.min(y + height, r.bottom) - Math.max(y, r.top)), 0);
+    return { x, y, score: overlap * 20 + Math.hypot(x - pointerX, y - pointerY) };
+  }).sort((a, b) => a.score - b.score)[0];
+  hud.style.transform = `translate(${placed.x}px, ${placed.y}px)`;
 }
 
 function drawProfileLine() {
@@ -1396,6 +1455,9 @@ function profile(point) {
 }
 
 function clearTools() {
+  S.hudPinned = false;
+  $('#hover-hud').classList.remove('pinned');
+  $('#hover-hud').classList.add('hidden');
   if (S.marker) { scene.remove(S.marker); S.marker = null; }
   if (S.profileLine) { scene.remove(S.profileLine); S.profileLine = null; }
   S.profilePts = [];
@@ -1414,6 +1476,8 @@ canvas.addEventListener('pointerup', (e) => {
   if (S.nav === 'fly') { if (!fly.isLocked) fly.lock(); return; }
   if (S.nav === 'tour') { setNav('orbit'); return; }
   if (moved > 4 || e.button !== 0) return;
+  const stageRect = $('#stage').getBoundingClientRect();
+  S.lastPointer = { x: e.clientX - stageRect.left + 16, y: e.clientY - stageRect.top + 16 };
   const rect = canvas.getBoundingClientRect();
   const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
 
@@ -1446,15 +1510,17 @@ canvas.addEventListener('pointerup', (e) => {
 });
 
 let hoverPending = null;
-canvas.addEventListener('pointerleave', () => $('#hover-hud').classList.add('hidden'));
+canvas.addEventListener('pointerleave', () => { if (!S.hudPinned) $('#hover-hud').classList.add('hidden'); });
 canvas.addEventListener('pointermove', (e) => {
+  const sr = $('#stage').getBoundingClientRect(); S.lastPointer = { x: e.clientX - sr.left + 16, y: e.clientY - sr.top + 16 };
+  if (S.hudPinned) return;
   if (!S.mesh) return;
   if (hoverPending) { hoverPending = e; return; }       // one raycast per frame at most
   hoverPending = e;
   requestAnimationFrame(() => { const ev = hoverPending; hoverPending = null; hoverUpdate(ev); });
 });
 function hoverUpdate(e) {
-  if (!S.mesh || !e) return;
+  if (!S.mesh || !e || S.hudPinned) return;
   const rect = canvas.getBoundingClientRect();
   const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
   const hit = raycastFrom(ndc);
@@ -1498,11 +1564,7 @@ function hoverUpdate(e) {
       if (bldg) rows.push(['Building', `#${bldg.id} · ${fmt(bldg.height_m, 1)} ${metric ? 'm' : ''}${bldg.storeys ? ` · ${bldg.storeys} fl` : ''}`]);
       hud.innerHTML = rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
       const sr = $('#stage').getBoundingClientRect();
-      let left = e.clientX - sr.left + 16, top = e.clientY - sr.top + 16;
-      if (left + 230 > sr.width) left -= 250;
-      if (top + 160 > sr.height) top -= 176;
-      hud.style.transform = `translate(${left}px, ${top}px)`;
-      hud.classList.remove('hidden');
+      placeHoverHud(hud, e.clientX - sr.left, e.clientY - sr.top);
     } else hud.classList.add('hidden');
   } else $('#hover-hud').classList.add('hidden');
 }
@@ -1665,8 +1727,11 @@ function renderMetrics() {
   const main = m.absolute || m.affine_aligned;
   const aligned = !m.absolute;
   const cards = [[aligned ? 'Aligned RMSE' : 'RMSE', fmt(main.rmse), 'm'], [aligned ? 'Aligned MAE' : 'MAE', fmt(main.mae), 'm'], ['Pearson r', fmt(main.r, 3), '']];
-  const rowDefs = [['absolute', 'DepthWizard DSM (blind)'], ['baseline_dem', 'Input DEM only (baseline)'], ['aggregated_30m', 'DSM averaged to 30 m'], ['structure_ndsm', 'Above-ground (nDSM)'], ['buildings', 'Per-building roof height'], ['affine_aligned', 'Shape only (fitted to reference)']];
+  const heldOutReference = ['dc-glover-park', 'dc-capitol-hill'].includes(S.id);
+  const rowDefs = [['absolute', heldOutReference ? 'DepthWizard DSM (blind)' : 'DepthWizard DSM'], ['baseline_dem', 'Input DEM only (baseline)'], ['aggregated_30m', 'DSM averaged to 30 m'], ['structure_ndsm', 'Above-ground (nDSM)'], ['buildings', 'Per-building roof height'], ['affine_aligned', 'Shape only (fitted to reference)']];
   const b = m.baseline_dem;
+  const deltaPct = b && main?.rmse && b.rmse ? 100 * (b.rmse - main.rmse) / b.rmse : null;
+  const baselineHtml = deltaPct === null ? '' : `<div class="validation-baseline ${deltaPct < 0 ? 'regressed' : ''}"><strong>${deltaPct >= 0 ? '↓' : '↑'} ${fmt(Math.abs(deltaPct), 1)}% RMSE ${deltaPct >= 0 ? 'improvement' : 'increase'}</strong><span>Estimated DSM ${fmt(main.rmse)} m vs input DEM ${fmt(b.rmse)} m</span></div>`;
   const cls = (k, key, lowerBetter = true) => (!b || k !== 'absolute') ? '' : ((lowerBetter ? m[k][key] < b[key] : m[k][key] > b[key]) ? 'better' : 'worse');
   const table = `<table class="t"><tr><th></th><th>RMSE</th><th>MAE</th><th>NMAD</th><th>r</th></tr>` +
     rowDefs.filter(([k]) => m[k]).map(([k, label]) => `<tr><td>${label}</td><td class="${cls(k, 'rmse')}">${fmt(m[k].rmse)}</td><td class="${cls(k, 'mae')}">${fmt(m[k].mae)}</td><td>${fmt(m[k].nmad)}</td><td class="${cls(k, 'r', false)}">${fmt(m[k].r, 3)}</td></tr>`).join('') + '</table>';
@@ -1679,11 +1744,12 @@ function renderMetrics() {
     Object.entries(heights).map(([k, v]) => `<tr><td>${k}</td><td>${v.estimate.n.toLocaleString()}</td><td>${fmt(v.estimate.rmse)} m</td>${hasBandBaseline ? `<td>${fmt(v.baseline_dem?.rmse)} m</td>` : ''}</tr>`).join('') + '</table>' : '';
   const edgeHtml = m.edge_gradient_rmse !== undefined ? `<h3>Edge detail</h3><div class="kv"><b>Gradient RMSE</b><span>${fmt(m.edge_gradient_rmse, 3)} m/m</span><b>DEM baseline</b><span>${fmt(m.baseline_edge_gradient_rmse, 3)} m/m</span></div>` : '';
   const acc = `<div class="kv"><b>|error| ≤ 1 m</b><span>${fmt(main.within_1m * 100, 1)} %</span><b>|error| ≤ 2 m</b><span>${fmt(main.within_2m * 100, 1)} %</span><b>|error| ≤ 5 m</b><span>${fmt(main.within_5m * 100, 1)} %</span><b>Bias</b><span>${fmt(main.bias)} m</span></div>`;
-  el.innerHTML = warn + calWarning + (aligned ? '<p class="note">Relative heights are fitted to this reference for shape diagnostics. These values are not operational metric accuracy.</p>' : '') + `<div class="cards">${cards.map(([l, v, u]) => `<div class="card"><div class="v">${v}<small> ${u}</small></div><div class="l">${l}</div></div>`).join('')}</div>` +
-    table + (m.buildings ? `<p class="note">Per-building: ${m.buildings.n} footprints · median roof ${fmt(m.buildings.est_median, 1)} m estimated vs ${fmt(m.buildings.ref_median, 1)} m reference.</p>` : '') +
+  el.innerHTML = warn + calWarning + (aligned ? '<p class="note">Relative heights are fitted to this reference for shape diagnostics. These values are not operational metric accuracy.</p>' : '') + `<div class="cards">${cards.map(([l, v, u]) => `<div class="card"><div class="v">${v}<small> ${u}</small></div><div class="l">${l}</div></div>`).join('')}</div>` + baselineHtml +
     (S.meta.validation_plot ? `<h3>Estimated vs reference</h3><div class="charts">${scatterSvg(S.meta.validation_plot, S.meta.units === 'metre' ? 'm' : 'rel')}${histSvg(S.meta.validation_plot)}</div>` : '') +
-    landTable + heightTable + edgeHtml + acc + calHtml +
-    `<p class="note">Switch the surface to <b>Error</b> in Analyse to see where estimates deviate; use <b>Profile</b> to compare cross-sections against the reference.</p>`;
+    `<details class="validation-details"><summary>Detailed accuracy breakdown</summary>` + table +
+    (m.buildings ? `<p class="note">Per-building: ${m.buildings.n} footprints · median roof ${fmt(m.buildings.est_median, 1)} m estimated vs ${fmt(m.buildings.ref_median, 1)} m reference.</p>` : '') +
+    landTable + heightTable + edgeHtml + acc + calHtml + `</details>` +
+    `<p class="note">The Truth layer colours signed error against the supplied reference; Profile compares a selected cross-section.</p>`;
 }
 
 // ------------------------------------------------------------------ UI wiring
@@ -1693,6 +1759,7 @@ function showTab(t) {
     $('#help').classList.add('hidden');
     $('#upload-modal').classList.remove('hidden');
     $('#upload-close').focus();
+    showImportStep(1);
     refreshLocalModel();
     return;
   }
@@ -1728,7 +1795,9 @@ $('#upload-close').onclick = () => $('#upload-modal').classList.add('hidden');
 $$('[data-close-upload]').forEach((el) => el.onclick = () => $('#upload-modal').classList.add('hidden'));
 $('#library-toggle').onclick = () => $('#app').classList.toggle('library-open');
 function setMode(m) {
-  S.mode = m; $$('#shade-mode button').forEach((b) => b.classList.toggle('active', b.dataset.mode === m));
+  if (S.swipeActive && S.swipeKind === 'model' && m !== 'optical') setSwipe(false, 'model');
+  S.mode = m; $$('#layer-dock button[data-mode]').forEach((b) => b.classList.toggle('active', b.dataset.mode === m));
+  $('#layer-legend')?.classList.toggle('topo-active', ['topo', 'topogray'].includes(m));
   if (S.mesh) applyShading();
 }
 $$('#shade-mode button').forEach((b) => b.onclick = () => setMode(b.dataset.mode));
@@ -1746,7 +1815,11 @@ $('#exag').oninput = (e) => {
 $('#smooth').oninput = (e) => { S.smoothingM = +e.target.value; $('#smooth-v').textContent = `${S.smoothingM.toFixed(2)} m`; if (S.h) updateRenderHeight(); };
 $('#sun').oninput = (e) => { $('#sun-v').textContent = e.target.value + '° (manual)'; $('#time-v').textContent = 'manual'; setSun(+e.target.value); };
 $('#contours').onchange = (e) => { uniforms.uContourOn.value = e.target.checked ? 1 : 0; };
-$('#contour-int').oninput = (e) => { uniforms.uContourInt.value = Math.max(0.001, (+e.target.value || 0.1) * verticalDisplayFactor()); };
+$('#contour-int').oninput = (e) => {
+  const step = Math.max(0.001, +e.target.value || 0.1);
+  if (S.mode === 'topo' || S.mode === 'topogray') { S.topoManualStep = step; S.topoStep = step; }
+  uniforms.uContourInt.value = step * verticalDisplayFactor();
+};
 $('#wire').onchange = (e) => { if (S.mesh) S.mesh.material.wireframe = e.target.checked; };
 $('#despike').onchange = () => { if (S.h) updateRenderHeight(); };
 $('#exposure').oninput = (e) => { renderer.toneMappingExposure = +e.target.value; $('#exposure-v').textContent = (+e.target.value).toFixed(2); };
@@ -1856,18 +1929,24 @@ fly.addEventListener('lock', () => $('#fly-hint').textContent = 'WASD move · Q/
 fly.addEventListener('unlock', () => $('#fly-hint').textContent = 'Click to look around · WASD move · Q/E down/up · Shift fast · Esc release');
 
 addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openCommandPalette(); return; }
   if (e.target.matches('input, select, textarea')) return;
+  if (e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+    const m = ['optical', 'topo', 'height', 'hazard', 'ndsm', 'confidence', 'landslide', 'change', 'error'][Number(e.code.slice(-1)) - 1];
+    const b = $(`#layer-dock button[data-mode="${m}"]`); if (b && !b.disabled && !b.classList.contains('layer-unavailable')) setMode(m);
+    e.preventDefault(); return;
+  }
   S.keys[e.code] = true;
   if (S.nav === 'fly' && ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'Space'].includes(e.code)) { e.preventDefault(); return; }
   const k = e.key.toLowerCase();
   if (k === 'o') setNav('orbit'); else if (k === 'f') setNav('fly'); else if (k === 't') setNav('tour');
   else if (k === 'd') topDownView(); else if (k === 'v') setComparison($('#comparison').classList.contains('hidden'));
   else if (k === 'r' && S.mesh) resetView(); else if (k === 'h') $('#help').classList.toggle('hidden');
-  else if (k === 'c') { const c = $('#contours'); c.checked = !c.checked; c.onchange({ target: c }); }
-  else if ('123456'.includes(k)) {
-    const m = ['optical', 'height', 'slope', 'error', 'topo', 'hazard'][+k - 1];
-    if ((m !== 'error' || S.ref) && (m !== 'hazard' || S.meta?.units === 'metre')) setMode(m);
-  }
+  else if (k === 'c' && S.mesh) setViewGeometry(S.viewGeometry === 'city' ? 'surface' : 'city');
+  else if (k === 's' && S.mesh) $('#swipe-toggle').click();
+  else if (k === 'e') $('#dl-dsm-header').click();
+  else if (k === 'g') openGallery();
+  else if ('123456'.includes(k)) setWorkspace(['explore', 'measure', 'disaster', 'buildings', 'calibrate', 'validate'][+k - 1]);
   else if (k === 'p') window.togglePresentation?.();
 });
 addEventListener('keyup', (e) => { S.keys[e.code] = false; });
@@ -1905,7 +1984,7 @@ async function refreshScenes(selectId, forceFetch = true) {
 
 // upload
 const form = $('#upload-form'), drop = $('#drop');
-form.image.onchange = () => { $('#drop-text').innerHTML = `<b>${form.image.files[0]?.name ?? 'Drop satellite image'}</b>`; };
+form.image.onchange = () => { $('#drop-text').innerHTML = `<b>${escapeHtml(form.image.files[0]?.name ?? 'Drop satellite image')}</b>`; refreshImportPreview(); };
 ['dragover', 'dragenter'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, () => drop.classList.remove('over')));
 drop.addEventListener('drop', (e) => { e.preventDefault(); form.image.files = e.dataTransfer.files; form.image.onchange(); });
@@ -2205,6 +2284,7 @@ function updateSceneSummary(floodCount = 0) {
   const flood = S.floodActive ? ` · ${floodCount} buildings affected at ${fmt(+$('#flood-level').value, 1)} m` : '';
   el.innerHTML = `<strong>Scene summary</strong> · ${list.length} buildings${list.length ? ` · tallest ${fmt(tallest, 1)} ${S.units}` : ''}${flood} · ${quality} building confidence · ${mode}`;
   el.classList.remove('hidden');
+  updateMissionHud();
 }
 
 const mapCanvas = $('#map-canvas'), mapCtx = mapCanvas.getContext('2d');
@@ -2343,6 +2423,7 @@ async function openModelComparison() {
     $('#model-compare-note').textContent = Number.isFinite(baselineRmse) && Number.isFinite(oursRmse)
       ? `Same optical image and reference · RMSE: pretrained ${fmt(baselineRmse, 2)} m · GAMUS ${fmt(oursRmse, 2)} m`
       : 'Same optical image · each model retains its own calibration · visual comparison only without a reference DSM';
+    setMode('optical');
     setSwipe(true, 'model');
   } catch (e) {
     $('#model-compare-note').textContent = `Model comparison unavailable: ${e.message}`;
@@ -2606,25 +2687,46 @@ $('#gcp-reset').onclick = async () => {
 
 // first-run demo gallery
 async function openGallery() {
+  if ($('#gallery').classList.contains('hidden')) {
+    S.galleryPrevNav = S.nav;
+    if (S.mesh && !matchMedia('(prefers-reduced-motion: reduce)').matches) setNav('tour');
+  }
   const list = await fetchSceneList(false);
   const grid = $('#gallery-grid'); grid.innerHTML = '';
-  for (const sc of list) {
+  const featured = ['dc-glover-park','dc-capitol-hill','quesenbank-south-calibrated-v2','gamus-nyc','dc-glover-post','forest-north'];
+  const picks = featured.map((id) => list.find((sc) => sc.id === id)).filter(Boolean);
+  const presentation = {
+    'dc-glover-park': ['Washington · Glover Park', 'URBAN · REFERENCE'],
+    'dc-capitol-hill': ['Washington · Capitol Hill', 'DENSE URBAN'],
+    'quesenbank-south-calibrated-v2': ['Quesenbank · Forest canopy', 'FOREST · METRIC'],
+    'gamus-nyc': ['New York · Relative height', 'PLAIN PNG'],
+    'dc-glover-post': ['Glover Park · Simulated impact', 'SIMULATED EVENT'],
+    'forest-north': ['Quesenbank · North woodland', 'FOREST · REFERENCE'],
+  };
+  for (const sc of (picks.length ? picks : list.slice(0, 6))) {
     const card = document.createElement('button'); card.className = 'gallery-card'; card.type = 'button';
     const what = sc.units === 'metre'
-      ? `Metric 3D surface · ${sc.method || 'calibrated'}${sc.has_reference ? ' · LiDAR-validated' : ''}`
+      ? `Metric 3D surface · ${sc.method || 'calibrated'}${sc.has_reference ? ' · reference attached' : ''}`
       : 'Relative 3D surface from a plain image';
-    card.innerHTML = `<img alt="" loading="lazy"><b></b><small></small>`;
+    const [title, tag] = presentation[sc.id] || [sc.name.replace(/Â·/g, '·'), sc.units === 'metre' ? 'METRIC DSM' : 'RELATIVE DSM'];
+    card.innerHTML = `<div class="gallery-image"><img alt="" loading="lazy"><span class="gallery-tag"></span></div><b></b><small></small>`;
     card.querySelector('img').src = `jobs/${encodeURIComponent(sc.id)}/viewer/texture.jpg`;
-    card.querySelector('b').textContent = sc.name; card.querySelector('small').textContent = what;
-    card.onclick = () => { $('#gallery').classList.add('hidden'); loadScene(sc.id); };
+    card.querySelector('.gallery-tag').textContent = tag;
+    card.querySelector('b').textContent = title; card.querySelector('small').textContent = what;
+    card.onclick = () => { closeGallery(); loadScene(sc.id); };
     grid.appendChild(card);
   }
-  $('#gallery').classList.remove('hidden');
+  $('#gallery').classList.remove('hidden'); $('#app').classList.add('gallery-open');
+}
+function closeGallery() {
+  $('#gallery').classList.add('hidden'); $('#app').classList.remove('gallery-open');
+  if (S.mesh && S.galleryPrevNav) setNav(S.galleryPrevNav);
+  S.galleryPrevNav = null;
 }
 window.openGallery = openGallery;
 $('#gallery-btn').onclick = openGallery;
-$('#gallery-close').onclick = () => $('#gallery').classList.add('hidden');
-$('#gallery-import').onclick = () => { $('#gallery').classList.add('hidden'); showTab('upload'); };
+$('#gallery-close').onclick = closeGallery;
+$('#gallery-import').onclick = () => { closeGallery(); showTab('upload'); };
 
 // presentation mode
 window.togglePresentation = (on = !$('#app').classList.contains('presentation')) => {
@@ -2632,12 +2734,318 @@ window.togglePresentation = (on = !$('#app').classList.contains('presentation'))
   $('#app').classList.toggle('presentation', on);
   const t = $('#pres-title');
   if (on && S.meta) {
-    t.innerHTML = `${escapeHtml(S.meta.input || 'Scene')}<small>${S.meta.units === 'metre' ? 'Metric 3D surface model' : 'Relative 3D surface model'} · ${escapeHtml(S.meta.calibration?.method || '')} · RUBIQX-Depth</small>`;
+    t.innerHTML = `${escapeHtml(S.meta.input || 'Scene')}<small>${S.meta.units === 'metre' ? 'Metric 3D surface model' : 'Relative 3D surface model'} · ${escapeHtml(S.meta.calibration?.method || '')} · DepthWizard</small>`;
     t.classList.remove('hidden'); setNav('tour');
   } else { t.classList.add('hidden'); setNav('orbit'); }
   requestAnimationFrame(resize); requestRender();
 };
 $('#present-btn').onclick = () => window.togglePresentation();
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.presentation) window.togglePresentation(false); });
+
+// ------------------------------------------------------------------ Terrain Mission Control UI
+// Reparent the existing controls after their handlers are bound. Each control
+// keeps its original ID and event listener; rendering and analysis stay above.
+const WORKSPACES = {
+  explore: { title: 'Explore the surface', subtitle: 'Layers, light and camera', groups: ['surface-group'] },
+  measure: { title: 'Measure', subtitle: 'Probe, profile and planning limits', groups: ['measure-group', 'height-limit-group', 'volume-group'] },
+  disaster: { title: 'Flood & response', subtitle: 'Screen exposure and plan a response', groups: ['flood-group', 'disaster-group', 'change-group'] },
+  buildings: { title: 'Buildings', subtitle: 'Inspect fitted structures', groups: ['building-inspector-group'] },
+  calibrate: { title: 'Calibrate height', subtitle: 'Trace every metric-scale cue', groups: ['gcp-group', 'anchor-panel-group', 'automatic-anchor-group'] },
+  validate: { title: 'Validate', subtitle: 'Compare estimate, DEM baseline and reference', groups: [] },
+};
+function setWorkspace(mode) {
+  if (!WORKSPACES[mode]) return;
+  if (mode === 'validate' && S.meta && !S.ref) { toast('This scene has no independent reference DSM.', 'info'); return; }
+  S.workspace = mode; $('#app').dataset.workspace = mode;
+  $$('#mode-rail [data-workspace]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.workspace === mode);
+    b.setAttribute('aria-current', b.dataset.workspace === mode ? 'page' : 'false');
+  });
+  $('#drawer-title').textContent = WORKSPACES[mode].title;
+  $('#drawer-subtitle').textContent = WORKSPACES[mode].subtitle;
+  showTab(mode === 'validate' ? 'validate' : 'analyse');
+  const active = new Set(WORKSPACES[mode].groups);
+  $$('#tab-analyse > .group').forEach((group) => group.classList.toggle('mode-hidden', !active.has(group.id)));
+  if (mode === 'buildings' && S.mesh && S.buildings?.count) setViewGeometry('city');
+  if (mode === 'validate' && S.ref) setMode('error');
+  updateMissionHud();
+}
+function setAnimatedStat(el, value, suffix = '') {
+  if (!el || !Number.isFinite(value)) { if (el) el.textContent = '—'; return; }
+  const target = Number(value), previous = Number(el.dataset.value);
+  if (el.dataset.value && Math.abs(previous - target) < .0001 && el.dataset.suffix === suffix) return;
+  el.dataset.value = String(target); el.dataset.suffix = suffix;
+  const decimal = Math.abs(target) < 100 && !Number.isInteger(target) ? 1 : 0;
+  const display = (n) => `${n.toLocaleString(undefined, { maximumFractionDigits: decimal, minimumFractionDigits: decimal })}${suffix}`;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches || !Number.isFinite(previous)) { el.textContent = display(target); return; }
+  const start = performance.now(), initial = previous;
+  const tick = (now) => {
+    if (el.dataset.value !== String(target)) return;
+    const t = Math.min(1, (now - start) / 600), eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = display(initial + (target - initial) * eased);
+    if (t < 1) requestAnimationFrame(tick);
+  }; requestAnimationFrame(tick);
+}
+function updateMissionHud() {
+  if (!S.meta) return;
+  const mode = S.workspace || 'explore', list = S.buildings?.buildings || [];
+  const friendly = ($(`#scene-list .item[data-id="${CSS.escape(S.id || '')}"] .n`)?.textContent || S.meta.input || 'Current scene').replace(/Â·/g, '·');
+  $('#hero-title').textContent = friendly.replace(/\.(tiff?|png|jpe?g)$/i, '');
+  $('#top-scene-name').textContent = friendly.replace(/\.(tiff?|png|jpe?g)$/i, '');
+  const tallest = list.reduce((v, b) => Math.max(v, Number(b.height_m) || 0), 0);
+  const metrics = S.meta.metrics?.absolute || S.meta.metrics?.affine_aligned;
+  const pinCount = S.gcpPins?.length || 0;
+  let values;
+  if (mode === 'disaster') values = [['Flooded area', S.floodAreaHa || 0, ' ha'], ['Buildings hit', S.floodBuildings || 0, ''], ['People ≈', S.floodPeople || 0, '']];
+  else if (mode === 'calibrate') values = [['RMSE vs reference', metrics?.rmse, metrics ? ' m' : ''], ['r²', metrics?.r !== undefined ? metrics.r ** 2 : undefined, ''], ['Pins', pinCount, '']];
+  else if (mode === 'validate') values = [['RMSE', metrics?.rmse, metrics ? ' m' : ''], ['MAE', metrics?.mae, metrics ? ' m' : ''], ['Pearson r', metrics?.r, '']];
+  else if (mode === 'buildings') values = [['Candidates', list.length, ''], ['Tallest', list.length ? tallest : undefined, ` ${S.units}`], ['Fitted roofs', list.filter((b) => b.roof_fit).length, '']];
+  else values = [['Scene area', S.W * S.H / 1e6, ' km²'], ['Candidates', list.length, ''], ['Tallest', list.length ? tallest : undefined, ` ${S.units}`]];
+  const signature = values.map(([label]) => label).join('|');
+  if ($('#hero-stats').dataset.signature !== signature) {
+    $('#hero-stats').dataset.signature = signature;
+    $('#hero-stats').replaceChildren(...values.map(([label]) => {
+      const box = document.createElement('div'); box.className = 'hero-stat';
+      const number = document.createElement('b'), caption = document.createElement('span'); caption.textContent = label;
+      box.append(number, caption); return box;
+    }));
+  }
+  values.forEach(([, val, suffix], i) => setAnimatedStat($('#hero-stats').children[i]?.querySelector('b'), val, suffix));
+  const level = S.meta.calibration?.evidence_level || (S.meta.units === 'relative' ? 'relative' : 'unverified');
+  $('#hero-caption').textContent = `${S.meta.units === 'metre' ? 'Metric DSM' : 'Relative surface'} · ${level} evidence · ${S.meta.crs || 'local coordinates'}`;
+  $$('#mode-rail [data-workspace="validate"]').forEach((b) => b.disabled = !S.ref);
+}
+function renderBuildingList() {
+  let list = $('#building-list');
+  if (!list) { list = document.createElement('div'); list.id = 'building-list'; $('#building-inspector-group').append(list); }
+  const buildings = [...(S.buildings?.buildings || [])].sort((a, b) => (b.height_m || 0) - (a.height_m || 0));
+  list.innerHTML = '<h3>By estimated height</h3>';
+  if (!buildings.length) { list.append('No building candidates in this scene.'); return; }
+  for (const b of buildings.slice(0, 25)) {
+    const row = document.createElement('button'); row.type = 'button'; row.className = 'building-row';
+    row.innerHTML = `<span>Building #${b.id}</span><strong>${fmt(b.height_m, 1)} ${S.units}</strong>`;
+    row.onclick = () => {
+      if (S.viewGeometry !== 'city') setViewGeometry('city');
+      const mesh = S.buildingGroup?.children.find((item) => item.userData?.building?.id === b.id);
+      if (mesh) selectBuilding(mesh);
+    };
+    list.append(row);
+  }
+}
+function renderLayerPreviews() {
+  if (!S.meta || !S.h) return;
+  for (const button of $$('#layer-dock button[data-mode]')) {
+    const mode = button.dataset.mode;
+    const unavailable = (mode === 'error' && !S.ref) || (mode === 'landslide' && !S.susc) ||
+      (mode === 'change' && !S.change) || (mode === 'ndsm' && !S.dtm) ||
+      (mode === 'hazard' && S.meta.units !== 'metre');
+    button.classList.toggle('layer-unavailable', unavailable);
+    if (unavailable) continue;
+    let thumb = button.querySelector('canvas.layer-thumb');
+    if (!thumb) { thumb = document.createElement('canvas'); thumb.className = 'layer-thumb'; thumb.width = 60; thumb.height = 32; button.prepend(thumb); }
+    const ctx = thumb.getContext('2d');
+    if (mode === 'optical' && S.texImg) { ctx.drawImage(S.texImg, 0, 0, thumb.width, thumb.height); continue; }
+    const frame = ctx.createImageData(thumb.width, thumb.height), lo = pct(S.h, .02), hi = pct(S.h, .98);
+    for (let y = 0; y < thumb.height; y++) for (let x = 0; x < thumb.width; x++) {
+      const r = Math.min(S.gh - 1, Math.floor(y / thumb.height * S.gh));
+      const c = Math.min(S.gw - 1, Math.floor(x / thumb.width * S.gw));
+      const i = r * S.gw + c, h = S.h[i], v = (h - lo) / (hi - lo || 1);
+      let color;
+      if (mode === 'topo' || mode === 'topogray') {
+        color = ramp('topo', v);
+        if (mode === 'topogray') { const g = .3 * color[0] + .59 * color[1] + .11 * color[2]; color = [g, g, g]; }
+      } else if (mode === 'slope' || mode === 'hazard') {
+        const slope = slopeAt(r, c).slope;
+        color = mode === 'hazard' ? HAZARD[slope < 30 ? 0 : slope < 45 ? 1 : 2].color : ramp('slope', slope / 45);
+      } else if (mode === 'confidence') color = ramp(mode, S.confidence?.[i] ?? .8);
+      else if (mode === 'ndsm') color = ramp(mode, Math.max(0, h - S.dtm[i]) / Math.max(5, hi - lo));
+      else if (mode === 'landslide') color = ramp(mode, S.susc[i]);
+      else if (mode === 'change') color = ramp(mode, .5 + S.change[i] / 25);
+      else if (mode === 'error') color = ramp(mode, .5 + (h - S.ref[i]) / 20);
+      else color = ramp('height', v);
+      const k = (y * thumb.width + x) * 4;
+      frame.data[k] = Math.round(255 * color[0]); frame.data[k+1] = Math.round(255 * color[1]); frame.data[k+2] = Math.round(255 * color[2]); frame.data[k+3] = 255;
+    }
+    ctx.putImageData(frame, 0, 0);
+  }
+}
+let importStep = 1, importPreviewUrl = null;
+function refreshImportPreview() {
+  const input = $('#upload-form')?.image, file = input?.files?.[0];
+  const note = $('#import-detection'), img = $('#import-preview');
+  if (!note || !img) return;
+  if (importPreviewUrl) { URL.revokeObjectURL(importPreviewUrl); importPreviewUrl = null; }
+  img.classList.add('hidden');
+  if (!file) { note.textContent = 'Choose a PNG, JPG or TIFF optical image. A single-band elevation TIFF opens as an input DEM.'; return; }
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  if (['png','jpg','jpeg'].includes(ext)) {
+    note.textContent = 'RGB image → relative surface. Add surveyed points later to calibrate metres.';
+    importPreviewUrl = URL.createObjectURL(file); img.src = importPreviewUrl; img.classList.remove('hidden');
+  } else note.textContent = 'TIFF input → spatial bands and georeferencing are checked during processing. Georeferenced RGB can produce a metric DSM with scale evidence.';
+}
+function showImportStep(n) {
+  importStep = Math.max(1, Math.min(3, n));
+  $$('#upload-form [data-import-step]').forEach((el) => el.classList.toggle('hidden', Number(el.dataset.importStep) !== importStep));
+  $$('#import-steps span').forEach((el, i) => el.classList.toggle('active', i + 1 === importStep));
+  const back = $('#import-back'), next = $('#import-next');
+  if (back) back.classList.toggle('hidden', importStep === 1);
+  if (next) next.classList.toggle('hidden', importStep === 3);
+  if (importStep === 3 && $('#import-summary')) {
+    const f = $('#upload-form');
+    $('#import-summary').textContent = `${f.image.files[0]?.name || 'No image selected'} · ${f.dem.files[0] ? 'uploaded DEM' : f.fetch_dem.checked ? `${f.dem_source.value} DEM download` : 'no DEM selected'} · ${f.reference.files[0] ? 'reference for validation' : 'no reference'}`;
+  }
+}
+function initImportFlow() {
+  const formEl = $('#upload-form'), parts = [...formEl.children], dropEl = $('#drop');
+  const details = parts.filter((el) => el.tagName === 'DETAILS');
+  const run = formEl.querySelector('button[type="submit"]');
+  const steps = document.createElement('div'); steps.id = 'import-steps';
+  steps.innerHTML = '<span class="active">1 Image</span><span>2 Evidence</span><span>3 Run</span>';
+  const first = document.createElement('div'); first.dataset.importStep='1'; first.className='import-step';
+  first.innerHTML = '<h3>Choose the optical input</h3><p>Drag a file into the area below, or browse your device.</p><img id="import-preview" class="hidden" alt="Selected image preview"><p id="import-detection" class="note"></p>';
+  first.insertBefore(dropEl, first.querySelector('#import-preview'));
+  const second = document.createElement('div'); second.dataset.importStep='2'; second.className='import-step hidden';
+  second.innerHTML = '<h3>Add scale evidence</h3><p>A DEM or ground-control points enable metre-scale elevation. A separate reference is used only for validation.</p>';
+  details.forEach((part, i) => { if (i === 2) part.open = false; second.append(part); });
+  const third = document.createElement('div'); third.dataset.importStep='3'; third.className='import-step hidden';
+  third.innerHTML = '<h3>Run reconstruction</h3><p id="import-summary" class="note"></p><div id="import-stage-list" aria-label="Processing stages"><span>Reading</span><span>Height AI</span><span>Calibration</span><span>Buildings</span><span>Analytics</span><span>Viewer</span></div><div id="import-progress"><i></i></div>';
+  third.append(run);
+  const nav = document.createElement('div'); nav.id='import-nav';
+  nav.innerHTML='<button id="import-back" type="button" class="hidden">Back</button><button id="import-next" type="button" class="primary">Continue →</button>';
+  formEl.replaceChildren(steps, first, second, third, nav);
+  $('#import-back').onclick=()=>showImportStep(importStep-1);
+  $('#import-next').onclick=()=>{
+    if (importStep === 1 && !formEl.image.files.length) { formEl.image.click(); return; }
+    showImportStep(importStep+1);
+  };
+  refreshImportPreview();
+  const progress=document.createElement('div'); progress.id='job-progress'; progress.className='hidden'; progress.innerHTML='<i></i>';
+  $('#app-header').append(progress);
+  const updateProgress=()=>{
+    const log=$('#job-log'), raw=log.textContent.toLowerCase();
+    const stages=['reading image','relative height','scale calibration','extracting lod1','analytics:','done in'];
+    let reached=-1; stages.forEach((term,i)=>{if(raw.includes(term))reached=i;});
+    const hasJob=!log.classList.contains('hidden') && raw.trim().length>0;
+    progress.classList.toggle('hidden',!hasJob || reached===5 || raw.includes('✕'));
+    const fraction=reached<0?.05:(reached+1)/stages.length;
+    progress.querySelector('i').style.width=`${Math.round(fraction*100)}%`;
+    $('#import-progress i').style.width=`${Math.round(fraction*100)}%`;
+    $$('#import-stage-list span').forEach((el,i)=>el.classList.toggle('complete',i<=reached));
+  };
+  new MutationObserver(updateProgress).observe($('#job-log'),{childList:true,characterData:true,subtree:true,attributes:true,attributeFilter:['class']});
+  showImportStep(1);
+}
+function openCommandPalette() {
+  $('#command-palette').classList.remove('hidden'); $('#command-input').value = '';
+  renderCommandResults(''); $('#command-input').focus();
+}
+function closeCommandPalette() { $('#command-palette').classList.add('hidden'); }
+function renderCommandResults(query) {
+  const q = query.trim().toLowerCase(), choices = [];
+  for (const [id, label] of [['explore','Explore terrain'],['measure','Measure heights and slopes'],['disaster','Flood and response'],['buildings','Buildings'],['calibrate','Calibrate scale'],['validate','Validate against reference']])
+    choices.push({ label, tag:'Workspace', run:()=>setWorkspace(id) });
+  for (const b of $$('#layer-dock button[data-mode]:not(.layer-unavailable)')) choices.push({ label:`Show ${b.textContent.trim()} layer`, tag:'Layer', run:()=>b.click() });
+  choices.push({label:'Import imagery',tag:'Project',run:()=>showTab('upload')},{label:'Open scene gallery',tag:'Project',run:openGallery},
+    {label:'Export everything ZIP',tag:'Export',run:()=>$('#export-menu [data-export="all"]').click()},
+    {label:'Export GLB mesh',tag:'Export',run:()=>$('#export-menu [data-export="glb"]').click()},
+    {label:'Export DSM GeoTIFF',tag:'Export',run:()=>$('#export-menu [data-export="dsm"]').click()},
+    {label:'Presentation mode',tag:'View',run:()=>window.togglePresentation()},
+    {label:'Pin ground control points',tag:'Calibration',run:()=>{setWorkspace('calibrate');$('#gcp-pin').click();}},
+    {label:'DEM versus DSM swipe',tag:'Compare',run:()=>$('#swipe-toggle').click()},
+    {label:'Pretrained versus GAMUS model',tag:'Compare',run:()=>$('#model-swipe-toggle').click()},
+    {label:'Basemap',tag:'Compare',run:()=>$('#map-toggle').click()});
+  for (const row of $$('#scene-list .item')) {
+    const name = row.querySelector('.n')?.textContent || row.dataset.id;
+    choices.push({label:`Open ${name}`,tag:'Scene',run:()=>row.querySelector('.scene-select')?.click()});
+  }
+  const matches = choices.filter((c) => !q || q.split(/\s+/).every((word) => c.label.toLowerCase().includes(word))).slice(0, 12);
+  $('#command-results').replaceChildren(...matches.map((choice) => {
+    const b = document.createElement('button'); b.type='button'; b.role='option';
+    b.innerHTML = `<span></span><small></small>`; b.querySelector('span').textContent = choice.label; b.querySelector('small').textContent=choice.tag;
+    b.onclick=()=>{closeCommandPalette();choice.run();}; return b;
+  }));
+  if (!matches.length) $('#command-results').textContent = 'No matching actions';
+}
+function initMissionLayout() {
+  const view = $('#view-pill'), compare = $('#compare-actions');
+  for (const id of ['nav-mode','topdown','reset','view-mode','fullscreen','present-btn','vr-toggle']) view.append($('#'+id));
+  const compareTrigger = document.createElement('button'); compareTrigger.id='compare-trigger'; compareTrigger.type='button'; compareTrigger.textContent='Compare'; compareTrigger.title='Choose a comparison view';
+  view.append(compareTrigger);
+  compareTrigger.onclick=()=>$('#compare-popover').classList.toggle('hidden');
+  for (const id of ['swipe-toggle','model-swipe-toggle','compare-toggle','map-toggle']) {
+    const button=$('#'+id); compare.append(button);
+    button.addEventListener('click',()=>{
+      $('#compare-popover').classList.add('hidden');
+      if (id !== 'map-toggle' && $('#stage').classList.contains('map-open')) $('#map-toggle').click();
+      if (id !== 'compare-toggle' && !$('#comparison').classList.contains('hidden')) setComparison(false);
+      if (!['swipe-toggle','model-swipe-toggle'].includes(id) && S.swipeActive) setSwipe(false);
+    });
+  }
+  const exagControl=document.createElement('div');exagControl.id='exag-control';
+  exagControl.innerHTML='<button id="exag-trigger" type="button" title="Vertical display exaggeration">Z ×</button><div id="exag-popover"></div>';
+  view.append(exagControl);
+  $('#exag-popover').append($('#exag').closest('label'));
+  $('#exag-trigger').onclick=()=>exagControl.classList.toggle('open');
+  $('#layer-dock-actions').append($('#shade-mode'));
+  $('#layer-legend').append($('#legend'));
+  $('#stage').append($('#layer-legend'));
+  const contourSettings = document.createElement('label');
+  contourSettings.id = 'topo-contours'; contourSettings.textContent = 'Contours every';
+  contourSettings.title = 'Every fifth contour is drawn more strongly';
+  contourSettings.append($('#contour-int'), $('#contour-unit'));
+  $('#layer-legend').append(contourSettings);
+  for (const mode of ['topogray','slope','curvature']) $('#layer-more-menu').append($(`#shade-mode button[data-mode="${mode}"]`));
+  $('#dock-more').onclick=()=>$('#layer-more-menu').classList.toggle('open');
+  $('#surface-group h3').textContent='Lighting & surface';
+  $('#surface-group').insertAdjacentHTML('afterbegin','<button id="explore-compare" type="button" class="primary drawer-primary">Compare surfaces</button>');
+  $('#explore-compare').onclick=()=>$('#compare-trigger').click();
+  $('#surface-group label:has(#contours)').classList.add('hidden');
+  $('#flood-info').prepend($('#flood-group > p.note'));
+  $('#record-tour').textContent='Record 20 s flythrough';
+  const exportGroups = [
+    ['Raster & analysis', ['dsm','dtm','ndsm','uncertainty','heightmap']],
+    ['3D assets', ['glb','obj','cityjson','ply']],
+    ['Evidence & sharing', ['report','evidence','shot']],
+  ];
+  for (const [heading, keys] of exportGroups) {
+    const group = document.createElement('section'); group.className = 'export-category';
+    const title = document.createElement('h3'); title.textContent = heading; group.append(title);
+    for (const key of keys) group.append($(`#export-menu [data-export="${key}"]`));
+    if (heading === 'Evidence & sharing') group.append($('#record-tour'));
+    $('#export-menu').append(group);
+  }
+  // The header's backdrop filter establishes a containing block for fixed
+  // descendants. Keep the sheet at app level so it anchors to the viewport.
+  $('#app').append($('#export-menu'));
+  $('#gallery-btn').classList.add('hidden');
+  $('.brand').onclick=(e)=>{e.preventDefault();openGallery();};
+  $('#library-toggle').addEventListener('click',()=>$('#library-toggle').setAttribute('aria-expanded',String($('#app').classList.contains('library-open'))));
+  $('#scene-badge').onclick=()=>setWorkspace('calibrate');
+  $('#scene-badge').onkeydown=(e)=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setWorkspace('calibrate');}};
+  $('#drawer-toggle').onclick=()=>$('#app').classList.add('drawer-collapsed');
+  $('#drawer-reopen').onclick=()=>$('#app').classList.remove('drawer-collapsed');
+  $('#flood-details-toggle').onclick=()=>{const on=$('#flood-info').classList.toggle('details-open');$('#flood-details-toggle').setAttribute('aria-expanded',String(on));};
+  $('#change-toggle').onclick=()=>{const on=$('#change-group').classList.toggle('details-open');$('#change-toggle').setAttribute('aria-expanded',String(on));};
+  $('#hover-hud').onclick=()=>{S.hudPinned=false;$('#hover-hud').classList.remove('pinned');$('#hover-hud').classList.add('hidden');};
+  $('#command-open').onclick=openCommandPalette;
+  $('#command-input').oninput=(e)=>renderCommandResults(e.target.value);
+  $('#command-input').onkeydown=(e)=>{if(e.key==='Enter'){$('#command-results button')?.click();e.preventDefault();}};
+  $$('[data-close-command]').forEach((el)=>el.onclick=closeCommandPalette);
+  $('#export-sheet-close').onclick=closeExportMenu;
+  $('#rail-gallery').onclick=()=>$('#gallery-btn').click();
+  $('#rail-import').onclick=()=>$('#import-btn').click();
+  $$('#mode-rail [data-workspace]').forEach((b)=>b.onclick=()=>setWorkspace(b.dataset.workspace));
+  addEventListener('keydown',(e)=>{
+    if(e.key==='Escape'){
+      closeCommandPalette();closeExportMenu();$('#compare-popover').classList.add('hidden');$('#help').classList.add('hidden');
+      $('#layer-more-menu').classList.remove('open');$('#app').classList.remove('library-open');
+      $('#upload-modal').classList.add('hidden');
+      if(!$('#gallery').classList.contains('hidden')) closeGallery();
+    }
+  });
+  initImportFlow();
+  setWorkspace('explore');
+}
+initMissionLayout();
 // shareable links: #scene-id opens that scene (also when the hash changes)
 addEventListener('hashchange', () => { const id = decodeURIComponent(location.hash.slice(1)); if (id && id !== S.id) loadScene(id); });

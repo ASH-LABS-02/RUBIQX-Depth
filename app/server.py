@@ -53,10 +53,14 @@ _files_lock = threading.Lock()   # rewrites of scene files (rescale, missions, a
 _export_lock = threading.Lock()
 
 
-def _save(upload: UploadFile | None, folder: Path) -> str | None:
+def _save(upload: UploadFile | None, folder: Path, role: str) -> str | None:
     if upload is None or not upload.filename:
         return None
-    dest = folder / Path(upload.filename).name
+    # Keep the caller's basename for provenance, but isolate each input role.
+    # An RGB, DEM and reference can all be named image.tif without colliding.
+    role_folder = folder / role
+    role_folder.mkdir(parents=True, exist_ok=True)
+    dest = role_folder / Path(upload.filename).name
     with dest.open("wb") as f:
         shutil.copyfileobj(upload.file, f)
     return str(dest)
@@ -156,9 +160,9 @@ async def process(image: UploadFile = File(...),
     folder = JOBS / job_id
     inputs = folder / "inputs"
     inputs.mkdir(parents=True)
-    kwargs = dict(image_path=_save(image, inputs), out_dir=str(folder),
-                  dem=_save(dem, inputs), reference=_save(reference, inputs),
-                  gcp=_save(gcp, inputs), model=model, scene=scene, assumed_gsd_m=gsd,
+    kwargs = dict(image_path=_save(image, inputs, "image"), out_dir=str(folder),
+                  dem=_save(dem, inputs, "dem"), reference=_save(reference, inputs, "reference"),
+                  gcp=_save(gcp, inputs, "gcp"), model=model, scene=scene, assumed_gsd_m=gsd,
                   fetch_dem=fetch_dem, dem_source=dem_source,
                   tta=max(1, min(8, int(tta))), dem_kind=dem_kind if dem_kind in ("auto", "surface", "terrain") else "auto",
                   match_dem_30m=match_dem_30m,
@@ -564,9 +568,10 @@ def _find_legacy_original(meta: dict, kind: str, wanted: str | None, near: Path 
 def _find_original(folder: Path, meta: dict, kind: str, near: Path | None = None) -> Path | None:
     """Locate an original input (image, dem, gcp, reference) for a scene.
 
-    Web uploads live in <scene>/inputs. Scenes made from the command line (the
-    bundled demos) have no copy, so fall back to the recorded path and then to
-    a SHA-256 match in the sample folders, checked against the evidence bundle."""
+    Web uploads live in <scene>/inputs/<role>/, with the older flat layout
+    still readable. Scenes made from the command line (the bundled demos) have
+    no copy, so fall back to the recorded path and then to a SHA-256 match in
+    the sample folders, checked against the evidence bundle."""
     fingerprint = (meta.get("evidence_bundle") or {}).get(f"{kind}_sha256")
     names = {}
     if (folder / "job.json").is_file():
@@ -576,8 +581,13 @@ def _find_original(folder: Path, meta: dict, kind: str, near: Path | None = None
             names = {}
     wanted = names.get(kind) or (meta.get("input") if kind == "image" else None)
     inputs = folder / "inputs"
-    if wanted and (inputs / Path(wanted).name).is_file():
-        return inputs / Path(wanted).name
+    if wanted:
+        # New uploads are separated by role; the flat path keeps older jobs
+        # readable. Check the fingerprint so a same-named file cannot be
+        # mistaken for another input when revisiting a scene.
+        for candidate in (inputs / kind / Path(wanted).name, inputs / Path(wanted).name):
+            if candidate.is_file() and (not fingerprint or _hash16_cached(candidate) == fingerprint):
+                return candidate
     if kind == "dem" and (folder / "dem.tif").is_file():
         return folder / "dem.tif"
     recorded = (meta.get("input_paths") or {}).get(kind)
@@ -586,22 +596,29 @@ def _find_original(folder: Path, meta: dict, kind: str, near: Path | None = None
     if not fingerprint:
         return _find_legacy_original(meta, kind, wanted, near)
     suffixes = {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".csv"}
-    search = [inputs] + ([near] if near else []) + [ROOT / "samples", ROOT / "data" / "inputs"]
+    search = [inputs / kind, inputs] + ([near] if near else []) + [ROOT / "samples", ROOT / "data" / "inputs"]
     seen = set()
+    candidates_by_source = []
     for base in search:
         if not base or not base.is_dir():
             continue
-        candidates = sorted(base.iterdir()) if base in (inputs, near) else sorted(base.rglob("*"))
-        # try files with the expected name first, then the rest
-        candidates.sort(key=lambda c: 0 if wanted and c.name == Path(wanted).name else 1)
+        candidates = sorted(base.iterdir()) if base in (inputs / kind, inputs, near) else sorted(base.rglob("*"))
         for cand in candidates:
             if cand in seen or not cand.is_file() or cand.suffix.lower() not in suffixes:
                 continue
             seen.add(cand)
             if cand.stat().st_size > 2_000_000_000:
                 continue
-            if _hash16_cached(cand) == fingerprint:
-                return cand
+            candidates_by_source.append(cand)
+    # Prefer the recorded basename across *all* roots before accepting a
+    # hash-identical copy with a different name in an earlier root. The hash
+    # remains mandatory, so this only chooses which identical source to use.
+    expected_name = Path(wanted).name if wanted else None
+    if expected_name:
+        candidates_by_source.sort(key=lambda cand: cand.name != expected_name)
+    for cand in candidates_by_source:
+        if _hash16_cached(cand) == fingerprint:
+            return cand
     return None
 
 

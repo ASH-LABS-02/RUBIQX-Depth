@@ -5,9 +5,15 @@ Smart India Hackathon 2026 · Problem Statement 26175 (ISRO / SAC) · Team RUBIQ
 
 ![3D city from a single image, presentation mode](docs/images/present.jpg)
 
-| Blind accuracy (6 scenes vs LiDAR/survey) | Model fine-tuned on aerial LiDAR | Runs offline |
+| Reference-held-out DC LiDAR check (2 scenes) | Model fine-tuned on aerial LiDAR | Runs offline |
 |---|---|---|
-| **5.04 m RMSE** vs 7.94 m for the input DEM alone | correlation **0.41 → 0.79** on 30 held-out tiles | one laptop, no cloud, open formats |
+| **5.07 m RMSE / 3.74 m MAE** vs **9.04 m / 6.92 m** for the input DTM alone | correlation **0.41 → 0.79** on 30 held-out tiles (reference-aligned shape) | one laptop, no cloud, open formats |
+
+The two DC scenes use a 2018 DTM for calibration and a 2024 LiDAR DSM only for
+scoring. They are a small, related-domain evaluation because the sites are near
+GAMUS DC training tiles. The older six-scene **5.04 m RMSE** aggregate includes
+reference-derived simulated DEM inputs and same-survey forest DEMs; it is a
+mixed-evidence pipeline check, not an independent accuracy result.
 
 ## Quick start
 
@@ -45,7 +51,7 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 | Georeferenced RGB → absolute DSM (m) | Evidence-ranked calibration: GCPs → known building heights → surface DEM (auto surface/bare-earth detection) → learned scale → scene prior; every output states which it used |
 | Scale calibration | Interactive ground-control pins with live R², RMSE and leave-one-out error (turns a relative scene metric); height anchors; CSV GCPs |
 | 3D visualisation | Three.js digital twin: textured terrain + LoD1/fitted roofs, orbit/fly/tour, Topo and slope-hazard modes, live hover readout, DEM-vs-DSM swipe, cinematic quality (ambient occlusion, sky), presentation mode, one-click video |
-| Validation | Blind LiDAR benchmark against a DEM-only baseline, per-building checks, uncertainty coverage test ([benchmarks](docs/BENCHMARKS.md)) |
+| Validation | Two reference-held-out DC LiDAR scenes against a DEM-only baseline, per-building checks, uncertainty coverage test, and separately labelled mixed-evidence checks ([benchmarks](docs/BENCHMARKS.md)) |
 | Disaster management | Connected flood with buildings and people affected, landslide index, pre/post change detection, evacuation routes, refuges, runout, relay coverage |
 | GIS interoperability | GeoTIFF DSM/DTM/nDSM/σ, CityJSON, GLB, OBJ, PLY, 8/16-bit heightmap PNG, HTML/PDF report, evidence JSON, one-click export-all ZIP |
 
@@ -57,7 +63,7 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 | Metres | Assumed, hand-scaled, or only after manual pins | Automatic calibration from the best available evidence, always labelled |
 | Existing DEM input | Displayed as if it were an estimate | Shown as *Input DEM (not estimated)*; used only for calibration of image estimates |
 | Uncertainty | None | Per-pixel map and per-building confidence (ranks reliability; see benchmarks §5) |
-| Proof | Screenshots | Blind benchmark vs LiDAR and the DEM-only baseline |
+| Proof | Screenshots | Reference-held-out two-scene LiDAR check vs the DEM-only baseline, with calibration provenance |
 
 ## New in v3 (viewer and workflow)
 
@@ -70,7 +76,7 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 | | |
 |---|---|
-| **Accuracy** | Blind absolute DSM error **5.04 m RMSE / 3.52 m MAE** over six LiDAR/survey scenes, vs 7.94 / 5.17 m for the input DEM alone and 7.06 / 5.05 m for the previous build ([benchmarks](docs/BENCHMARKS.md)). GAMUS fine-tune: correlation 0.41 → 0.79 on 30 held-out tiles. |
+| **Accuracy** | Reference-held-out, related-domain DC LiDAR evaluation: **5.07 m RMSE / 3.74 m MAE**, Pearson **r = 0.819** over two urban scenes, vs **9.04 m / 6.92 m** for the input DTM alone ([benchmarks](docs/BENCHMARKS.md)). The six-scene 5.04 m mixed-evidence aggregate is reported separately, not as independent validation. GAMUS fine-tune: correlation 0.41 → 0.79 on 30 held-out tiles after per-tile reference alignment. |
 | **Calibration** | Detects whether the DEM is a surface model (Copernicus/SRTM) or bare earth; fits building scale from a surface DEM and matches it exactly at 30 m; otherwise uses GCPs, a learned pixel-footprint scale or a scene prior, always labelled. |
 | **Products** | DSM, DTM, nDSM and per-pixel uncertainty GeoTIFFs · CityJSON with LoD1 or supported fitted LoD2 roofs · GLB/OBJ/PLY · HTML report · evidence JSON |
 | **3D** | Textured city on bare ground, fitted roof hypotheses, adjustable sun lighting, geometric DEM-vs-DSM swipe, orbit/fly/tour, one-click flythrough video |
@@ -214,7 +220,7 @@ The manifest columns are `image,reference[,dem][,gcp][,scene]`. The script write
 
 It uses Three.js, vendored locally, so no CDN is needed and it works offline.
 
-The app opens into a dark three-part workspace: a thumbnail scene library, a large 3D terrain view, and an analysis inspector. Image import has separate DEM/GCP calibration, reference validation, and model options. The inspector separates scene exploration from validation; on narrow screens the canvas stays above the inspector and the scene library opens as a drawer. A linked comparison shows the source RGB and estimated height at the same pixel while keeping the 3D scene visible.
+The app opens into **Terrain Mission Control**: a full-bleed 3D scene, a compact mode rail, a contextual tool drawer, a thumbnail layer dock, and an evidence status chip. The scene gallery highlights six contrasting examples; the scene picker still lists every local job. Import uses a three-step side sheet for image, scale/reference evidence, and processing. On narrow screens the tool drawer moves below the scene. A linked comparison keeps source RGB and estimated height aligned at the same pixel.
 
 | Feature | Details |
 |---|---|
@@ -225,9 +231,9 @@ The app opens into a dark three-part workspace: a thumbnail scene library, a lar
 | Probe | Estimated height, reference height, error, slope, aspect, and map coordinates (E/N) for georeferenced scenes |
 | Profile | Two clicks draw an elevation cross-section: estimate vs reference, length, Δh, grade, profile RMSE |
 | Analysis | Connected flood scenarios from the lowest scene edge or a clicked source, a separate level-plane option, rainfall playback, estimated building and population exposure, route and refuge screening, landslide runout, and relay line of sight. Mission analysis requires an aligned DTM and local projected metre CRS. With a metric reference DSM, cut/fill volumes compare the estimated and reference surfaces. |
-| Validate tab | Metric cards, comparison table including the DEM baseline, per-landscape and reference-height-band tables, edge-gradient score, calibration details |
-| Export | DSM GeoTIFF, textured GLB, textured OBJ ZIP, inferred-roof CityJSON, and a PNG screenshot stamped with scene/model/layer/display-Z provenance |
-| Keyboard | O/F/T/D/V/R/H, 1–4 for surfaces, C for contours |
+| Validate mode | RMSE/MAE/r cards, a DEM baseline comparison, estimated-versus-reference plots, and expandable per-landscape, height-band, edge-gradient, and calibration details |
+| Export | Grouped raster, 3D, and evidence actions: GeoTIFF, textured GLB/OBJ, CityJSON, PLY, report, a complete ZIP, and a provenance-stamped viewer screenshot |
+| Keyboard | 1–6 workspaces; Shift+1–9 surface layers; O/F/T/D/V/R for navigation; G gallery; E export; Ctrl+K action search; H help |
 
 ## Deployment
 

@@ -219,5 +219,16 @@
   "has_dtm": true,
   "has_confidence": true,
   "buildings_count": 17,
-  "vertical_datum": "EGM2008"
+  "vertical_datum": "EGM2008",
+  "layers": {
+    "change": true
+  },
+  "change_against": "quesenbank-south-calibrated-v2",
+  "change_stats": {
+    "mean_change_m": -653.6485595703125,
+    "volume_loss_m3": 171350048.0,
+    "volume_gain_m3": 0.0,
+    "area_lowered_ha": 26.2144,
+    "area_raised_ha": 0.0
+  }
 }
