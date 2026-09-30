@@ -40,6 +40,43 @@ building bias seen in §3. The pretrained backbone cannot be scored this way
 because it has no metric output. All tiles are US cities (DC, New York,
 Philadelphia); this is not evidence for Indian scenes.
 
+### 1c. Failure cases
+
+![Failure cases on held-out GAMUS tiles](images/failure_cases.jpg)
+
+The four rows are the three worst test tiles and one typical good tile. Errors
+concentrate on **tall vegetation and large flat roofs**, which come out too low:
+
+* **NYC_20732 – leaf-off forest (9.2 m RMSE).** Bare winter trees 25–30 m tall
+  read as a low, smooth canopy; there is little texture to anchor height.
+* **DC_39_21 – downtown mid-rise (7.2 m).** Footprints are right but large flat
+  roofs are about 35 % low.
+* **NYC_16766 – isolated cemetery trees (6.0 m).** Crowns are found but about
+  55 % too low.
+* **PHL_4266 – roads, low trees, row houses (1.3 m).** Typical low-rise scenes
+  are accurate, with a small positive bias on tree crowns.
+
+The prediction is also smoother than LiDAR (fine crown texture is lost), which
+adds error at object edges.
+
+### 1d. Negative results (what we tried that did not help)
+
+* **Post-hoc height correction.** A single gain, a gain above a height
+  threshold, and a power curve were fitted on 40 GAMUS *validation* tiles and
+  scored on the 30 test tiles. The best improved test RMSE from 3.46 m to
+  3.44 m – within noise – so no correction is applied. On validation tiles the
+  learned scale is already close to optimal (tall objects at 0.90 of true
+  height); the larger shortfall on test tiles comes mainly from NYC, a city not
+  in the validation set. Reproduce with `scripts/check_height_correction.py`.
+* **Resolution on the DC scene.** On Glover Park the raw model already predicts
+  buildings at 0.45 of their LiDAR height (the pipeline adds no loss: 0.44
+  after calibration). Resampling the image to 0.25–0.5 m/px gives the same
+  0.45, because tiling normalises the network's view. A likely cause is the
+  imagery type: the DC 2023 mosaic appears close to a true orthophoto with
+  little visible building lean, while GAMUS tiles show facades that the model
+  uses as a height cue. This is a hypothesis, not yet tested; a height anchor or
+  GCPs correct it in practice (§3).
+
 ## 2. Absolute DSM – reference-held-out DC LiDAR evaluation
 
 Two urban scenes use 2023 optical imagery and a **2018 bare-earth DTM averaged

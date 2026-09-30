@@ -291,6 +291,7 @@ On those two Quesenbank crops, the fine-tuned model with the nonnegative DEM-fus
 ## Known limitations
 
 - **Evaluation breadth.** Absolute accuracy is measured on 30 GAMUS tiles from three US cities and two DC LiDAR scenes near the training region. There is no Indian, Cartosat, hilly or dense-forest validation yet; that is the top priority, followed by more non-urban LiDAR sites.
+- **Failure cases.** Leaf-off forest, large flat roofs and isolated tall trees are the worst cases on held-out tiles; see the [failure-case figure](docs/images/failure_cases.jpg) and [BENCHMARKS §1c–1d](docs/BENCHMARKS.md), which also lists approaches that did not help.
 - **Building heights.** Tall objects are under-estimated (about 30 % low on DC/NYC GAMUS tiles; median 4.3 m vs 9.4 m on Glover Park buildings when only the learned scale is available). One supplied height or a few GCPs correct most of this.
 - **Uncertainty.** `uncertainty.tif` is a calibrated 1-sigma error fitted on only two scenes (held-out 1σ coverage 52–88 %); treat it as provisional. The viewer's confidence layer is a relative reliability index, not a probability.
 
