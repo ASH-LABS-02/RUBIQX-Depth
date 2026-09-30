@@ -16,6 +16,15 @@ const FLOOR_AREA_PER_PERSON_M2 = 30;
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 
+let _sceneListCache = null;
+let _sceneListFetchTime = 0;
+async function fetchSceneList(force = false) {
+  if (!force && _sceneListCache && Date.now() - _sceneListFetchTime < 30000) return _sceneListCache;
+  _sceneListCache = await (await fetch('api/scenes')).json();
+  _sceneListFetchTime = Date.now();
+  return _sceneListCache;
+}
+
 // ------------------------------------------------------------------ colour maps
 const RAMPS = {
   height: [[0, [0.16, 0.20, 0.45]], [0.3, [0.10, 0.55, 0.55]], [0.6, [0.55, 0.78, 0.30]], [0.85, [0.96, 0.84, 0.35]], [1, [1, 0.97, 0.92]]],
@@ -1107,7 +1116,7 @@ function computeViewshed(point, observerH = 10) {
 async function renderChangePanel() {
   const el = $('#change-panel'); if (!el || !S.id) return;
   let list = [];
-  try { list = await (await fetch('api/scenes')).json(); } catch {}
+  try { list = await fetchSceneList(false); } catch {}
   const opts = list.filter((x) => x.id !== S.id).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('');
   const st = S.meta?.change_stats;
   el.innerHTML = `<label>Before-event scene<select id="change-before">${opts}</select></label>
@@ -1865,8 +1874,8 @@ addEventListener('keyup', (e) => { S.keys[e.code] = false; });
 addEventListener('blur', () => { S.keys = {}; });
 
 // scenes list
-async function refreshScenes(selectId) {
-  const list = await (await fetch('api/scenes')).json();
+async function refreshScenes(selectId, forceFetch = true) {
+  const list = await fetchSceneList(forceFetch);
   const el = $('#scene-list');
   el.innerHTML = list.length ? '' : '<p class="muted">No scenes yet – use Upload.</p>';
   for (const s of list) {
@@ -2597,7 +2606,7 @@ $('#gcp-reset').onclick = async () => {
 
 // first-run demo gallery
 async function openGallery() {
-  const list = await (await fetch('api/scenes')).json();
+  const list = await fetchSceneList(false);
   const grid = $('#gallery-grid'); grid.innerHTML = '';
   for (const sc of list) {
     const card = document.createElement('button'); card.className = 'gallery-card'; card.type = 'button';
