@@ -18,6 +18,15 @@ from .metrics import building_level, evaluate, reference_on_grid
 SOFTWARE_VERSION = "DepthWizard 2.2 (SIH26175)"
 
 
+def _clean_numpy(d):
+    if isinstance(d, dict):
+        return {k: _clean_numpy(v) for k, v in d.items()}
+    if isinstance(d, list):
+        return [_clean_numpy(v) for v in d]
+    if isinstance(d, (np.integer, np.floating)):
+        return d.item()
+    return d
+
 def _file_sha256(path: str | Path | None) -> str | None:
     if not path or not Path(path).is_file():
         return None
@@ -240,9 +249,8 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
             if (out / "uncertainty.tif").exists() and not (out / "uncertainty_raw.tif").exists():
                 shutil.copy2(out / "uncertainty.tif", out / "uncertainty_raw.tif")
                 
-            ndsm0 = cal.ndsm.copy()
-            dsm = dsm + (s - 1) * ndsm0
-            cal.ndsm = ndsm0 * s
+            np.add(dsm, (s - 1) * cal.ndsm, out=dsm)
+            np.multiply(cal.ndsm, s, out=cal.ndsm)
             
             cal.scale_k = (cal.scale_k or 1.0) * s
             
@@ -301,11 +309,15 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
                     f"RMSE {bm['rmse']:.2f} m, r {bm['r']:.2f}")
         (out / "metrics.json").write_text(json.dumps(meta["metrics"], indent=2))
 
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        hashes = list(executor.map(_file_sha256, [image_path, dem, gcp, reference]))
+        
     meta["evidence_bundle"] = {
-        "image_sha256": _file_sha256(image_path),
-        "dem_sha256": _file_sha256(dem),
-        "gcp_sha256": _file_sha256(gcp),
-        "reference_sha256": _file_sha256(reference),
+        "image_sha256": hashes[0],
+        "dem_sha256": hashes[1],
+        "gcp_sha256": hashes[2],
+        "reference_sha256": hashes[3],
         "model_identifier": backbone,
         "rotation_passes": dinfo.get("tta"),
         "calibration_method": cal.method,
@@ -369,6 +381,6 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         baseline=getattr(cal, "extras", {}).get("dem") if units == "metre" else None,
         uncertainty=unc_view, susceptibility=susc)
     dio.save_preview(out / "preview.png", view_h, gsd=gsd)
-    (out / "meta.json").write_text(json.dumps(meta, indent=2, default=float))
+    (out / "meta.json").write_text(json.dumps(_clean_numpy(meta), separators=(',', ':')))
     log(f"done in {meta['timing_s']['total']} s -> {out}")
     return meta

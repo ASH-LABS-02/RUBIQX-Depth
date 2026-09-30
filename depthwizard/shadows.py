@@ -34,8 +34,10 @@ class ShadowFit:
     candidates: int
 
 
-def _resize(a, shape, resample=Image.BILINEAR):
-    return np.asarray(Image.fromarray(a.astype(np.float32)).resize((shape[1], shape[0]), resample))
+def _resize(a, shape):
+    zoom_y = shape[0] / a.shape[0]
+    zoom_x = shape[1] / a.shape[1]
+    return ndimage.zoom(a.astype(np.float32), (zoom_y, zoom_x), order=1)
 
 
 def observed_shadow_mask(rgb: np.ndarray) -> np.ndarray:
@@ -75,6 +77,8 @@ def cast_shadows(height_m: np.ndarray, gsd: float, azimuth_deg: float, elevation
     shadow = np.zeros(h.shape, bool)
     step = max(1, max_dist_px // 60)
     seen = set()
+    sample = np.empty_like(h)
+    diff = np.empty_like(h)
     for t in range(1, max_dist_px + 1, step):
         # nearest-neighbour sampling at an integer offset is a clamped shift
         # (identical to map_coordinates(order=0, mode="nearest"), much faster)
@@ -82,8 +86,10 @@ def cast_shadows(height_m: np.ndarray, gsd: float, azimuth_deg: float, elevation
         if (ky, kx) in seen:          # a later t with the same offset is stricter: no new cells
             continue
         seen.add((ky, kx))
-        sample = h[np.clip(ar + ky, 0, H - 1)][:, np.clip(ac + kx, 0, W - 1)]
-        shadow |= (sample - h) > t * gsd * tan_el
+        np.take(h, np.clip(ar + ky, 0, H - 1), axis=0, out=sample)
+        np.take(sample, np.clip(ac + kx, 0, W - 1), axis=1, out=sample)
+        np.subtract(sample, h, out=diff)
+        shadow |= diff > t * gsd * tan_el
     return shadow
 
 

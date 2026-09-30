@@ -664,37 +664,22 @@ async function loadScene(id) {
     let ref = meta.has_reference && meta.units === 'metre'
       ? new Float32Array(await (await fetch(base + 'ref.bin?' + Date.now())).arrayBuffer()) : null;
 
-    let dtm = null;
-    try {
-      if (meta.has_dtm !== false) {
-        const dtmRes = await fetch(base + 'dtm.bin?' + Date.now());
-        if (dtmRes.ok) dtm = new Float32Array(await dtmRes.arrayBuffer());
-      }
-    } catch {}
+    const fetchLayer = async (name, type = 'bin') => {
+      try {
+        const res = await fetch(base + name);
+        if (!res.ok) return null;
+        return type === 'json' ? await res.json() : new Float32Array(await res.arrayBuffer());
+      } catch { return null; }
+    };
 
-    let confidence = null;
-    try {
-      if (meta.has_confidence !== false) {
-        const confRes = await fetch(base + 'confidence.bin?' + Date.now());
-        if (confRes.ok) confidence = new Float32Array(await confRes.arrayBuffer());
-      }
-    } catch {}
-
-    let buildings = null;
-    try {
-      if (meta.buildings_count !== 0) {
-        const bRes = await fetch(base + 'buildings.json?' + Date.now());
-        if (bRes.ok) buildings = await bRes.json();
-      }
-    } catch {}
-
-    const layerBin = async (name) => { try { const r = await fetch(base + name + '?' + Date.now()); return r.ok ? new Float32Array(await r.arrayBuffer()) : null; } catch { return null; } };
-    let susc = meta.layers?.susc ? await layerBin('susc.bin') : null;
-    let change = meta.layers?.change ? await layerBin('change.bin') : null;
-    let demBase = null;
-    if (meta.layers?.base) {
-      try { const r = await fetch(base + 'base.bin'); if (r.ok) demBase = new Float32Array(await r.arrayBuffer()); } catch {}
-    }
+    const [dtm, confidence, buildings, susc, change, demBase] = await Promise.all([
+      meta.has_dtm !== false ? fetchLayer('dtm.bin') : Promise.resolve(null),
+      meta.has_confidence !== false ? fetchLayer('confidence.bin') : Promise.resolve(null),
+      meta.buildings_count !== 0 ? fetchLayer('buildings.json', 'json') : Promise.resolve(null),
+      meta.layers?.susc ? fetchLayer('susc.bin') : Promise.resolve(null),
+      meta.layers?.change ? fetchLayer('change.bin') : Promise.resolve(null),
+      meta.layers?.base ? fetchLayer('base.bin') : Promise.resolve(null)
+    ]);
 
     // High mesh detail: real 1024 heights from the full-resolution rasters; other layers upsampled
     let hArr = new Float32Array(hBuf);
