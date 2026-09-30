@@ -3,7 +3,7 @@
 **One ordinary satellite image → a calibrated 3D surface model and a disaster-ready digital twin.**
 Smart India Hackathon 2026 · Problem Statement 26175 (ISRO / SAC) · Team RUBIQX
 
-![3D city from a single image, presentation mode](docs/images/present.jpg)
+![DepthWizard: 3D city from a single satellite image](docs/images/present.jpg)
 
 | Reference-held-out DC LiDAR check (2 scenes) | Model fine-tuned on aerial LiDAR | Runs offline |
 |---|---|---|
@@ -31,13 +31,15 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 ## Gallery
 
-| Textured 3D city (LoD1 buildings on bare ground) | Topo: hypsometric tint + index contours + hillshade |
+| **Buildings** – 131 fitted buildings with height, storeys, volume, solar; one known height recalibrates the city | **Topo** – hypsometric tint + index contours + hillshade |
 |---|---|
-| ![city](docs/images/city.jpg) | ![topo](docs/images/topo.jpg) |
-| **Slope hazard** (true slope, 0–30° / 30–45° / >45°) | **Connected flood** – water, depth colour, buildings affected |
+| ![buildings](docs/images/city.jpg) | ![topo](docs/images/topo.jpg) |
+| **Slope hazard** (true slope, 0–30° / 30–45° / >45°) | **Flood & response** – connected flood, buildings and people exposed, mission planning |
 | ![hazard](docs/images/hazard.jpg) | ![flood](docs/images/flood.jpg) |
-| **DEM vs our DSM swipe** – what the AI adds to a 30 m DEM | **Demo gallery** – one click to an impressive view |
-| ![swipe](docs/images/swipe.jpg) | ![gallery](docs/images/gallery.jpg) |
+| **Model Compare** – pretrained Depth Anything V2 vs our GAMUS fine-tuned model, same image | **Validate** – blind LiDAR check: 38.5% lower RMSE than the input DEM |
+| ![swipe](docs/images/swipe.jpg) | ![validate](docs/images/validate.jpg) |
+| **Demo gallery** – one click to a ready scene | |
+| ![gallery](docs/images/gallery.jpg) | |
 
 ## How it works
 
