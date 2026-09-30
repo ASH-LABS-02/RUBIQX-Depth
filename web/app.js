@@ -371,6 +371,7 @@ function floodedBuildings(level) {
   return out;
 }
 function updateFloodBuildingColors(wetIds) {
+  S.lastWetIds = wetIds;
   if (!S.buildingGroup) return;
   for (const mesh of S.buildingGroup.children) {
     const wet = wetIds.has(mesh.userData.building?.id);
@@ -383,7 +384,43 @@ function updateFloodBuildingColors(wetIds) {
       }
     });
   }
+  if (S.heightLimit) applyHeightLimit();
 }
+// ---- planning: buildings taller than a height limit (orange highlight)
+function applyHeightLimit() {
+  const info = $('#height-limit-info');
+  const list = S.buildings?.buildings || [];
+  if (S.meta?.units !== 'metre' || !list.length) {
+    S.heightLimit = null;
+    info.textContent = 'Needs a metric scene with LoD1 buildings.';
+    return;
+  }
+  const limit = +$('#height-limit').value;
+  if (!(limit > 0)) { info.textContent = 'Enter a limit in metres.'; return; }
+  S.heightLimit = limit;
+  const over = list.filter((b) => (b.height_m || 0) > limit).sort((a, b) => b.height_m - a.height_m);
+  const ids = new Set(over.map((b) => b.id));
+  S.buildingGroup?.children.forEach((mesh) => {
+    if (!ids.has(mesh.userData.building?.id)) return;
+    mesh.traverse((part) => {
+      const mats = Array.isArray(part.material) ? part.material : [part.material];
+      for (const mat of mats) if (mat?.emissive) { mat.emissive.setHex(0xd97706); mat.emissiveIntensity = 0.8; }
+    });
+  });
+  const top = over.slice(0, 5).map((b) => `#${b.id} ${fmt(b.height_m, 1)} m`).join(', ');
+  info.innerHTML = over.length
+    ? `<b>${over.length}</b> of ${list.length} buildings exceed ${fmt(limit, 1)} m (highlighted orange).${top ? ' Tallest: ' + top + '.' : ''} <span class="note">Heights carry the scene's calibration uncertainty.</span>`
+    : `No building exceeds ${fmt(limit, 1)} m (tallest ${fmt(Math.max(...list.map((b) => b.height_m || 0)), 1)} m).`;
+}
+function clearHeightLimit() {
+  S.heightLimit = null;
+  updateFloodBuildingColors(S.lastWetIds || new Set());
+  $('#height-limit-info').textContent = 'Highlights LoD1 buildings taller than a planning limit (metric scenes).';
+}
+$('#height-limit-run').onclick = () => { updateFloodBuildingColors(S.lastWetIds || new Set()); applyHeightLimit(); };
+$('#height-limit-clear').onclick = clearHeightLimit;
+$('#height-limit').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#height-limit-run').click(); });
+
 $$('#flood-source button').forEach((btn) => btn.onclick = () => {
   S.floodSource = btn.dataset.src; $$('#flood-source button').forEach((x) => x.classList.toggle('active', x === btn));
   if (S.floodSource === 'point') S.floodSeed = null;
@@ -472,6 +509,9 @@ function setSun(deg, elevDeg) {
 
 // ------------------------------------------------------------------ loading scenes
 async function loadScene(id) {
+  S.heightLimit = null; S.lastWetIds = null;
+  const hlInfo = document.getElementById('height-limit-info');
+  if (hlInfo) hlInfo.textContent = 'Highlights LoD1 buildings taller than a planning limit (metric scenes).';
   busy(true, 'Loading terrain & 3D buildings…');
   try {
     const base = `jobs/${id}/viewer/`;
@@ -1521,6 +1561,7 @@ $$('#export-menu [data-export]').forEach((b) => b.onclick = () => {
   closeExportMenu(); if (!S.id) return;
   const kind = b.dataset.export;
   if (kind === 'shot') saveView();
+  else if (kind === 'all') location.href = `api/scenes/${S.id}/export-all.zip`;
   else if (kind === 'dsm') location.href = `api/scenes/${S.id}/dsm`;
   else if (kind === 'report') window.open(`api/scenes/${S.id}/report`, '_blank');
   else if (kind === 'evidence') location.href = `api/scenes/${S.id}/evidence`;
@@ -1602,7 +1643,8 @@ form.onsubmit = async (e) => {
     for (;;) {
       await new Promise((r) => setTimeout(r, 800));
       const st = await (await fetch(`api/jobs/${id}`)).json();
-      log.textContent = st.log.join('\n') + (st.state === 'running' ? '\n…' : '');
+      const waitNote = st.state === 'queued' ? (st.position ? `Queued – ${st.position} job${st.position > 1 ? 's' : ''} ahead of this one…` : 'Queued – starting next…') : '';
+      log.textContent = (waitNote ? waitNote + '\n' : '') + st.log.join('\n') + (st.state === 'running' ? '\n…' : '');
       log.scrollTop = log.scrollHeight;
       if (st.state === 'done') { await refreshScenes(id); showTab('analyse'); break; }
       if (st.state === 'error') { log.textContent += '\n✕ ' + st.error; break; }

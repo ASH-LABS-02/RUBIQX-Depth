@@ -208,3 +208,33 @@ def save_preview(path, height: np.ndarray, gsd: float = 1.0) -> None:
     shade = np.clip((-gx * np.sin(az) * np.cos(el) + gy * np.cos(az) * np.cos(el) + np.sin(el)) / n, 0, 1)
     rgb = _colormap(t) * (0.45 + 0.55 * shade[..., None])
     Image.fromarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8)).save(path)
+
+
+def limit_pixels(img: InputImage, max_pixels: int) -> tuple[InputImage, float]:
+    """Downsample very large scenes so a laptop can process them.
+    Returns the (possibly new) image and the linear factor (1 = unchanged).
+    Georeference and ground sample distance are scaled consistently."""
+    h, w = img.shape
+    if max_pixels <= 0 or h * w <= max_pixels:
+        return img, 1.0
+    f = (h * w / max_pixels) ** 0.5
+    nw, nh = max(1, int(round(w / f))), max(1, int(round(h / f)))
+    rgb = np.asarray(Image.fromarray(img.rgb).resize((nw, nh), Image.LANCZOS))
+    fx, fy = w / nw, h / nh
+    return InputImage(rgb=rgb, path=img.path, georeferenced=img.georeferenced, crs=img.crs,
+                      transform=img.transform * Affine.scale(fx, fy) if img.georeferenced else img.transform,
+                      pixel_size_m=img.pixel_size_m * fx if img.pixel_size_m else None), fx
+
+
+def match_grid(img: InputImage, shape: tuple[int, int]) -> InputImage:
+    """Resample an input image to a processed scene's grid (used when the
+    pipeline downsampled a very large scene)."""
+    h, w = shape
+    if img.shape == (h, w):
+        return img
+    fx, fy = img.shape[1] / w, img.shape[0] / h
+    rgb = np.asarray(Image.fromarray(img.rgb).resize((w, h), Image.LANCZOS))
+    return InputImage(rgb=rgb, path=img.path, georeferenced=img.georeferenced, crs=img.crs,
+                      transform=img.transform * Affine.scale(fx, fy) if img.georeferenced else img.transform,
+                      pixel_size_m=img.pixel_size_m * fx if img.pixel_size_m else None)
+

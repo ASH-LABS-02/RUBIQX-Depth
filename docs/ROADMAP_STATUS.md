@@ -22,8 +22,8 @@ Competitor columns summarise what their public material shows (see
 | Diffusion refinement | ⬜ | |
 | Physical cues (shadow / view geometry) | 🟡 | shadow-consistency scale check (experimental, guarded) + sun-matched rendering |
 | Ensembles + TTA | ✅ | 1/4/8-pass rotation ensemble, uncertainty map |
-| Calibrated uncertainty | 🟡 | per-pixel σ exported; coverage calibration not yet measured |
-| Distilled / fast model | 🟡 | ONNX export script (`scripts/export_onnx.py`) |
+| Calibrated uncertainty | 🟡 | coverage measured: σ ranks error well but is 9–16× too small (BENCHMARKS §5); treat as relative |
+| Distilled / fast model | 🟡 | ONNX export script; model kept loaded between jobs; batched ensemble passes; fp16 opt-in (`DEPTHWIZARD_FP16=1`) |
 
 ## 3. Calibration and geodesy
 | Item | Status | Notes |
@@ -76,7 +76,7 @@ Competitor columns summarise what their public material shows (see
 | Viewshed / line of sight | ✅ |
 | Building statistics | ✅ |
 | Rooftop solar potential | ✅ (indicative) |
-| Height-limit / density checks | ⬜ |
+| Height-limit / density checks | 🟡 height-limit check in the viewer |
 
 ## 8. Disaster management
 | Item | Status | Notes |
@@ -95,9 +95,9 @@ Competitor columns summarise what their public material shows (see
 |---|---|
 | One-file desktop app | 🟡 `packaging/build_windows.bat` + spec (not yet built on a clean PC) |
 | ONNX / TensorRT | 🟡 export script |
-| Large scenes | 🟡 tiled inference; viewer downsamples |
+| Large scenes | ✅ tiled inference; automatic downsampling above 64 MP (`DEPTHWIZARD_MAX_MP`); viewer downsamples |
 | REST API + docs | ✅ FastAPI `/docs`, product, CityJSON, PLY, change endpoints |
-| Exports | ✅ GeoTIFF (DSM/DTM/nDSM/σ), GLB, OBJ, PLY, CityJSON |
+| Exports | ✅ GeoTIFF (DSM/DTM/nDSM/σ), GLB, OBJ, PLY, CityJSON, one-click export-all ZIP |
 | Tests / CI | ✅ 12 pytest tests, GitHub Actions workflow |
 | Model card / reproducibility | ✅ `docs/MODEL_CARD.md`, `docs/BENCHMARKS.md` |
 | Security | 🟡 local-only processing; no auth (single-user app) |

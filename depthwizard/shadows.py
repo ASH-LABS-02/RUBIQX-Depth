@@ -70,11 +70,19 @@ def cast_shadows(height_m: np.ndarray, gsd: float, azimuth_deg: float, elevation
     if max_dist_px is None:
         max_dist_px = int(min(400, relief / max(tan_el, 1e-3) / gsd + 2))
     h = np.nan_to_num(height_m, nan=float(np.nanmin(height_m)))
-    rows, cols = np.mgrid[0:h.shape[0], 0:h.shape[1]].astype(np.float32)
+    H, W = h.shape
+    ar, ac = np.arange(H), np.arange(W)
     shadow = np.zeros(h.shape, bool)
     step = max(1, max_dist_px // 60)
+    seen = set()
     for t in range(1, max_dist_px + 1, step):
-        sample = ndimage.map_coordinates(h, [rows + dy * t, cols + dx * t], order=0, mode="nearest")
+        # nearest-neighbour sampling at an integer offset is a clamped shift
+        # (identical to map_coordinates(order=0, mode="nearest"), much faster)
+        ky, kx = int(np.floor(dy * t + 0.5)), int(np.floor(dx * t + 0.5))
+        if (ky, kx) in seen:          # a later t with the same offset is stricter: no new cells
+            continue
+        seen.add((ky, kx))
+        sample = h[np.clip(ar + ky, 0, H - 1)][:, np.clip(ac + kx, 0, W - 1)]
         shadow |= (sample - h) > t * gsd * tan_el
     return shadow
 

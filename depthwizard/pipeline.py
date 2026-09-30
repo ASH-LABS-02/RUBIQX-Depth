@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -32,13 +33,19 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         scene="auto", fetch_dem=False, assumed_gsd_m=1.0, allow_fallback=True,
         relative_display_height_m=None, device=None, dem_source="COP30",
         match_dem_30m=True, tta=4, dem_kind="auto", sun_elevation=None, sun_azimuth=None,
-        vertical_datum=None, anchors=None, log=print) -> dict:
+        vertical_datum=None, anchors=None, max_pixels=None, log=print) -> dict:
     t0 = time.time()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     log("reading image")
     img = dio.read_image(image_path)
+    max_pixels = int(float(os.environ.get("DEPTHWIZARD_MAX_MP", "64")) * 1e6) if max_pixels is None else int(max_pixels)
+    img, shrink = dio.limit_pixels(img, max_pixels)
+    if shrink > 1.0:
+        assumed_gsd_m = assumed_gsd_m * shrink
+        log(f"  large scene: downsampled {shrink:.2f}x to {img.shape[1]}x{img.shape[0]} px "
+            f"(limit {max_pixels / 1e6:.0f} MP; set DEPTHWIZARD_MAX_MP to change)")
     gsd = img.pixel_size_m or assumed_gsd_m
     log(f"  {img.shape[1]}x{img.shape[0]} px, georeferenced={img.georeferenced}"
         + (f", GSD≈{gsd:.2f} m" if img.pixel_size_m else ""))

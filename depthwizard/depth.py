@@ -73,33 +73,76 @@ class DepthBackbone:
         self.name = name
         self.agl = is_overhead_agl(name)
         self.info: dict = {}
+        # speed options: batching is numerically identical; fp16 is opt-in
+        # (set DEPTHWIZARD_FP16=1) until it is re-benchmarked on the GPU.
+        self.batch_tta = os.environ.get("DEPTHWIZARD_BATCH_TTA", "1") != "0"
+        self.fp16 = os.environ.get("DEPTHWIZARD_FP16", "0") == "1"
+
+    def _forward(self, images: list[np.ndarray]) -> tuple[list[np.ndarray], float]:
+        """One batched forward pass for same-shape images. Returns per-image
+        predictions resized to the input size, and the original-to-network
+        pixel factor of the first image."""
+        torch = self.torch
+        inputs = self.processor(images=[Image.fromarray(x) for x in images], return_tensors="pt").to(self.device)
+        net_h = int(inputs["pixel_values"].shape[-2])
+        use_fp16 = self.fp16 and self.device == "cuda"
+        with torch.inference_mode():
+            if use_fp16:
+                with torch.autocast("cuda", dtype=torch.float16):
+                    pred = self.model(**inputs).predicted_depth
+            else:
+                pred = self.model(**inputs).predicted_depth      # B x h x w
+        pred = torch.nn.functional.interpolate(pred.float()[:, None], size=images[0].shape[:2],
+                                               mode="bicubic", align_corners=False)
+        outs = [pred[i, 0].cpu().numpy() for i in range(pred.shape[0])]
+        return outs, images[0].shape[0] / max(net_h, 1)
 
     def _infer_once(self, rgb: np.ndarray) -> tuple[np.ndarray, float]:
-        torch = self.torch
-        inputs = self.processor(images=Image.fromarray(rgb), return_tensors="pt").to(self.device)
-        net_h = int(inputs["pixel_values"].shape[-2])
-        with torch.no_grad():
-            pred = self.model(**inputs).predicted_depth  # 1 x h x w
-        pred = torch.nn.functional.interpolate(pred[:, None], size=rgb.shape[:2],
-                                               mode="bicubic", align_corners=False)
-        return pred[0, 0].float().cpu().numpy(), rgb.shape[0] / max(net_h, 1)
+        outs, f = self._forward([rgb])
+        return outs[0], f
 
     def _infer(self, rgb: np.ndarray, tta: int = 1, return_std: bool = False):
         """Test-time augmentation over rotations (and flips when tta=8).
         Nadir imagery has no preferred orientation, so disagreement between
-        the passes is a direct per-pixel uncertainty estimate."""
-        outs = []
-        factor = 1.0
+        the passes is a direct per-pixel uncertainty estimate.
+
+        Passes with the same image shape are run as one batch (all of them for
+        square tiles); on a CUDA out-of-memory error it falls back to one pass
+        at a time."""
         variants = [(k, False) for k in range(4)][:max(1, min(tta, 4))]
         if tta >= 8:
             variants += [(k, True) for k in range(4)]
+        prepared = []
         for k, flip in variants:
             x = np.rot90(rgb, k)
             if flip:
                 x = x[:, ::-1]
-            d, f = self._infer_once(np.ascontiguousarray(x))
-            if k == 0 and not flip:
+            prepared.append(np.ascontiguousarray(x))
+        groups: dict[tuple, list[int]] = {}
+        for i, x in enumerate(prepared):
+            groups.setdefault(x.shape, []).append(i)
+        raw_out: list = [None] * len(prepared)
+        factor = 1.0
+        for idx in groups.values():
+            batch = [prepared[i] for i in idx]
+            try:
+                preds, f = self._forward(batch) if self.batch_tta else (None, None)
+            except Exception as exc:  # noqa: BLE001 - CUDA OOM → sequential
+                if "out of memory" not in str(exc).lower():
+                    raise
+                self.torch.cuda.empty_cache()
+                preds = None
+            if preds is None:
+                preds, f = [], None
+                for x in batch:
+                    p, fx = self._forward([x])
+                    preds.append(p[0]); f = f or fx
+            for i, p in zip(idx, preds):
+                raw_out[i] = p
+            if 0 in idx:
                 factor = f
+        outs = []
+        for (k, flip), d in zip(variants, raw_out):
             if flip:
                 d = d[:, ::-1]
             outs.append(np.rot90(d, -k))
@@ -146,6 +189,7 @@ class DepthBackbone:
                 global_size: int = 1024, tta: int = 1, gsd: float | None = None) -> np.ndarray:
         """Normalised relative height in [0, 1]. Raw-unit bookkeeping for
         metric scale and the TTA uncertainty are stored in ``self.info``."""
+        self.info = {}
         h, w = rgb.shape[:2]
         if self.agl and gsd:
             metric, mstd, net_gsd = self.predict_agl_metric(rgb, gsd, tta=tta)
@@ -203,6 +247,38 @@ class DepthBackbone:
         return C_PIXEL_HEIGHT * net_gsd * self.info["raw_span"]
 
 
+# ---- model cache: loading weights takes seconds and VRAM churn, so keep up
+# to two backbones (e.g. GAMUS + pretrained for comparisons) alive between jobs.
+import threading as _threading
+_BACKBONES: dict = {}
+_BB_LOCK = _threading.RLock()
+_MAX_CACHED = 2
+
+
+def get_backbone(model: str = "small", device: str | None = None) -> "DepthBackbone":
+    key = (str(model), device)
+    with _BB_LOCK:
+        bb = _BACKBONES.get(key)
+        if bb is None:
+            while len(_BACKBONES) >= _MAX_CACHED:
+                old = _BACKBONES.pop(next(iter(_BACKBONES)))
+                try:
+                    if getattr(old, "device", "") == "cuda":
+                        del old
+                        import torch
+                        torch.cuda.empty_cache()
+                except Exception:  # noqa: BLE001
+                    pass
+            bb = DepthBackbone(model, device)
+            _BACKBONES[key] = bb
+        return bb
+
+
+def clear_backbone_cache() -> None:
+    with _BB_LOCK:
+        _BACKBONES.clear()
+
+
 def _feather(tile: int, overlap: int) -> np.ndarray:
     r = np.ones(tile, np.float32)
     if overlap > 0:
@@ -248,10 +324,19 @@ def relative_height(rgb: np.ndarray, model: str = "small", allow_fallback: bool 
     """
     passes = 4 if tta is True else (1 if not tta else int(tta))
     try:
-        bb = DepthBackbone(model, device)
-        rel = bb.predict(rgb, tta=passes, gsd=gsd)
-        info = dict(bb.info)
-        info["learned_scale"] = bb.metres_per_unit
+        bb = get_backbone(model, device)
+        with _BB_LOCK:          # one prediction at a time per cached model
+            rel = bb.predict(rgb, tta=passes, gsd=gsd)
+            info = dict(bb.info)
+            snap = dict(bb.info)
+            def learned_scale(g, _bb=bb, _snap=snap):
+                keep = _bb.info
+                _bb.info = _snap
+                try:
+                    return _bb.metres_per_unit(g)
+                finally:
+                    _bb.info = keep
+            info["learned_scale"] = learned_scale
         name = bb.name
     except Exception as exc:  # noqa: BLE001
         if not allow_fallback:

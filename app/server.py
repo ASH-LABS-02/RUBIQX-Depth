@@ -51,21 +51,78 @@ def _save(upload: UploadFile | None, folder: Path) -> str | None:
     return str(dest)
 
 
-def _worker(job_id: str, kwargs: dict):
+import queue as _queue
+
+_jobs_q: "_queue.Queue[tuple[str, dict]]" = _queue.Queue()
+_queue_order: list[str] = []          # job ids waiting, oldest first
+_LOG_LIMIT = 500
+
+
+def _save_status(job_id: str) -> None:
+    """Persist a job's state so a server restart doesn't lose it."""
+    st = _status.get(job_id)
+    folder = JOBS / job_id
+    if st is None or not folder.is_dir():
+        return
+    try:
+        (folder / "status.json").write_text(json.dumps(
+            {"state": st["state"], "error": st.get("error"), "log": st["log"][-_LOG_LIMIT:]}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _run_job(job_id: str, kwargs: dict):
     st = _status[job_id]
 
     def log(msg):
         st["log"].append(msg)
+        if len(st["log"]) > _LOG_LIMIT:
+            del st["log"][: len(st["log"]) - _LOG_LIMIT]
 
     try:
         with _lock:
-            st["state"] = "running"
+            with _state_lock:
+                st["state"] = "running"
+            _save_status(job_id)
             run(log=log, **kwargs)
         st["state"] = "done"
     except Exception as exc:  # noqa: BLE001
         st["state"] = "error"
         st["error"] = f"{exc.__class__.__name__}: {exc}"
         log(traceback.format_exc(limit=3))
+    finally:
+        _save_status(job_id)
+
+
+def _queue_worker():
+    """One worker processes uploads strictly in the order they arrived."""
+    while True:
+        job_id, kwargs = _jobs_q.get()
+        with _state_lock:
+            if job_id in _queue_order:
+                _queue_order.remove(job_id)
+        try:
+            if job_id in _status:            # deleted while waiting → skip
+                _run_job(job_id, kwargs)
+        finally:
+            _jobs_q.task_done()
+
+
+def _mark_interrupted_jobs():
+    """Jobs that were queued/running when the server stopped cannot resume."""
+    for status_file in JOBS.glob("*/status.json"):
+        try:
+            data = json.loads(status_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("state") in ("queued", "running"):
+            data["state"] = "error"
+            data["error"] = "The server restarted before this job finished; please process it again."
+            status_file.write_text(json.dumps(data), encoding="utf-8")
+
+
+_mark_interrupted_jobs()
+threading.Thread(target=_queue_worker, daemon=True, name="depthwizard-jobs").start()
 
 
 @app.post("/api/process")
@@ -102,15 +159,37 @@ async def process(image: UploadFile = File(...),
                                                                  "dem": dem.filename if dem else None,
                                                                  "reference": reference.filename if reference else None,
                                                                  "gcp": gcp.filename if gcp else None}}))
-    _status[job_id] = {"state": "queued", "log": [], "error": None}
-    threading.Thread(target=_worker, args=(job_id, kwargs), daemon=True).start()
-    return {"id": job_id}
+    with _state_lock:
+        _status[job_id] = {"state": "queued", "log": [], "error": None}
+        _queue_order.append(job_id)
+    _save_status(job_id)
+    _jobs_q.put((job_id, kwargs))
+    return {"id": job_id, "position": _queue_position(job_id)}
+
+
+def _queue_position(job_id: str) -> int:
+    """0 = running or next; n = n jobs ahead of it."""
+    with _state_lock:
+        if job_id not in _queue_order:
+            return 0
+        running = any(st["state"] == "running" for st in _status.values())
+        return _queue_order.index(job_id) + (1 if running else 0)
 
 
 @app.get("/api/jobs/{job_id}")
 def job(job_id: str):
     if job_id in _status:
-        return _status[job_id]
+        st = _status[job_id]
+        out = {"state": st["state"], "log": list(st["log"]), "error": st.get("error")}
+        if st["state"] == "queued":
+            out["position"] = _queue_position(job_id)
+        return out
+    status_file = JOBS / job_id / "status.json"
+    if status_file.is_file():
+        try:
+            return json.loads(status_file.read_text(encoding="utf-8"))
+        except ValueError:
+            pass
     if (JOBS / job_id / "viewer" / "meta.json").exists():
         return {"state": "done", "log": [], "error": None}
     raise HTTPException(404)
@@ -137,7 +216,10 @@ def delete_scene(job_id: str):
     if d.parent != JOBS.resolve() or not d.exists():
         raise HTTPException(404)
     shutil.rmtree(d)
-    _status.pop(job_id, None)
+    with _state_lock:
+        _status.pop(job_id, None)
+        if job_id in _queue_order:
+            _queue_order.remove(job_id)
     return {"ok": True}
 
 
@@ -204,6 +286,59 @@ def download_product(job_id: str, kind: str):
         if (folder / name).exists():
             return FileResponse(folder / name, filename=f"{job_id}_{name}", media_type="image/tiff")
     raise HTTPException(404, f"{kind} is not available for this scene")
+
+
+@app.get("/api/scenes/{job_id}/export-all.zip")
+def download_all(job_id: str):
+    """Every product for a scene in one ZIP: GeoTIFFs, CityJSON, PLY, GLB,
+    HTML report and the evidence metadata."""
+    import zipfile
+    from depthwizard.exports import export_cityjson, export_ply
+    folder = _completed_scene(job_id)
+    out_dir = folder / "exports"
+    out_dir.mkdir(exist_ok=True)
+    archive = out_dir / f"{job_id}_all_products.zip"
+    notes = []
+    with _export_lock:
+        members: list[tuple[Path, str]] = []
+        for name in ("dsm.tif", "rdsm.tif", "dtm.tif", "ndsm.tif", "uncertainty.tif", "preview.png",
+                     "meta.json", "metrics.json"):
+            if (folder / name).is_file():
+                members.append((folder / name, name))
+        if (folder / "viewer" / "buildings.json").is_file():
+            try:
+                members.append((export_cityjson(folder, out_dir / "buildings.city.json"), "buildings.city.json"))
+            except Exception as exc:  # noqa: BLE001
+                notes.append(f"CityJSON skipped: {exc}")
+        try:
+            members.append((export_ply(folder, out_dir / "points.ply"), "points.ply"))
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"PLY skipped: {exc}")
+        glb = out_dir / "terrain-256.glb"
+        try:
+            export_glb(folder, glb, 256)
+            members.append((glb, "terrain.glb"))
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"GLB skipped: {exc}")
+        report = out_dir / "report.html"
+        try:
+            report.write_text(generate_html_report(folder), encoding="utf-8")
+            members.append((report, "report.html"))
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"report skipped: {exc}")
+        readme = ("DepthWizard / RUBIQX-Depth export for scene " + job_id + "\n\n"
+                  "dsm/rdsm: surface heights (rdsm = relative units)\n"
+                  "dtm: bare earth · ndsm: height above ground · uncertainty: 1-sigma ensemble spread\n"
+                  "buildings.city.json: LoD1 buildings (CityJSON 1.1) · points.ply: coloured point cloud\n"
+                  "terrain.glb: textured mesh · report.html: open in a browser, print to PDF\n"
+                  "meta.json: calibration method, evidence level, datum and file hashes\n")
+        if notes:
+            readme += "\nNotes:\n" + "\n".join(notes) + "\n"
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+            for src, arc in members:
+                z.write(src, arc)
+            z.writestr("README.txt", readme)
+    return FileResponse(archive, filename=f"{job_id}_all_products.zip", media_type="application/zip")
 
 
 @app.get("/api/scenes/{job_id}/buildings.city.json")
@@ -424,8 +559,9 @@ def scan_auto_anchors(job_id: str):
     image_path = folder / "inputs" / Path(vm["input"]).name
     if not image_path.is_file():
         raise HTTPException(404, "the original optical upload is unavailable")
-    img = read_image(image_path)
+    from depthwizard.io import match_grid
     labels = np.load(folder / "building_labels.npy")
+    img = match_grid(read_image(image_path), labels.shape)
     building_data = json.loads((folder / "viewer" / "buildings.json").read_text(encoding="utf-8"))
     ndsm_path = folder / "ndsm_raw.tif" if (folder / "ndsm_raw.tif").is_file() else folder / "ndsm.tif"
     ndsm = read_raster(ndsm_path)[0]
@@ -592,11 +728,11 @@ def rescale(job_id: str, body: RescaleBody):
                         reference_path = candidate
                         break
         if reference_path:
-            from depthwizard.io import read_image
+            from depthwizard.io import match_grid, read_image
             from depthwizard.metrics import evaluate, reference_on_grid, building_level
             image_path = folder / "inputs" / Path(vm["input"]).name
             if image_path.is_file():
-                image = read_image(image_path)
+                image = match_grid(read_image(image_path), dsm.shape)
                 reference_grid = reference_on_grid(reference_path, image)
                 validation = evaluate(dsm, reference_grid, "metre", rgb=image.rgb, gsd=float(vm["gsd_m"]))
                 prior_path = folder / "metrics.json"
@@ -687,10 +823,11 @@ def rescale(job_id: str, body: RescaleBody):
             mp.write_text(json.dumps(m, indent=2, default=float))
 
         # 7. re-export derived files
-        from depthwizard.exports import export_cityjson, export_ply
-        (folder / "exports").mkdir(exist_ok=True)
-        export_cityjson(folder, folder / "exports" / "buildings.city.json")
-        export_ply(folder, folder / "exports" / "points.ply")
+        # CityJSON, PLY, meshes and zips are rebuilt on demand by their download
+        # endpoints; deleting the stale copies keeps rescale fast.
+        for stale in (folder / "exports").glob("*") if (folder / "exports").is_dir() else ():
+            if stale.is_file():
+                stale.unlink(missing_ok=True)
 
         if body.reset:   # restore raws exactly, then drop them
             for n in ("ndsm", "dsm", "uncertainty"):

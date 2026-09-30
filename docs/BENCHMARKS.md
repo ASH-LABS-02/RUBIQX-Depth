@@ -79,6 +79,24 @@ the image (`rgb_post_simulated.tif`, clearly labelled test fixture). Pre/post
 comparison flagged 12 buildings: 11 correct, 1 false positive, 1 missed
 (precision 0.92, recall 0.92); 67,600 m³ of height loss.
 
+## 5. Uncertainty calibration (coverage check)
+
+`scripts/uncertainty_coverage.py` compares the rotation-ensemble spread (σ,
+`uncertainty.tif`) with the true error against LiDAR, after removing the
+scene-wide bias.
+
+| Scene | Median σ | Errors within 1σ (ideal 68 %) | within 2σ (ideal 95 %) | RMSE by σ quartile (low → high) |
+|---|---:|---:|---:|---|
+| DC Glover Park | 0.34 m | 6 % | 12 % | 3.3 → 3.7 → 4.7 → 6.9 m |
+| DC Capitol Hill East | 0.45 m | 11 % | 21 % | 2.5 → 3.2 → 3.4 → 3.8 m |
+
+Finding: σ **ranks** reliability well (error grows steadily with σ), but its
+absolute size is 9–16× too small, because the ensemble only captures
+orientation disagreement, not calibration or domain error. Treat the
+uncertainty and confidence layers as a *relative* map of where to check, not
+as calibrated metres. Next step: fit a σ scale on GAMUS validation tiles (not
+on these test scenes) and add a calibration-scale term.
+
 ## Reproduce
 
 ```bash
@@ -88,6 +106,8 @@ python -m depthwizard samples/dc_lidar/glover_park/rgb.tif \
   --model D:/DepthWizard/checkpoints/da2-gamus-full --scene urban -o out/glover
 python scripts/evaluate_gamus_h5.py --root D:/DepthWizard/GAMUS \
   --models small D:/DepthWizard/checkpoints/da2-gamus-full --out out/gamus30
+python scripts/uncertainty_coverage.py samples/dc_lidar/evaluation/001_rgb \
+  samples/dc_lidar/glover_park/rgb.tif samples/dc_lidar/glover_park/lidar_dsm_2024.tif
 pytest -q tests
 ```
 

@@ -50,3 +50,29 @@ def test_water_mask_finds_large_smooth_blue_area_only():
     rgb[5:15, 5:15] = (40, 70, 95)                                     # tiny pond: ignored
     m = water_mask(rgb, 0.5)
     assert m[100, 100] and not m[10, 10] and m.mean() < 0.5
+
+
+def test_cast_shadows_matches_nearest_sampling():
+    """The fast shift-based shadow caster equals nearest-neighbour ray marching."""
+    import numpy as np
+    from scipy import ndimage
+    from depthwizard.shadows import cast_shadows
+
+    def reference(h, gsd, az_deg, el_deg):
+        az, el = np.radians(az_deg), np.radians(el_deg)
+        dx, dy, tan_el = np.sin(az), -np.cos(az), np.tan(el)
+        n = int(min(400, float(h.max() - h.min()) / max(tan_el, 1e-3) / gsd + 2))
+        rows, cols = np.mgrid[0:h.shape[0], 0:h.shape[1]].astype(np.float32)
+        out = np.zeros(h.shape, bool)
+        for t in range(1, n + 1, max(1, n // 60)):
+            s = ndimage.map_coordinates(h, [rows + dy * t, cols + dx * t], order=0, mode="nearest")
+            out |= (s - h) > t * gsd * tan_el
+        return out
+
+    rng = np.random.default_rng(3)
+    z = ndimage.gaussian_filter(rng.random((120, 90)) * 30, 2)
+    z[40:60, 30:50] += 20
+    # angles chosen to avoid exact .5 pixel offsets, where scipy's order-0
+    # rounding alternates with pixel parity (the fast version rounds consistently)
+    for az, el in [(135, 40), (20, 15), (297, 55)]:
+        assert np.array_equal(cast_shadows(z, 0.5, az, el), reference(z, 0.5, az, el))
