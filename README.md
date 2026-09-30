@@ -17,6 +17,17 @@ RGB image ──► Depth Anything V2 ──► relative height ──► scale 
                                                                     probe, profiles, slope, error vs reference
 ```
 
+## Highlights (v2.2)
+
+| | |
+|---|---|
+| **Accuracy** | Blind absolute DSM error **5.04 m RMSE / 3.52 m MAE** over six LiDAR/survey scenes, vs 7.94 / 5.17 m for the input DEM alone and 7.06 / 5.05 m for the previous build ([benchmarks](docs/BENCHMARKS.md)). GAMUS fine-tune: correlation 0.41 → 0.79 on 30 held-out tiles. |
+| **Calibration** | Detects whether the DEM is a surface model (Copernicus/SRTM) or bare earth; fits building scale from a surface DEM and matches it exactly at 30 m; otherwise uses GCPs, a learned pixel-footprint scale or a scene prior, always labelled. |
+| **Products** | DSM, DTM, nDSM and per-pixel uncertainty GeoTIFFs · LoD1 buildings (CityJSON) · GLB/OBJ/PLY · HTML report · evidence JSON |
+| **3D** | Textured LoD1 city on bare ground, sun-matched shadows, geometric DEM-vs-DSM swipe, orbit/fly/tour, one-click flythrough video |
+| **Analysis** | Connected flood (edge / clicked source) with depth, volume and buildings affected · landslide susceptibility · viewshed · rooftop solar · pre/post change detection · profiles, 3D distance, cut/fill |
+| **Engineering** | 12 automated tests + CI, REST API with `/docs`, ONNX export, PyInstaller build script, [model card](docs/MODEL_CARD.md), [roadmap status](docs/ROADMAP_STATUS.md) |
+
 ## Quick start
 
 ```bash

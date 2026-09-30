@@ -114,7 +114,10 @@ def export_viewer_assets(out_dir: str | Path, image: InputImage, dsm: np.ndarray
                          dtm: np.ndarray | None = None,
                          confidence: np.ndarray | None = None,
                          buildings: dict | None = None,
-                         mesh_max: int = 512, tex_max: int = 4096) -> None:
+                         mesh_max: int = 512, tex_max: int = 4096,
+                         baseline: np.ndarray | None = None,
+                         uncertainty: np.ndarray | None = None,
+                         susceptibility: np.ndarray | None = None) -> None:
     """Assets for the Three.js viewer:
     texture.jpg    – the optical image (draped on the mesh)
     height.bin     – Float32 heights at mesh resolution (row-major)
@@ -153,6 +156,23 @@ def export_viewer_assets(out_dir: str | Path, image: InputImage, dsm: np.ndarray
     if has_conf:
         down(confidence).tofile(out / "confidence.bin")
 
+    layers = {}
+    for name, arr in (("base", baseline), ("unc", uncertainty), ("susc", susceptibility)):
+        if arr is not None:
+            down(arr).tofile(out / f"{name}.bin")
+            layers[name] = True
+    plot = None
+    if has_ref:
+        ok = np.isfinite(reference) & np.isfinite(dsm)
+        idx = np.flatnonzero(ok.ravel())
+        if idx.size:
+            pick = np.random.default_rng(0).choice(idx, size=min(2500, idx.size), replace=False)
+            err = (dsm.ravel() - reference.ravel())[idx]
+            lim = float(np.percentile(np.abs(err), 99)) or 1.0
+            hist, edges = np.histogram(np.clip(err, -lim, lim), bins=41, range=(-lim, lim))
+            plot = {"pred": np.round(dsm.ravel()[pick], 2).tolist(),
+                    "ref": np.round(reference.ravel()[pick], 2).tolist(),
+                    "hist": hist.tolist(), "edges": np.round(edges, 3).tolist()}
     if buildings is not None:
         (out / "buildings.json").write_text(json.dumps(buildings, indent=2), encoding="utf-8")
 
@@ -161,6 +181,7 @@ def export_viewer_assets(out_dir: str | Path, image: InputImage, dsm: np.ndarray
     meta.update(grid_w=mw, grid_h=mh, src_w=w, src_h=h,
                 ground_w_m=w * gsd, ground_h_m=h * gsd, gsd_m=gsd,
                 has_reference=has_ref, has_dtm=has_dtm, has_confidence=has_conf,
+                layers=layers, validation_plot=plot,
                 buildings_count=len(buildings.get("buildings", [])) if buildings else 0,
                 h_min=float(np.nanmin(dsm)), h_max=float(np.nanmax(dsm)))
     (out / "meta.json").write_text(json.dumps(meta, indent=2, default=float))

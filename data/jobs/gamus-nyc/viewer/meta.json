@@ -1,0 +1,79 @@
+{
+  "input": "NYC_00735_rgb.png",
+  "backbone": "/home/claude/da2-gamus-full",
+  "georeferenced": false,
+  "crs": null,
+  "transform": null,
+  "units": "relative",
+  "vertical_datum": "relative",
+  "calibration": {
+    "method": "relative",
+    "n_gcp": 0,
+    "scale_source": "none",
+    "evidence_level": "relative",
+    "learned_scale_k": 16.738654193701223,
+    "note": "non-georeferenced input; heights above ground can be read approximately in metres using the learned scale (16.7 m per unit)"
+  },
+  "scene": "urban",
+  "assumed_gsd_m": 0.33,
+  "dsm_file": "rdsm.tif",
+  "tta": 4,
+  "agl_model": true,
+  "learned_scale_m_per_unit": 16.738654193701223,
+  "timing_s": {
+    "depth": 15.64,
+    "total": 17.39
+  },
+  "display_height_m": 27.033600000000003,
+  "buildings_count": 48,
+  "total_footprint_m2": 58716.3,
+  "evidence_bundle": {
+    "image_sha256": "f6d9d9de1e09e971",
+    "dem_sha256": null,
+    "gcp_sha256": null,
+    "reference_sha256": null,
+    "model_identifier": "/home/claude/da2-gamus-full",
+    "rotation_passes": 4,
+    "calibration_method": "relative",
+    "scale_source": "none",
+    "evidence_level": "relative",
+    "scale_k": null,
+    "vertical_datum": null,
+    "software_version": "DepthWizard 2.2 (SIH26175)"
+  },
+  "analytics": {
+    "landslide": {
+      "fractions": {
+        "low": 0.5712347030639648,
+        "moderate": 0.33350181579589844,
+        "high": 0.07717323303222656,
+        "very_high": 0.018090248107910156
+      },
+      "mean_slope_deg": 16.579321215526633,
+      "max_slope_deg": 47.35301597893631,
+      "weights": {
+        "slope": 0.5,
+        "concavity": 0.15,
+        "relief": 0.2,
+        "sparse_vegetation": 0.15
+      }
+    }
+  },
+  "confidence_definition": "relative ensemble agreement",
+  "grid_w": 512,
+  "grid_h": 512,
+  "src_w": 1024,
+  "src_h": 1024,
+  "ground_w_m": 337.92,
+  "ground_h_m": 337.92,
+  "gsd_m": 0.33,
+  "has_reference": false,
+  "has_dtm": false,
+  "has_confidence": true,
+  "layers": {
+    "unc": true
+  },
+  "validation_plot": null,
+  "h_min": 0.0,
+  "h_max": 27.033599853515625
+}

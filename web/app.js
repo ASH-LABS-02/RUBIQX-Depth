@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/PointerLockControls.js';
+import { floodFill, boundarySeeds, waterMesh, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-merge';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -15,6 +16,9 @@ const RAMPS = {
   error: [[0, [0.13, 0.35, 0.75]], [0.5, [0.96, 0.96, 0.96]], [1, [0.80, 0.16, 0.16]]],
   confidence: [[0, [0.85, 0.20, 0.20]], [0.5, [0.95, 0.85, 0.25]], [1, [0.15, 0.78, 0.45]]],
   ndsm: [[0, [0.10, 0.14, 0.22]], [0.2, [0.20, 0.55, 0.65]], [0.5, [0.92, 0.82, 0.28]], [1, [0.98, 0.96, 0.92]]],
+  landslide: [[0, [0.18, 0.55, 0.34]], [0.25, [0.62, 0.78, 0.32]], [0.5, [0.96, 0.78, 0.25]], [0.7, [0.93, 0.42, 0.18]], [1, [0.65, 0.08, 0.15]]],
+  change: [[0, [0.70, 0.10, 0.14]], [0.5, [0.94, 0.94, 0.92]], [1, [0.12, 0.42, 0.80]]],
+  viewshed: [[0, [0.25, 0.25, 0.3]], [1, [0.98, 0.86, 0.3]]],
 };
 function ramp(name, t) {
   const r = RAMPS[name] || RAMPS.height; t = Math.min(1, Math.max(0, t));
@@ -37,6 +41,8 @@ const canvas = $('#gl');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: false });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
 const SKY = new THREE.Color(0x0d1117);
 scene.background = SKY;
@@ -44,7 +50,11 @@ scene.fog = new THREE.Fog(SKY, 1e6, 2e6);
 const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 1e5);
 const hemi = new THREE.HemisphereLight(0xdfe9ff, 0x3a3226, 1.6);
 const sun = new THREE.DirectionalLight(0xffffff, 1.4);
-scene.add(hemi, sun);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.02;
+scene.add(hemi, sun, sun.target);
 
 const orbit = new OrbitControls(camera, canvas);
 orbit.enableDamping = true; orbit.dampingFactor = 0.08;
@@ -110,7 +120,30 @@ function smoothGrid(source, sigmaPixels) {
 }
 
 function updateRenderHeight(rebuild = true) {
-  S.renderH = smoothGrid(S.h, S.smoothingM / Math.max(S.W / (S.gw - 1), 1e-6));
+  let src = S.h;
+  if (S.viewGeometry === 'city') {
+    const m = buildingMaskGrid();
+    if (m) {
+      src = Float32Array.from(S.h);
+      // ground under footprints: DTM when calibrated, otherwise the lowest nearby surface
+      for (let i = 0; i < src.length; i++) if (m[i]) src[i] = S.dtm ? Math.min(S.h[i], S.dtm[i]) : S.h[i];
+      if (!S.dtm) {
+        const out = Float32Array.from(src), R = 6;
+        for (let r = 0; r < S.gh; r++) for (let c = 0; c < S.gw; c++) {
+          const i = r * S.gw + c; if (!m[i]) continue;
+          let lo = Infinity;
+          for (let d = -R; d <= R; d++) {
+            const cc = c + d, rr = r + d;
+            if (cc >= 0 && cc < S.gw && !m[r * S.gw + cc]) lo = Math.min(lo, S.h[r * S.gw + cc]);
+            if (rr >= 0 && rr < S.gh && !m[rr * S.gw + c]) lo = Math.min(lo, S.h[rr * S.gw + c]);
+          }
+          if (lo < Infinity) out[i] = lo;
+        }
+        src = out;
+      }
+    }
+  }
+  S.renderH = smoothGrid(src, S.smoothingM / Math.max(S.W / (S.gw - 1), 1e-6));
   if (rebuild && S.mesh) applyHeights();
 }
 
@@ -165,6 +198,7 @@ function buildTerrain() {
       }`);
   };
   S.mesh = new THREE.Mesh(geo, mat);
+  S.mesh.receiveShadow = true; S.mesh.castShadow = true;
   scene.add(S.mesh);
   S.skirt = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 1, side: THREE.DoubleSide }));
   scene.add(S.skirt);
@@ -216,7 +250,7 @@ function applyShading() {
     } else if (S.mode === 'confidence') {
       vals = S.confidence || new Float32Array(n).fill(0.95);
       lo = 0.5; hi = 1.0;
-      legend = { name: 'confidence', lo: 50, hi: 100, unit: '% confidence' };
+      legend = { name: 'confidence', lo: 50, hi: 100, unit: S.meta?.units === 'metre' ? '% · exp(−σ/2 m), σ = ensemble spread' : '% ensemble agreement' };
     } else if (S.mode === 'ndsm') {
       const dtmBase = S.dtm || S.renderH;
       for (let i = 0; i < n; i++) vals[i] = Math.max(0, S.h[i] - dtmBase[i]);
@@ -226,6 +260,14 @@ function applyShading() {
       for (let r = 0; r < S.gh; r++) for (let c = 0; c < S.gw; c++) vals[r * S.gw + c] = curvatureAt(r, c);
       const e = Math.max(1e-5, pct(vals.map(Math.abs), 0.95));
       lo = -e; hi = e; legend = { name, lo, hi, unit: S.meta?.units === 'metre' ? '1/m (Laplacian)' : 'relative/m² (Laplacian)' };
+    } else if (S.mode === 'landslide' && S.susc) {
+      vals = S.susc; lo = 0; hi = 1;
+      legend = { name: 'landslide', lo: 0, hi: 1, unit: 'susceptibility index (screening)' };
+    } else if (S.mode === 'change' && S.change) {
+      vals = S.change; const e = Math.max(1, pct(S.change.map(Math.abs), 0.98));
+      lo = -e; hi = e; legend = { name: 'change', lo, hi, unit: 'm (after − before) · red = lowered' };
+    } else if (S.mode === 'viewshed' && S.viewshed) {
+      vals = S.viewshed; lo = 0; hi = 1; legend = { name: 'viewshed', lo: 0, hi: 1, unit: 'visible from observer (yellow)' };
     } else if (S.mode === 'error' && S.ref) {
       for (let i = 0; i < n; i++) vals[i] = S.h[i] - S.ref[i];
       const abs = vals.map(Math.abs); const e = Math.max(0.5, pct(abs, 0.95));
@@ -261,22 +303,29 @@ function updateAnalysisTools() {
       S.water = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.42, depthWrite: false, side: THREE.DoubleSide }));
       S.water.renderOrder = 2; scene.add(S.water);
     }
-    S.water.visible = S.floodActive; S.water.position.y = worldY(level);
-    let count = 0;
-    for (let i = 0; i < S.h.length; i++) if (S.h[i] <= level) count++;
+    // Connected flood: water spreads from a source (lowest scene edge or a clicked
+    // point) only through ground below the level, so ridges and embankments hold it back.
+    S.water.visible = false;
+    if (S.floodMesh) { scene.remove(S.floodMesh); S.floodMesh.geometry.dispose(); S.floodMesh.material.alphaMap?.dispose(); S.floodMesh.material.dispose(); S.floodMesh = null; }
+    const g = S.dtm || S.h;
+    let count = 0, depthSum = 0, maxDepth = 0, mask = null;
+    if (S.floodActive && !(S.floodSource === 'point' && S.floodSeed == null)) {
+      if (S.floodSource === 'plane') { mask = new Uint8Array(g.length); for (let i = 0; i < g.length; i++) mask[i] = g[i] <= level ? 1 : 0; }
+      else mask = floodFill(g, S.gw, S.gh, level, S.floodSource === 'point' ? [S.floodSeed] : boundarySeeds(g, S.gw, S.gh));
+      S.floodMesh = waterMesh(mask, S.gw, S.gh, S.W, S.H); S.floodMesh.position.y = worldY(level); scene.add(S.floodMesh);
+      for (let i = 0; i < mask.length; i++) if (mask[i]) { count++; const d = level - g[i]; depthSum += d; if (d > maxDepth) maxDepth = d; }
+    }
+    S.floodMask = mask;
     const area = count * S.W * S.H / S.h.length;
     const subPct = (count / S.h.length) * 100;
     $('#flood-submerged-pct').textContent = `${subPct.toFixed(1)}%`;
-    let bInundated = 0;
-    if (S.buildings && S.buildings.buildings) {
-      for (const b of S.buildings.buildings) {
-        if (b.ground_elevation_m <= level) bInundated++;
-      }
-    }
-    $('#flood-buildings-count').textContent = String(bInundated);
+    const hit = floodedBuildings(level);
+    $('#flood-buildings-count').textContent = String(hit.length);
+    const srcTxt = S.floodSource === 'plane' ? 'every cell below the level (no connectivity)' : S.floodSource === 'point' ? 'spreading from the clicked source' : 'entering from the lowest scene edge';
     info.innerHTML = S.floodActive
-      ? `<b>Below water</b><span>${subPct.toFixed(1)}%</span><b>Surface area</b><span>≈ ${fmt(area, 0)} m²</span><span class="note" style="grid-column:1/-1">Terrain & LoD1 building inundation simulated.</span>`
-      : 'Move the water elevation slider to preview a flood plane.';
+      ? (S.floodSource === 'point' && S.floodSeed == null ? '<span class="note" style="grid-column:1/-1">Click the terrain to place the water source.</span>'
+        : `<b>Flooded area</b><span>${fmt(area / 1e4, 2)} ha (${subPct.toFixed(1)}%)</span><b>Mean / max depth</b><span>${fmt(count ? depthSum / count : 0, 2)} / ${fmt(maxDepth, 2)} m</span><b>Water volume</b><span>${fmt(depthSum * S.W * S.H / S.h.length, 0)} m³</span><b>Buildings &gt;1 m deep</b><span>${hit.filter((x) => x.depth > 1).length}</span><span class="note" style="grid-column:1/-1">Water ${srcTxt}; bare-ground estimate, no rainfall or drainage modelling.</span>`)
+      : 'Move the water elevation slider, or press Animate Rise.';
   }
   const volume = $('#volume-info');
   if (!S.ref || !metric) {
@@ -295,6 +344,26 @@ function updateAnalysisTools() {
 }
 
 $('#flood-level').addEventListener('input', () => { S.floodActive = true; updateAnalysisTools(); });
+function floodedBuildings(level) {
+  const list = S.buildings?.buildings; if (!list || !S.floodMask) return [];
+  const out = [], cw = S.W / S.gw;
+  for (const b of list) {
+    const c = Math.round((b.center[0] / S.W + 0.5) * (S.gw - 1)), r = Math.round((b.center[1] / S.H + 0.5) * (S.gh - 1));
+    const rad = Math.max(2, Math.round(Math.sqrt(b.area_m2) / cw / 2) + 2);
+    let wet = false;
+    for (let dr = -rad; dr <= rad && !wet; dr++) for (let dc = -rad; dc <= rad && !wet; dc++) {
+      const rr = r + dr, cc = c + dc;
+      if (rr >= 0 && rr < S.gh && cc >= 0 && cc < S.gw && S.floodMask[rr * S.gw + cc]) wet = true;
+    }
+    if (wet && level > b.ground_elevation_m) out.push({ id: b.id, depth: level - b.ground_elevation_m });
+  }
+  return out;
+}
+$$('#flood-source button').forEach((btn) => btn.onclick = () => {
+  S.floodSource = btn.dataset.src; $$('#flood-source button').forEach((x) => x.classList.toggle('active', x === btn));
+  if (S.floodSource === 'point') S.floodSeed = null;
+  S.floodActive = true; updateAnalysisTools();
+});
 
 let floodAnimTimer = null;
 $('#flood-play').onclick = () => {
@@ -338,9 +407,15 @@ $('#flood-reset').onclick = () => {
   $('#flood-buildings-count').textContent = '0';
 };
 
-function setSun(deg) {
-  const a = deg * Math.PI / 180, R = S.extent;
-  sun.position.set(Math.sin(a) * R, R * 0.9, -Math.cos(a) * R);
+function setSun(deg, elevDeg) {
+  // azimuth clockwise from north (scene north = -Z); elevation from image metadata when known
+  const el = Math.max(5, elevDeg ?? S.sunEl ?? 45) * Math.PI / 180, a = deg * Math.PI / 180, R = S.extent * 1.5;
+  const cy = worldY((S.hmin + S.hmax) / 2) || 0;
+  sun.position.set(Math.sin(a) * Math.cos(el) * R, cy + Math.sin(el) * R, -Math.cos(a) * Math.cos(el) * R);
+  sun.target.position.set(0, cy, 0);
+  const sc = sun.shadow.camera, half = S.extent * 0.75;
+  sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half; sc.near = 0.1; sc.far = R * 3;
+  sc.updateProjectionMatrix();
 }
 
 // ------------------------------------------------------------------ loading scenes
@@ -371,10 +446,22 @@ async function loadScene(id) {
       if (bRes.ok) buildings = await bRes.json();
     } catch {}
 
+    const layerBin = async (name) => { try { const r = await fetch(base + name + '?' + Date.now()); return r.ok ? new Float32Array(await r.arrayBuffer()) : null; } catch { return null; } };
+    const susc = meta.layers?.susc ? await layerBin('susc.bin') : null;
+    const change = meta.layers?.change ? await layerBin('change.bin') : null;
+    let demBase = null;
+    if (meta.layers?.base) {
+      try { const r = await fetch(base + 'base.bin'); if (r.ok) demBase = new Float32Array(await r.arrayBuffer()); } catch {}
+    }
+
     const tex = await new THREE.TextureLoader().loadAsync(base + 'texture.jpg?' + Date.now());
     tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     if (S.tex) S.tex.dispose();
     if (S.water) { scene.remove(S.water); S.water.geometry.dispose(); S.water.material.dispose(); S.water = null; }
+    for (const k of ['floodMesh', 'baseMesh']) if (S[k]) { scene.remove(S[k]); S[k].geometry.dispose(); S[k].material.dispose(); S[k] = null; }
+    if (S.swipeActive) setSwipe(false);
+    S._bmask = null;
+    Object.assign(S, { demBase, susc, change, viewshed: null, floodMask: null, floodSeed: null, floodSource: S.floodSource || 'edge' });
     Object.assign(S, { id, meta, gw: meta.grid_w, gh: meta.grid_h, W: meta.ground_w_m, H: meta.ground_h_m,
       h: new Float32Array(hBuf), dtm, confidence, buildings, ref, tex, texImg: tex.image, units: meta.units === 'metre' ? 'm' : 'relative',
       viewGeometry: 'surface' });
@@ -396,8 +483,16 @@ async function loadScene(id) {
     buildTerrain();
     createBuildingMeshes(S.buildings);
     updateAnalysisTools();
+    const c0 = meta.calibration || {};
+    S.sunEl = Number.isFinite(c0.sun_elevation_deg) ? c0.sun_elevation_deg : 45;
+    if (Number.isFinite(c0.sun_azimuth_deg)) { $('#sun').value = Math.round(c0.sun_azimuth_deg); $('#sun-v').textContent = `${Math.round(c0.sun_azimuth_deg)}° (image)`; }
     setSun(+$('#sun').value);
     resetView();
+    $('#swipe-toggle').disabled = !demBase;
+    $('#btn-landslide').disabled = !susc; $('#btn-change').disabled = !change;
+    if ((S.mode === 'landslide' && !susc) || (S.mode === 'change' && !change) || S.mode === 'viewshed') setMode('optical');
+    renderChangePanel();
+    $('#swipe-toggle').title = demBase ? 'Swipe: input 30 m DEM (left) vs DepthWizard DSM (right) · S' : 'Swipe needs a georeferenced scene with an input DEM';
     $('#btn-error').disabled = !ref;
     if (!ref && S.mode === 'error') setMode('optical');
     $('#contour-unit').textContent = meta.units === 'metre' ? 'm' : 'rel';
@@ -504,20 +599,23 @@ function createBuildingMeshes(bData) {
 
     const hWorld = Math.max(1.5, b.height_m) * S.exag;
     const geo = new THREE.ExtrudeGeometry(shape, { depth: hWorld, bevelEnabled: false });
-    geo.rotateX(Math.PI / 2);
+    // shape lies in XY with y = -z_world; rotating by -90° about X maps it onto the
+    // ground plane (x, 0, z_world) and turns the extrusion depth into +Y (upwards)
+    geo.rotateX(-Math.PI / 2);
 
     const pos = geo.attributes.position;
     const uvs = geo.attributes.uv;
     for (let i = 0; i < pos.count; i++) {
-      uvs.setXY(i, pos.getX(i) / S.W + 0.5, pos.getZ(i) / S.H + 0.5);
+      uvs.setXY(i, pos.getX(i) / S.W + 0.5, 0.5 - pos.getZ(i) / S.H);
     }
     uvs.needsUpdate = true;
     geo.computeVertexNormals();
 
-    const mesh = new THREE.Mesh(geo, [wallMat.clone(), roofMat]);
+    // ExtrudeGeometry groups: 0 = caps (roof/floor) · 1 = side walls
+    const mesh = new THREE.Mesh(geo, [roofMat, wallMat.clone()]);
     const groundElev = b.ground_elevation_m !== undefined ? b.ground_elevation_m : S.base;
     mesh.position.y = worldY(groundElev);
-    mesh.userData.building = b;
+    mesh.userData.building = b; mesh.castShadow = true; mesh.receiveShadow = true;
     group.add(mesh);
   }
   S.buildingGroup = group;
@@ -527,8 +625,8 @@ function createBuildingMeshes(bData) {
 
 function clearBuildingSelection() {
   if (S.selectedMesh) {
-    if (Array.isArray(S.selectedMesh.material) && S.selectedMesh.material[0]?.emissive) {
-      S.selectedMesh.material[0].emissive.setHex(0x000000);
+    if (Array.isArray(S.selectedMesh.material) && S.selectedMesh.material[1]?.emissive) {
+      S.selectedMesh.material[1].emissive.setHex(0x000000);
     }
     S.selectedMesh = null;
   }
@@ -539,8 +637,8 @@ function clearBuildingSelection() {
 function selectBuilding(mesh) {
   clearBuildingSelection();
   S.selectedMesh = mesh;
-  if (Array.isArray(mesh.material) && mesh.material[0]?.emissive) {
-    mesh.material[0].emissive.setHex(0x0284c7);
+  if (Array.isArray(mesh.material) && mesh.material[1]?.emissive) {
+    mesh.material[1].emissive.setHex(0x0284c7);
   }
   const b = mesh.userData.building;
   if (!b) return;
@@ -552,8 +650,83 @@ function selectBuilding(mesh) {
     <b>Ground elevation</b><span>${fmt(b.ground_elevation_m, 1)} m</span>
     <b>Footprint area</b><span>${fmt(b.area_m2, 1)} m²</span>
     <b>Structural volume</b><span>${fmt(b.volume_m3, 0)} m³</span>
-    <b>Confidence</b><span>${Math.round(b.confidence * 100)}% (${b.source || 'LoD1'})</span>
+    <b>Confidence</b><span>${Math.round(b.confidence * 100)}% <small class="muted">${escapeHtml(b.confidence_basis || b.source || 'LoD1')}</small></span>
+    ${b.pv_kwh_yr !== undefined ? `<b>Rooftop solar</b><span>${fmt(b.sunlit_fraction * 100, 0)}% sunlit · ≈ ${Math.round(b.pv_kwh_yr).toLocaleString()} kWh/yr</span>` : ''}
+    ${S.floodMask ? (() => { const f = floodedBuildings(+$('#flood-level').value).find((x) => x.id === b.id); return f ? `<b>Flood depth at base</b><span class="worse">${fmt(f.depth, 2)} m</span>` : ''; })() : ''}
   `;
+}
+
+// ------------------------------------------------------------------ cinematic flythrough recording
+async function recordTour(seconds = 20) {
+  if (!S.mesh || !canvas.captureStream || typeof MediaRecorder === 'undefined') { alert('Video recording is not supported in this browser.'); return; }
+  const btn = $('#record-tour');
+  const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
+  const rec = new MediaRecorder(canvas.captureStream(30), type ? { mimeType: type, videoBitsPerSecond: 8e6 } : undefined);
+  const chunks = [];
+  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  rec.onstop = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
+    a.download = `depthwizard_${S.id}_flythrough.webm`; a.click();
+    btn.textContent = '● Record'; btn.classList.remove('active');
+  };
+  setNav('tour'); rec.start();
+  let left = seconds; btn.classList.add('active'); btn.textContent = `■ ${left}s`;
+  const t = setInterval(() => { left--; btn.textContent = `■ ${left}s`; if (left <= 0) { clearInterval(t); rec.stop(); setNav('orbit'); } }, 1000);
+}
+$('#record-tour').onclick = () => recordTour(20);
+
+// ------------------------------------------------------------------ viewshed (line of sight)
+function computeViewshed(point, observerH = 10) {
+  // Visibility from an observer `observerH` metres above the clicked ground point,
+  // by marching 720 rays over the surface grid (the tallest horizon so far blocks).
+  placeMarker(point.x, point.z);
+  const { r: r0, c: c0 } = toGrid(point.x, point.z);
+  const n = S.gw * S.gh, vis = new Float32Array(n), dx = S.W / (S.gw - 1);
+  const f = verticalDisplayFactor(), h = S.h, eye = h[r0 * S.gw + c0] + observerH * f;
+  vis[r0 * S.gw + c0] = 1;
+  const rays = 720, maxR = Math.hypot(S.gw, S.gh);
+  for (let k = 0; k < rays; k++) {
+    const a = k / rays * Math.PI * 2, sx = Math.cos(a), sy = Math.sin(a);
+    let maxSlope = -Infinity;
+    for (let t = 1; t < maxR; t += 0.7) {
+      const c = Math.round(c0 + sx * t), r = Math.round(r0 + sy * t);
+      if (c < 0 || r < 0 || c >= S.gw || r >= S.gh) break;
+      const i = r * S.gw + c, slope = (h[i] - eye) / (t * dx);
+      if (slope >= maxSlope) { vis[i] = 1; maxSlope = slope; }
+    }
+  }
+  S.viewshed = vis;
+  let seen = 0; for (let i = 0; i < n; i++) seen += vis[i];
+  $('#probe-info').classList.remove('muted');
+  $('#probe-info').innerHTML = `<b>Observer</b><span>${observerH} m above ground</span><b>Visible area</b><span>${fmt(seen / n * 100, 1)}% of scene · ${fmt(seen * dx * dx / 1e4, 2)} ha</span><span class="note" style="grid-column:1/-1">Yellow = visible. Useful for siting watchtowers, relays and sirens.</span>`;
+  setMode('viewshed');
+}
+
+// ------------------------------------------------------------------ change detection
+async function renderChangePanel() {
+  const el = $('#change-panel'); if (!el || !S.id) return;
+  let list = [];
+  try { list = await (await fetch('api/scenes')).json(); } catch {}
+  const opts = list.filter((x) => x.id !== S.id).map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}</option>`).join('');
+  const st = S.meta?.change_stats;
+  el.innerHTML = `<label>Before-event scene<select id="change-before">${opts}</select></label>
+    <div class="btns"><button id="change-run" type="button" ${opts ? '' : 'disabled'}>Compare → this scene</button></div>
+    <div id="change-info" class="kv ${st ? '' : 'muted'}">${st ? changeRows(st) : 'Pick the pre-event scene of the same footprint to map height loss (collapse, landslide scars) and gain (debris, new construction).'}</div>`;
+  $('#change-run').onclick = async () => {
+    const before = $('#change-before').value; if (!before) return;
+    $('#change-info').textContent = 'Comparing…';
+    const res = await fetch(`api/scenes/${encodeURIComponent(before)}/change/${encodeURIComponent(S.id)}`);
+    const js = await res.json();
+    if (!res.ok) { $('#change-info').textContent = js.detail || 'Comparison failed'; return; }
+    await loadScene(S.id); setMode('change');
+  };
+}
+function changeRows(st) {
+  const rows = [['Volume lowered', `${fmt(st.volume_loss_m3, 0)} m³`], ['Volume raised', `${fmt(st.volume_gain_m3, 0)} m³`],
+    ['Area lowered > 3 m', `${fmt(st.area_lowered_ha, 2)} ha`], ['Area raised > 3 m', `${fmt(st.area_raised_ha, 2)} ha`]];
+  if (st.buildings_checked !== undefined) rows.push(['Buildings with roof loss', `<b class="worse">${st.buildings_height_loss}</b> of ${st.buildings_checked}`]);
+  return rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
 }
 
 // ------------------------------------------------------------------ 3D distance measurement
@@ -595,9 +768,22 @@ function measureDistance(point) {
 }
 
 // ------------------------------------------------------------------ 3D swipe comparison
+function updateBaseMesh() {
+  if (!S.demBase) return;
+  if (!S.baseMesh) {
+    const geo = new THREE.PlaneGeometry(S.W, S.H, S.gw - 1, S.gh - 1); geo.rotateX(-Math.PI / 2);
+    S.baseMesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: S.tex, roughness: 1, side: THREE.DoubleSide }));
+    S.baseMesh.receiveShadow = true; S.baseMesh.visible = false; scene.add(S.baseMesh);
+  }
+  const pos = S.baseMesh.geometry.attributes.position;
+  for (let i = 0; i < S.gw * S.gh; i++) pos.setY(i, worldY(S.demBase[i]));
+  pos.needsUpdate = true; S.baseMesh.geometry.computeVertexNormals();
+}
 function setSwipe(on) {
-  S.swipeActive = Boolean(on);
-  uniforms.uSwipeOn.value = S.swipeActive ? 1.0 : 0.0;
+  S.swipeActive = Boolean(on && S.demBase);
+  // geometric swipe: the left side really renders the input DEM surface
+  uniforms.uSwipeOn.value = 0.0;
+  if (S.swipeActive) updateBaseMesh();
   $('#swipe-toggle')?.setAttribute('aria-pressed', String(S.swipeActive));
   $('#swipe-divider')?.classList.toggle('hidden', !S.swipeActive);
   $('#swipe-label-left')?.classList.toggle('hidden', !S.swipeActive);
@@ -611,8 +797,25 @@ function updateSwipePosition(frac) {
   if (divider) divider.style.left = `${S.swipeX * 100}%`;
 }
 
+function buildingMaskGrid() {
+  // rasterise LoD1 footprints onto the terrain grid (1-cell dilation) so the
+  // city model stands on bare ground instead of on the DSM's roof bumps
+  if (S._bmask) return S._bmask;
+  const list = S.buildings?.buildings; if (!list?.length) return null;
+  const cv = document.createElement('canvas'); cv.width = S.gw; cv.height = S.gh;
+  const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  for (const b of list) {
+    const ring = b.polygon_uv; if (!ring || ring.length < 3) continue;
+    ctx.beginPath(); ring.forEach(([u, v], i) => { const x = u * (S.gw - 1), y = v * (S.gh - 1); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  const px = ctx.getImageData(0, 0, S.gw, S.gh).data, m = new Uint8Array(S.gw * S.gh);
+  for (let i = 0; i < m.length; i++) m[i] = px[i * 4 + 3] > 0 ? 1 : 0;
+  S._bmask = m; return m;
+}
 function setViewGeometry(mode) {
   S.viewGeometry = mode;
+  updateRenderHeight(true);
   $$('#view-mode button').forEach((b) => b.classList.toggle('active', b.dataset.view === mode));
   if (S.buildingGroup) {
     S.buildingGroup.visible = (mode === 'city');
@@ -806,7 +1009,15 @@ canvas.addEventListener('pointerup', (e) => {
 
   const hit = raycastFrom(ndc);
   if (!hit) return;
+  if (S.floodSource === 'point' && S.floodSeed == null && S.meta?.units === 'metre') {
+    const { r, c } = toGrid(hit.point.x, hit.point.z);
+    S.floodSeed = Math.max(0, Math.min(S.gh - 1, r)) * S.gw + Math.max(0, Math.min(S.gw - 1, c));
+    const g = S.dtm || S.h, sl = $('#flood-level');
+    if (+sl.value < g[S.floodSeed] + 0.5) sl.value = g[S.floodSeed] + 1.0;
+    placeMarker(hit.point.x, hit.point.z); S.floodActive = true; updateAnalysisTools(); return;
+  }
   showTab('analyse');
+  if (S.tool === 'viewshed') { computeViewshed(hit.point); return; }
   if (S.tool === 'probe') probe(hit.point);
   else if (S.tool === 'distance') measureDistance(hit.point);
   else profile(hit.point);
@@ -959,17 +1170,25 @@ function renderMetrics() {
     ['GCP fit residual', cal.gcp_residual_rmse_m !== undefined && `${fmt(cal.gcp_residual_rmse_m)} m (in-sample)`],
     ['GCP leave-one-out', cal.gcp_loo_rmse_m !== undefined && `${fmt(cal.gcp_loo_rmse_m)} m`],
     ['GCP spatial spread', cal.gcp_spread_fraction !== undefined && `${fmt(cal.gcp_spread_fraction * 100, 1)} %`],
+    ['DEM type', cal.dem_kind && (cal.dem_kind === 'surface' ? `surface model – sees buildings (r ${fmt(cal.dem_hp_r, 2)})` : `bare-earth terrain (r ${fmt(cal.dem_hp_r, 2)})`)],
+    ['DEM resolution', cal.dem_resolution_m !== undefined && `${fmt(cal.dem_resolution_m, 1)} m`],
+    ['Matches DEM at its resolution', cal.reference_consistent === true ? `yes · residual ${fmt(cal.consistency_rmse_m)} m` : null],
+    ['Vertical datum', cal.vertical_datum],
+    ['Learned scale', cal.learned_scale_k !== undefined && `${fmt(cal.learned_scale_k, 1)} m / unit`],
+    ['Shadow check', cal.shadow_iou !== undefined && `IoU ${fmt(cal.shadow_iou, 2)} · sun az ${fmt(cal.sun_azimuth_deg, 0)}°`],
+    ['Structure model', cal.structure_model],
+    ['Rotation ensemble', S.meta?.tta ? `${S.meta.tta} passes` : null],
     ['Note', cal.note]].filter(([, v]) => v);
   const calHtml = `<h3 style="margin-top:16px">Calibration</h3><div class="kv">${calRows.map(([k, v]) => `<b>${escapeHtml(k)}</b><span>${escapeHtml(v)}</span>`).join('')}</div>`;
   const calWarning = cal.evidence_level === 'approximate' || cal.method === 'dem+prior'
-    ? '<p class="note">Metric scale uses a scene prior. Treat these heights as approximate until an independent reference confirms them.</p>'
+    ? `<p class="note">Building/tree heights use ${cal.scale_source === 'learned pixel-footprint scale' ? 'the model\'s learned metre-per-pixel scale (±40 %)' : 'a scene prior'}; terrain comes from the DEM. Add GCPs or a surface DEM (Copernicus/SRTM) for measured scale.</p>`
     : cal.evidence_level === 'provisional-gcp'
       ? '<p class="note">GCP calibration is provisional: more distributed surveyed points and an independent reference are needed.</p>' : '';
   if (!m) { el.innerHTML = warn + calWarning + '<p class="muted">No reference supplied for this scene. Upload a reference DSM / LiDAR raster with the image to compute RMSE, MAE and correlation.</p>' + calHtml; return; }
   const main = m.absolute || m.affine_aligned;
   const aligned = !m.absolute;
   const cards = [[aligned ? 'Aligned RMSE' : 'RMSE', fmt(main.rmse), 'm'], [aligned ? 'Aligned MAE' : 'MAE', fmt(main.mae), 'm'], ['Pearson r', fmt(main.r, 3), '']];
-  const rowDefs = [['absolute', 'Our DSM (absolute)'], ['baseline_dem', 'Input DEM only (baseline)'], ['affine_aligned', 'Our DSM, affine-aligned'], ['structure_ndsm', 'Above-ground (nDSM)']];
+  const rowDefs = [['absolute', 'DepthWizard DSM (blind)'], ['baseline_dem', 'Input DEM only (baseline)'], ['aggregated_30m', 'DSM averaged to 30 m'], ['structure_ndsm', 'Above-ground (nDSM)'], ['buildings', 'Per-building roof height'], ['affine_aligned', 'Shape only (fitted to reference)']];
   const b = m.baseline_dem;
   const cls = (k, key, lowerBetter = true) => (!b || k !== 'absolute') ? '' : ((lowerBetter ? m[k][key] < b[key] : m[k][key] > b[key]) ? 'better' : 'worse');
   const table = `<table class="t"><tr><th></th><th>RMSE</th><th>MAE</th><th>NMAD</th><th>r</th></tr>` +
@@ -984,7 +1203,9 @@ function renderMetrics() {
   const edgeHtml = m.edge_gradient_rmse !== undefined ? `<h3>Edge detail</h3><div class="kv"><b>Gradient RMSE</b><span>${fmt(m.edge_gradient_rmse, 3)} m/m</span><b>DEM baseline</b><span>${fmt(m.baseline_edge_gradient_rmse, 3)} m/m</span></div>` : '';
   const acc = `<div class="kv"><b>|error| ≤ 1 m</b><span>${fmt(main.within_1m * 100, 1)} %</span><b>|error| ≤ 2 m</b><span>${fmt(main.within_2m * 100, 1)} %</span><b>|error| ≤ 5 m</b><span>${fmt(main.within_5m * 100, 1)} %</span><b>Bias</b><span>${fmt(main.bias)} m</span></div>`;
   el.innerHTML = warn + calWarning + (aligned ? '<p class="note">Relative heights are fitted to this reference for shape diagnostics. These values are not operational metric accuracy.</p>' : '') + `<div class="cards">${cards.map(([l, v, u]) => `<div class="card"><div class="v">${v}<small> ${u}</small></div><div class="l">${l}</div></div>`).join('')}</div>` +
-    table + landTable + heightTable + edgeHtml + acc + calHtml +
+    table + (m.buildings ? `<p class="note">Per-building: ${m.buildings.n} footprints · median roof ${fmt(m.buildings.est_median, 1)} m estimated vs ${fmt(m.buildings.ref_median, 1)} m reference.</p>` : '') +
+    (S.meta.validation_plot ? `<h3>Estimated vs reference</h3><div class="charts">${scatterSvg(S.meta.validation_plot, S.meta.units === 'metre' ? 'm' : 'rel')}${histSvg(S.meta.validation_plot)}</div>` : '') +
+    landTable + heightTable + edgeHtml + acc + calHtml +
     `<p class="note">Switch the surface to <b>Error</b> in Analyse to see where estimates deviate; use <b>Profile</b> to compare cross-sections against the reference.</p>`;
 }
 
@@ -1114,6 +1335,9 @@ $$('#export-menu [data-export]').forEach((b) => b.onclick = () => {
   else if (kind === 'evidence') location.href = `api/scenes/${S.id}/evidence`;
   else if (kind === 'glb') location.href = `api/scenes/${S.id}/mesh.glb?resolution=256`;
   else if (kind === 'obj') location.href = `api/scenes/${S.id}/mesh.obj.zip?resolution=256`;
+  else if (['dtm', 'ndsm', 'uncertainty'].includes(kind)) location.href = `api/scenes/${S.id}/product/${kind}`;
+  else if (kind === 'cityjson') location.href = `api/scenes/${S.id}/buildings.city.json`;
+  else if (kind === 'ply') location.href = `api/scenes/${S.id}/points.ply`;
 });
 document.addEventListener('pointerdown', (e) => {
   if (!e.target.closest('.header-actions')) closeExportMenu();
@@ -1242,7 +1466,17 @@ renderer.setAnimationLoop(() => {
       scaleBarText.textContent = barMeters >= 1000 ? `${(barMeters / 1000).toFixed(1)} km` : `${Math.round(barMeters)} m`;
     }
   }
-  renderer.render(scene, camera);
+  if (S.swipeActive && S.baseMesh && S.mesh) {
+    const w = canvas.clientWidth, h = canvas.clientHeight, split = Math.round(w * S.swipeX);
+    const hideCity = S.buildingGroup?.visible;
+    renderer.setScissorTest(true);
+    S.baseMesh.visible = true; S.mesh.visible = false; if (hideCity) S.buildingGroup.visible = false;
+    renderer.setScissor(0, 0, split, h); renderer.setViewport(0, 0, w, h); renderer.render(scene, camera);
+    S.baseMesh.visible = false; S.mesh.visible = true; if (hideCity) S.buildingGroup.visible = true;
+    renderer.setScissor(split, 0, w - split, h); renderer.render(scene, camera);
+    renderer.setScissorTest(false);
+  } else renderer.render(scene, camera);
+  if (S.floodMesh) S.floodMesh.material.emissiveIntensity = 0.85 + 0.15 * Math.sin(performance.now() / 600);
   frames++; fpsT += dt;
   if (fpsT > 1) { $('#hud-fps').textContent = `${Math.round(frames / fpsT)} fps`; frames = 0; fpsT = 0; }
 });

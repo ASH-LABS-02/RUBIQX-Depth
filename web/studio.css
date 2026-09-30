@@ -365,3 +365,16 @@ table.t th,#metrics h3 { color:#acc6d4; }
   border-color: #4fa0c5;
 }
 
+
+/* merge v2: flood source, charts, two-column inputs */
+#flood-source { margin:6px 0; } #flood-source button { font-size:11px; padding:5px 4px; }
+.charts { display:grid; grid-template-columns:1fr; gap:6px; margin-bottom:10px; }
+.chart { width:100%; height:auto; background:#0a1a28; border:1px solid #294153; border-radius:6px; }
+.chart text { fill:#9ab0c0; font-size:10px; } .chart .tick { font-size:9px; }
+.chart .frame { fill:none; stroke:#335267; } .chart .ideal { stroke:#f3ae43; stroke-dasharray:4 3; }
+.chart .pts { fill:#48bce7; fill-opacity:.35; } .chart .pos { fill:#f18482; } .chart .neg { fill:#48bce7; }
+.two-col { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+#swipe-toggle:disabled { opacity:.45; }
+#shade-mode.surface-modes { display:grid; grid-template-columns:repeat(5,1fr); gap:3px; }
+#shade-mode.surface-modes button { margin:0; border-radius:4px; font-size:10.5px; padding:5px 2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#tool { display:grid; grid-template-columns:repeat(4,1fr); gap:3px; } #tool button { margin:0; border-radius:4px; font-size:10.5px; padding:5px 2px; white-space:nowrap; }

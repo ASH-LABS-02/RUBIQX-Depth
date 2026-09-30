@@ -47,6 +47,9 @@ def extract_buildings(
     max_buildings: int = 1500,
     world_w: float = 1.0,
     world_h: float = 1.0,
+    rgb: np.ndarray | None = None,
+    uncertainty_m: np.ndarray | None = None,
+    return_labels: bool = False,
 ) -> dict[str, Any]:
     """Extract LoD1 building footprints, heights, storeys and polygon coordinates."""
     h, w = dsm.shape
@@ -58,15 +61,24 @@ def extract_buildings(
 
     ndsm = np.maximum(dsm - dtm, 0.0)
 
-    # Threshold for candidate structures
+    # Threshold for candidate structures; exclude sunlit vegetation (excess-green),
+    # which otherwise turns tree canopy into "buildings".
     mask = ndsm >= min_height_m
+    if rgb is not None and rgb.shape[:2] == ndsm.shape:
+        f = rgb.astype(np.float32)
+        exg = (2 * f[..., 1] - f[..., 0] - f[..., 2]) / (f.sum(-1) + 1e-6)
+        mask &= ~(exg > 0.06)
     # Morphological cleaning to separate close buildings and remove tree-leaf speckle
     mask = ndimage.binary_opening(mask, structure=np.ones((3, 3), bool))
     mask = ndimage.binary_closing(mask, structure=np.ones((3, 3), bool))
 
     labeled, num_features = ndimage.label(mask)
     if num_features == 0:
-        return {"count": 0, "total_footprint_m2": 0.0, "buildings": []}
+        out = {"count": 0, "total_footprint_m2": 0.0, "buildings": []}
+        if return_labels:
+            out["_labels"] = np.zeros(ndsm.shape, np.int32)
+        return out
+    kept = np.zeros(ndsm.shape, np.int32)
 
     pixel_area_m2 = gsd * gsd
     min_pixels = int(round(min_area_m2 / max(pixel_area_m2, 0.01)))
@@ -100,9 +112,11 @@ def extract_buildings(
         dtm_vals = dtm[comp_mask]
         ndsm_vals = ndsm[comp_mask]
 
-        roof_h = float(np.percentile(dsm_vals, 75))
-        ground_h = float(np.percentile(dtm_vals, 25))
-        height_agl = max(min_height_m, roof_h - ground_h)
+        # robust LoD1 roof: 70th percentile of height above ground inside the
+        # footprint (insensitive to parapets, mixed edge pixels and sloping terrain)
+        ground_h = float(np.median(dtm_vals))
+        height_agl = max(min_height_m, float(np.percentile(ndsm_vals, 70)))
+        roof_h = ground_h + height_agl
         area_m2 = float(round(comp_mask.sum() * pixel_area_m2, 1))
         volume_m3 = float(round(area_m2 * height_agl, 1))
         storeys = max(1, int(round(height_agl / 3.0)))
@@ -126,11 +140,18 @@ def extract_buildings(
             for p in simplified
         ]
 
-        # Calculate confidence from structure variance and edge sharpness
-        var = float(np.std(ndsm_vals))
-        conf = float(np.clip(1.0 - (var / max(height_agl, 1.0)) * 0.4, 0.70, 0.98))
+        # Confidence from the rotation-ensemble spread when available
+        # (exp(-sigma/2 m): 1.0 = all passes agree, 0.61 = 2 m disagreement);
+        # otherwise from roof flatness. Reported with its basis, never invented.
+        if uncertainty_m is not None:
+            sigma = float(np.mean(uncertainty_m[comp_mask]))
+            conf, conf_basis = float(np.exp(-sigma / 2.0)), f"ensemble spread {sigma:.2f} m"
+        else:
+            var = float(np.std(ndsm_vals))
+            conf, conf_basis = float(np.exp(-var / max(height_agl, 1.0))), "roof-height spread"
 
         b_id = len(buildings) + 1
+        kept[comp_mask] = b_id
         buildings.append({
             "id": b_id,
             "roof_elevation_m": round(roof_h, 2),
@@ -140,6 +161,7 @@ def extract_buildings(
             "area_m2": area_m2,
             "volume_m3": volume_m3,
             "confidence": round(conf, 2),
+            "confidence_basis": conf_basis,
             "source": "LoD1 model",
             "center": [round(world_center_x, 2), round(world_center_z, 2)],
             "polygon_world": poly_world,
@@ -150,11 +172,17 @@ def extract_buildings(
             break
 
     total_area = sum(b["area_m2"] for b in buildings)
-    return {
+    heights = sorted(b["height_m"] for b in buildings)
+    out = {
         "count": len(buildings),
         "total_footprint_m2": round(total_area, 1),
+        "median_height_m": heights[len(heights) // 2] if heights else None,
+        "max_height_m": heights[-1] if heights else None,
         "buildings": buildings,
     }
+    if return_labels:
+        out["_labels"] = kept
+    return out
 
 
 def save_buildings_json(path: str | Path, buildings_data: dict[str, Any]) -> None:

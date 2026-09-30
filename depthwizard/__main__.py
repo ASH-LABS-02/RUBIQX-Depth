@@ -22,12 +22,22 @@ def main(argv=None):
     p.add_argument("--scene", default="auto", choices=["auto", "urban", "sparse", "forest", "hilly"])
     p.add_argument("--gsd", type=float, default=1.0, help="assumed m/pixel for non-georeferenced input")
     p.add_argument("--device", help="cuda | mps | cpu")
+    p.add_argument("--tta", type=int, default=4, choices=[1, 2, 4, 8],
+                   help="rotation/flip test-time augmentation passes (uncertainty map needs >1)")
+    p.add_argument("--dem-kind", default="auto", choices=["auto", "surface", "terrain"],
+                   help="surface = DEM includes buildings/canopy (Copernicus, SRTM); terrain = bare earth")
+    p.add_argument("--no-consistency", action="store_true",
+                   help="do not force agreement with a surface DEM at its own resolution")
+    p.add_argument("--sun-elevation", type=float, help="sun elevation (deg) for shadow calibration")
+    p.add_argument("--sun-azimuth", type=float, help="sun azimuth (deg from north); estimated if omitted")
     p.add_argument("--no-fallback", action="store_true",
                    help="fail instead of using the heuristic when the model is unavailable")
     a = p.parse_args(argv)
     meta = run(a.image, a.out, dem=a.dem, gcp=a.gcp, reference=a.ref, model=a.model,
                scene=a.scene, fetch_dem=a.fetch_dem, dem_source=a.dem_source, assumed_gsd_m=a.gsd,
-               allow_fallback=not a.no_fallback, device=a.device)
+               allow_fallback=not a.no_fallback, device=a.device, tta=a.tta,
+               dem_kind=a.dem_kind, match_dem_30m=not a.no_consistency,
+               sun_elevation=a.sun_elevation, sun_azimuth=a.sun_azimuth)
     if "metrics" in meta:
         print(json.dumps(meta["metrics"], indent=2))
 

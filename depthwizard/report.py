@@ -59,6 +59,26 @@ def generate_html_report(scene_dir: Path) -> str:
     if preview_file.exists():
         preview_b64 = base64.b64encode(preview_file.read_bytes()).decode("ascii")
 
+    an = meta.get("analytics", {}) or {}
+    rows = []
+    bm = metrics.get("buildings")
+    if bm:
+        rows.append(f"<tr><td>Per-building roof height vs reference</td><td>n={bm['n']} · RMSE {bm['rmse']:.2f} m · r {bm['r']:.2f} · bias {bm['bias']:.2f} m</td></tr>")
+    agg = metrics.get("aggregated_30m")
+    if agg:
+        rows.append(f"<tr><td>DSM averaged to 30 m vs reference</td><td>RMSE {agg['rmse']:.2f} m · MAE {agg['mae']:.2f} m · r {agg['r']:.3f}</td></tr>")
+    if an.get("landslide"):
+        fr = an["landslide"]["fractions"]
+        rows.append(f"<tr><td>Landslide susceptibility (screening)</td><td>high {fr['high']*100:.1f} % · very high {fr['very_high']*100:.1f} % · max slope {an['landslide']['max_slope_deg']:.0f}°</td></tr>")
+    if an.get("solar"):
+        rows.append(f"<tr><td>Rooftop solar (indicative)</td><td>{an['solar']['total_pv_mwh_yr']} MWh/yr over {an['solar']['buildings']} roofs · {an['solar']['assumptions']}</td></tr>")
+    if meta.get("change_stats"):
+        c = meta["change_stats"]
+        rows.append(f"<tr><td>Change vs {meta.get('change_against')}</td><td>lowered {c['volume_loss_m3']:.0f} m³ · raised {c['volume_gain_m3']:.0f} m³ · buildings with roof loss {c.get('buildings_height_loss', '–')}</td></tr>")
+    if meta.get("water_fraction"):
+        rows.append(f"<tr><td>Open water flattened</td><td>{meta['water_fraction']*100:.1f} % of scene</td></tr>")
+    analytics_html = ("<h3>Buildings, hazards and change</h3><table><tbody>" + "".join(rows) + "</tbody></table>") if rows else ""
+
     tex_b64 = ""
     tex_file = scene_dir / "viewer" / "texture.jpg"
     if tex_file.exists():
@@ -379,11 +399,13 @@ def generate_html_report(scene_dir: Path) -> str:
       <td><strong>{b_count}</strong></td>
       <td>{b_area} m²</td>
       <td>{fmt(sum(b['height_m'] for b in buildings.get('buildings', [])) / max(b_count, 1))} m</td>
-      <td>{fmt(sum(b['storeys'] for b in buildings.get('buildings', [])) / max(b_count, 1), 1)}</td>
-      <td>{fmt(sum(b['volume_m3'] for b in buildings.get('buildings', [])))} m³</td>
+      <td>{fmt(sum(b.get('storeys') or 0 for b in buildings.get('buildings', [])) / max(b_count, 1), 1) if any(b.get('storeys') for b in buildings.get('buildings', [])) else '–'}</td>
+      <td>{fmt(sum(b.get('volume_m3') or 0 for b in buildings.get('buildings', []))) if any(b.get('volume_m3') for b in buildings.get('buildings', [])) else '–'} m³</td>
     </tr>
   </tbody>
 </table>
+
+{analytics_html}
 
 <div class="images-preview">
   {"<div class='img-box'><img src='data:image/jpeg;base64," + tex_b64 + "' alt='Optical satellite input'><div class='caption'>Optical Satellite Sensor Acquisition</div></div>" if tex_b64 else ""}

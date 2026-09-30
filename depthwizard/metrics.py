@@ -175,3 +175,31 @@ def evaluate(pred: np.ndarray, ref: np.ndarray, units: str, rgb=None, gsd: float
 def error_map(pred, ref, units):
     base = pred if units == "metre" else affine_align(pred, ref)
     return (base - ref).astype(np.float32)
+
+
+def building_level(labels: np.ndarray, est_ndsm: np.ndarray, ref: np.ndarray, gsd: float) -> dict | None:
+    """Per-building height accuracy: our LoD1 roof height (70th percentile of
+    the estimated above-ground height in each footprint) against the same
+    statistic of the reference above-ground height (reference minus its own
+    morphological ground). Labels/est are resampled to the reference grid."""
+    from PIL import Image
+    h, w = ref.shape
+    lab = np.asarray(Image.fromarray(labels.astype(np.int32)).resize((w, h), Image.NEAREST))
+    est = np.asarray(Image.fromarray(est_ndsm.astype(np.float32)).resize((w, h), Image.BILINEAR))
+    rnd = ref - _ground(ref, gsd)
+    ids = np.unique(lab[lab > 0])
+    if ids.size < 5:
+        return None
+    ok = np.isfinite(rnd)
+    e = ndimage.labeled_comprehension(np.where(ok, est, np.nan), lab, ids,
+                                      lambda v: np.nanpercentile(v, 70) if np.isfinite(v).any() else np.nan, float, np.nan)
+    r = ndimage.labeled_comprehension(np.where(ok, rnd, np.nan), lab, ids,
+                                      lambda v: np.nanpercentile(v, 70) if np.isfinite(v).any() else np.nan, float, np.nan)
+    m = np.isfinite(e) & np.isfinite(r)
+    e, r = e[m], r[m]
+    if e.size < 5:
+        return None
+    d = e - r
+    return {"n": int(e.size), "rmse": float(np.sqrt(np.mean(d ** 2))), "mae": float(np.mean(np.abs(d))),
+            "bias": float(np.mean(d)), "r": float(np.corrcoef(e, r)[0, 1]),
+            "est_median": float(np.median(e)), "ref_median": float(np.median(r))}

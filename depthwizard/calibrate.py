@@ -57,16 +57,26 @@ class Calibration:
     gcp_residual_rmse_m: float | None = None
     gcp_loo_rmse_m: float | None = None
     gcp_spread_fraction: float | None = None
+    dem_kind: str | None = None             # "surface" (COP30/SRTM) or "terrain" (bare-earth DTM)
+    dem_hp_r: float | None = None           # structure vs DEM high-pass correlation at DEM scale
+    dem_resolution_m: float | None = None
+    reference_consistent: bool | None = None
+    consistency_rmse_m: float | None = None # our DSM vs DEM, both averaged to DEM cells
+    learned_scale_k: float | None = None
+    shadow_iou: float | None = None
+    sun_azimuth_deg: float | None = None
+    sun_elevation_deg: float | None = None
+    structure_model: str | None = None
     vertical_datum: str | None = None
-    match_dem_30m: bool = False
-    dem_canopy_corrected: bool = False
-    is_agl: bool = False
+    match_dem_30m: bool | None = None
+    is_agl: bool | None = None
     note: str = ""
     dtm: np.ndarray | None = None
     ndsm: np.ndarray | None = None
 
     def as_dict(self):
-        return {k: v for k, v in self.__dict__.items() if v is not None and not isinstance(v, np.ndarray)}
+        return {k: v for k, v in self.__dict__.items()
+                if v is not None and k != "extras" and not isinstance(v, np.ndarray)}
 
 
 # ---------------------------------------------------------------- utilities
@@ -220,57 +230,93 @@ def _gcp_quality(rows, cols, x, y, shape):
 
 
 # ------------------------------------------------------------- main entry
+DATUMS = {"COP30": "EGM2008 geoid (Copernicus GLO-30)", "SRTMGL1": "EGM96 geoid (SRTM)",
+          "CARTODEM": "EGM96 geoid (CartoDEM)"}
+
+
+def dem_resolution_m(dem_path) -> float:
+    import rasterio
+    with rasterio.open(dem_path) as src:
+        rx = abs(src.transform.a)
+        if src.crs is not None and src.crs.is_geographic:
+            lat = src.bounds.bottom + (src.bounds.top - src.bounds.bottom) / 2
+            return float(rx * 111_320 * np.cos(np.radians(lat)))
+        return float(rx)
+
+
+def extract_structure(rel: np.ndarray, gsd: float, agl: bool, dem_res_m: float = 30.0):
+    """Above-ground structure in normalised units, zero on bare ground.
+
+    AGL-trained (GAMUS) checkpoints already predict height above ground, so
+    the lower tail is ground and nothing is high-passed away; on DC LiDAR this
+    raised correlation with the true nDSM from 0.65/0.62 (old high-pass) to
+    0.77/0.66. Generic depth models mix terrain and structure, so they keep
+    the DEM-scale high-pass with a lower-tail ground anchor."""
+    if agl:
+        return np.maximum(rel - np.percentile(rel, 2.0), 0.0).astype(np.float32), "agl-lower-tail"
+    sigma = max(1.0, 0.5 * dem_res_m / gsd)
+    hp = rel - ndimage.gaussian_filter(rel, sigma)
+    return np.maximum(hp - np.percentile(hp, 30.0), 0.0).astype(np.float32), "highpass-q30"
+
+
+def _surface_fit(structure, dem, n):
+    """Fit DEM ≈ terrain + k·mean(structure) at DEM scale using high-passed
+    fields (terrain is smooth). Returns (k, r)."""
+    S = ndimage.uniform_filter(structure.astype(np.float64), size=n)
+    D = dem.astype(np.float64)
+    hpS = S - ndimage.gaussian_filter(S, 1.5 * n)
+    hpD = D - ndimage.gaussian_filter(D, 1.5 * n)
+    st = max(1, n // 2)
+    x, y = hpS[::st, ::st].ravel(), hpD[::st, ::st].ravel()
+    if x.std() < 1e-9 or y.std() < 1e-9:
+        return 0.0, 0.0, S
+    r = float(np.corrcoef(x, y)[0, 1])
+    k, _ = huber_affine(x, y)
+    return float(k), r, S
+
+
 def calibrate(rel: np.ndarray, image, *, dem_path=None, gcp_path=None,
-              scene: str = "auto", dem_res_m: float = 30.0,
-              is_agl: bool = False, match_dem_30m: bool = True,
-              vertical_datum: str = "EGM2008"):
-    """Return (height_map, units, Calibration)."""
+              scene: str = "auto", dem_res_m: float | None = None, agl: bool = False,
+              learned_scale: float | None = None, dem_kind: str = "auto",
+              reference_consistent: bool = True, sun_elevation: float | None = None,
+              sun_azimuth: float | None = None, dem_source: str | None = None,
+              is_agl: bool | None = None, match_dem_30m: bool | None = None,
+              vertical_datum: str | None = None):
+    """Return (height_map, units, Calibration).
+
+    Scale evidence priority for the structure (buildings/trees) component:
+      GCPs  >  surface-DEM fit  >  shadow consistency  >  learned pixel-footprint
+      scale (AGL checkpoints)  >  scene prior.
+    """
+    # compatibility with the earlier keyword names
+    if is_agl is not None:
+        agl = bool(is_agl)
+    if match_dem_30m is not None:
+        reference_consistent = bool(match_dem_30m)
     gsd = image.pixel_size_m or 1.0
     gcps = load_gcps(gcp_path, image) if gcp_path else None
 
     # ---- 1. DEM fusion -------------------------------------------------
     if dem_path and image.georeferenced:
         dem, coverage = dem_to_grid(dem_path, image, return_coverage=True)
-        sigma = max(1.0, 0.5 * dem_res_m / gsd)          # match DEM resolution
-        rel_lp = ndimage.gaussian_filter(rel, sigma)
-
-        if is_agl:
-            # AGL-trained backbone (e.g. GAMUS fine-tune): heights are already above-ground.
-            # Extract ground floor via morphological opening (~60 m scale) instead of high-pass
-            # which would make ground negative around buildings and flatten dense canopy.
-            filter_size = max(3, int(round(60.0 / gsd)))
-            if filter_size % 2 == 0:
-                filter_size += 1
-            ground_level = ndimage.grey_opening(rel, size=(filter_size, filter_size))
-            ground_level = ndimage.gaussian_filter(ground_level, max(1.0, 0.5 * sigma))
-            structure = np.maximum(rel - ground_level, 0.0)
-            ground_q, upper_q = 0.0, 98.0
-            ground_anchor = 0.0
-            structure_upper = float(np.percentile(structure, upper_q))
-            structure_span = max(structure_upper, 1e-6)
-        else:
-            highpass = rel - rel_lp
-            # A high-pass has zero mean but an above-ground surface should not
-            # systematically fall below the bare-earth DEM. Use the lower 30%
-            # as a robust ground anchor and preserve only positive structures.
-            ground_q, upper_q = 30.0, 98.0
-            ground_anchor, structure_upper = np.percentile(highpass, (ground_q, upper_q))
-            structure = np.maximum(highpass - ground_anchor, 0.0)
-            structure_span = float(structure_upper - ground_anchor)
-
-        dem_s = ndimage.gaussian_filter(dem, sigma)
-
-        # decimate for the fit (speed, and independence of samples)
-        stride = max(1, int(dem_res_m / gsd))
-        xs, ys = rel_lp[::stride, ::stride].ravel(), dem_s[::stride, ::stride].ravel()
-        r = float(np.corrcoef(xs, ys)[0, 1]) if xs.std() > 1e-6 and ys.std() > 1e-6 else 0.0
-        a, b = huber_affine(xs, ys)
-
+        res = dem_res_m or dem_resolution_m(dem_path)
+        n = max(3, int(round(res / gsd)))
+        structure, smodel = extract_structure(rel, gsd, agl, res)
+        span = float(np.percentile(structure, 98))
+        k_dem, r_hp, S = _surface_fit(structure, dem, n)
+        kind = dem_kind
+        if kind == "auto":
+            kind = "surface" if (r_hp > 0.3 and k_dem > 0) else "terrain"
+        datum = vertical_datum or DATUMS.get((dem_source or "").upper(), "same as input DEM")
+        cal = Calibration("dem-fusion", dem_coverage=coverage, dem_kind=kind, dem_hp_r=r_hp,
+                          dem_resolution_m=res, structure_model=smodel, vertical_datum=datum,
+                          learned_scale_k=learned_scale)
         datum_offset = 0.0
-        gcp_rmse = None
+        k = None
         if gcps is not None and len(gcps[2]) >= 2:
             rows, cols, z = gcps
-            resid = z - _sample(dem, rows, cols)          # structure height at GCPs
+            base = dem - (k_dem * S if kind == "surface" and k_dem > 0 else 0.0)
+            resid = z - _sample(base, rows, cols)
             sample_structure = _sample(structure, rows, cols)
             if np.ptp(sample_structure) < 1e-3:
                 raise ValueError("GCPs do not span different relative heights; "
@@ -279,70 +325,67 @@ def calibrate(rel: np.ndarray, image, *, dem_path=None, gcp_path=None,
             if not np.isfinite(k) or k <= 0:
                 raise ValueError("GCPs imply a nonpositive structure scale; "
                                  "check coordinates, heights, and vertical datum")
-            gcp_rmse = float(np.sqrt(np.mean((k * sample_structure + datum_offset - resid) ** 2)))
             spread, loo, evidence = _gcp_quality(rows, cols, sample_structure, resid, rel.shape)
-            cal = Calibration("dem+gcp", scale_k=k, a=a, b=b, fit_r=r, n_gcp=len(z),
-                              datum_offset_m=datum_offset, dem_coverage=coverage,
-                              scale_source="GCP", evidence_level=evidence,
-                              ground_anchor_quantile=ground_q,
-                              structure_upper_quantile=upper_q,
-                              gcp_residual_rmse_m=gcp_rmse,
-                              gcp_loo_rmse_m=loo, gcp_spread_fraction=spread,
-                              note="DEM terrain; GCP structure scale and datum offset. "
-                                   "GCP residual is an in-sample diagnostic, not validation. "
-                                   "Six distributed points with stable leave-one-out error "
-                                   "are needed for a stronger calibration claim; "
-                                   "vertical datums must match.")
-        elif r > 0.5 and a > 0:
-            k = a
-            cal = Calibration("dem-fit", scale_k=k, a=a, b=b, fit_r=r,
-                              dem_coverage=coverage, scale_source="DEM low-frequency fit",
-                              evidence_level="inferred",
-                              ground_anchor_quantile=ground_q,
-                              structure_upper_quantile=upper_q,
-                              note="structure scale inferred from low-frequency DEM slope; "
-                                   "verify against independent surface heights")
-        else:
-            k = SCENE_PRIORS.get(scene, SCENE_PRIORS["auto"]) / max(structure_span, 1e-6)
-            cal = Calibration("dem+prior", scale_k=k, a=a, b=b, fit_r=r,
-                              dem_coverage=coverage, scale_source="scene prior",
-                              evidence_level="approximate",
-                              ground_anchor_quantile=ground_q,
-                              structure_upper_quantile=upper_q,
-                              note=f"weak DEM correlation (r={r:.2f}); upper-tail structure "
-                                   f"height assumed from '{scene}' prior. Metric heights are "
-                                   "approximate until checked against independent reference.")
-        if structure_span < 1e-3 and gcps is None:
+            cal.method, cal.scale_source, cal.evidence_level = "dem+gcp", "GCP", evidence
+            cal.n_gcp, cal.datum_offset_m = len(z), datum_offset
+            cal.gcp_residual_rmse_m = float(np.sqrt(np.mean(
+                (k * sample_structure + datum_offset - resid) ** 2)))
+            cal.gcp_loo_rmse_m, cal.gcp_spread_fraction = loo, spread
+            cal.note = "Structure scale and datum offset from GCPs; GCP residual is in-sample."
+        elif kind == "surface" and k_dem > 0:
+            k = k_dem
+            cal.method, cal.scale_source, cal.evidence_level = "dem-surface-fit", "surface DEM", "measured"
+            cal.note = (f"The DEM is a surface model (building/canopy signal r={r_hp:.2f}); "
+                        "structure scale fitted where the DEM sees buildings; terrain = DEM "
+                        "minus the fitted structure mean.")
+        if k is None and sun_elevation:
+            from .shadows import fit_scale
+            base = dem
+            fit = fit_scale(structure, base, image.rgb, gsd, float(sun_elevation), sun_azimuth)
+            ok = (fit is not None and 0.02 < fit.shadow_fraction < 0.25 and fit.iou > 0.25
+                  and 1.0 < fit.k < 190.0)
+            if fit is not None:
+                cal.shadow_iou, cal.sun_azimuth_deg = fit.iou, fit.azimuth_deg
+                cal.sun_elevation_deg = float(sun_elevation)
+            if ok:
+                k = fit.k
+                cal.method, cal.scale_source, cal.evidence_level = "dem+shadow", "shadow consistency", "measured"
+                cal.note = (f"Structure scale chosen so rendered shadows match observed shadows "
+                            f"(IoU {fit.iou:.2f}, sun az {fit.azimuth_deg:.0f}°"
+                            f"{' estimated' if fit.azimuth_estimated else ''}).")
+        if k is None and learned_scale:
+            k = float(learned_scale)
+            cal.method, cal.scale_source, cal.evidence_level = "dem+learned-scale", "learned pixel-footprint scale", "approximate"
+            cal.note = ("Structure heights from the fine-tuned model's learned metre-per-pixel "
+                        "scale (±40 % typical); add GCPs or a surface DEM for measured scale.")
+        if k is None:
+            k = SCENE_PRIORS.get(scene, SCENE_PRIORS["auto"]) / max(span, 1e-6)
+            cal.method, cal.scale_source, cal.evidence_level = "dem+prior", "scene prior", "approximate"
+            cal.note = (f"No scale evidence; upper-tail structure height assumed from the "
+                        f"'{scene}' prior. Metric heights are approximate.")
+        if span < 1e-3 and gcps is None:
             k = 0.0
-            cal.method = "dem-only"
-            cal.scale_k = 0.0
-            cal.scale_source = "DEM only"
-            cal.evidence_level = "terrain-only"
-            cal.note = "relative model has insufficient structure contrast; only DEM terrain used"
-
-        # A2: Correct coarse DEM for what it already contains (canopy and buildings)
-        beta_map = {"urban": 0.6, "forest": 0.7, "sparse": 0.3, "hilly": 0.5, "auto": 0.5}
-        beta = beta_map.get(scene, 0.5)
-        block_size = max(1, int(round(dem_res_m / gsd)))
-        coarse_struct = ndimage.uniform_filter(k * structure, size=block_size)
-        dtm_terrain = dem - beta * coarse_struct
-
-        dsm = dtm_terrain + datum_offset + k * structure
-
-        # A3: 30m reference-consistent mode (matches Copernicus / SRTM 30m cell averages)
-        if match_dem_30m:
-            coarse_dsm = ndimage.uniform_filter(dsm, size=block_size)
-            residual = dem - coarse_dsm
-            correction = ndimage.gaussian_filter(residual, sigma=max(1.0, block_size / 2.0))
-            dsm = dsm + correction
-            dtm_terrain = dtm_terrain + correction
-
-        cal.vertical_datum = vertical_datum
-        cal.match_dem_30m = match_dem_30m
-        cal.dem_canopy_corrected = True
-        cal.is_agl = is_agl
-        cal.dtm = dtm_terrain.astype(np.float32)
-        cal.ndsm = np.maximum(dsm - dtm_terrain, 0.0).astype(np.float32)
+            cal.method, cal.scale_source, cal.evidence_level = "dem-only", "DEM only", "terrain-only"
+            cal.note = "model found no structure contrast; only DEM terrain used"
+        cal.scale_k = float(k)
+        if kind == "surface":
+            terrain = dem - k * S                       # DEM already contains mean structure
+            dsm = terrain + datum_offset + k * structure
+            if reference_consistent:
+                # force agreement with the reference DEM at its own resolution
+                resid = dem - ndimage.uniform_filter(dsm, size=n)
+                dsm = dsm + ndimage.gaussian_filter(resid, n / 3)
+            cal.reference_consistent = bool(reference_consistent)
+        else:
+            dsm = dem + datum_offset + k * structure
+            cal.reference_consistent = False
+        agg = ndimage.uniform_filter(dsm, size=n) - (dem if kind == "surface" else dem + k * S)
+        cal.consistency_rmse_m = float(np.sqrt(np.mean(agg[n:-n, n:-n] ** 2)))
+        ground = (dem - k * S if kind == "surface" else dem) + datum_offset
+        cal.extras = {"dtm": ground.astype(np.float32), "ndsm": (k * structure).astype(np.float32),
+                      "dem": dem.astype(np.float32)}
+        cal.dtm, cal.ndsm = cal.extras["dtm"], cal.extras["ndsm"]
+        cal.match_dem_30m, cal.is_agl = bool(cal.reference_consistent), bool(agl)
         return dsm.astype(np.float32), "metre", cal
 
     # ---- 2. GCP affine -------------------------------------------------
@@ -361,7 +404,6 @@ def calibrate(rel: np.ndarray, image, *, dem_path=None, gcp_path=None,
         spread, loo, evidence = _gcp_quality(rows, cols, samples, z, rel.shape)
         return (a * rel + b).astype(np.float32), "metre", Calibration(
             "gcp-affine", a=a, b=b, fit_r=r, n_gcp=len(z),
-            vertical_datum=vertical_datum,
             scale_source="GCP", evidence_level=evidence,
             gcp_residual_rmse_m=float(np.sqrt(np.mean((pred - z) ** 2))),
             gcp_loo_rmse_m=loo, gcp_spread_fraction=spread,
@@ -371,5 +413,9 @@ def calibrate(rel: np.ndarray, image, *, dem_path=None, gcp_path=None,
 
     # ---- 3. relative ---------------------------------------------------
     note = "no DEM/GCP supplied" if image.georeferenced else "non-georeferenced input"
-    return rel.astype(np.float32), "relative", Calibration(
-        "relative", scale_source="none", evidence_level="relative", note=note)
+    cal = Calibration("relative", scale_source="none", evidence_level="relative", note=note,
+                      learned_scale_k=learned_scale)
+    if agl and learned_scale:
+        cal.note += ("; heights above ground can be read approximately in metres "
+                     f"using the learned scale ({learned_scale:.1f} m per unit)")
+    return rel.astype(np.float32), "relative", cal

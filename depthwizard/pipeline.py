@@ -10,9 +10,11 @@ from scipy import ndimage
 
 from . import io as dio
 from .buildings import extract_buildings
-from .calibrate import calibrate, fetch_srtm
+from .calibrate import DATUMS, calibrate, fetch_srtm
 from .depth import relative_height
-from .metrics import evaluate, reference_on_grid
+from .metrics import building_level, evaluate, reference_on_grid
+
+SOFTWARE_VERSION = "DepthWizard 2.2 (SIH26175)"
 
 
 def _file_sha256(path: str | Path | None) -> str | None:
@@ -29,7 +31,8 @@ def _file_sha256(path: str | Path | None) -> str | None:
 def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small",
         scene="auto", fetch_dem=False, assumed_gsd_m=1.0, allow_fallback=True,
         relative_display_height_m=None, device=None, dem_source="COP30",
-        match_dem_30m=True, tta=False, log=print) -> dict:
+        match_dem_30m=True, tta=4, dem_kind="auto", sun_elevation=None, sun_azimuth=None,
+        vertical_datum=None, log=print) -> dict:
     t0 = time.time()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -40,53 +43,63 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     log(f"  {img.shape[1]}x{img.shape[0]} px, georeferenced={img.georeferenced}"
         + (f", GSD≈{gsd:.2f} m" if img.pixel_size_m else ""))
 
+    fetched = False
     if fetch_dem and not dem and img.georeferenced:
         log(f"fetching {dem_source} DEM for footprint")
         dem = str(fetch_srtm(img, out / "dem.tif", demtype=dem_source))
+        fetched = True
 
-    log(f"relative height ({model})")
+    passes = 4 if tta is True else (1 if not tta else int(tta))
+    log(f"relative height ({model}, {passes}-pass rotation ensemble)")
     t1 = time.time()
-    rel, backbone, unc = relative_height(
+    rel, backbone, unc_norm, dinfo = relative_height(
         img.rgb, model=model, allow_fallback=allow_fallback, device=device,
-        tta=tta, return_uncertainty=True,
-    )
+        tta=passes, return_uncertainty=True, return_info=True, gsd=gsd)
     t_depth = time.time() - t1
     rel = ndimage.median_filter(rel, 3)  # suppress tile/speckle artefacts
+    is_agl = bool(dinfo.get("agl"))
+    learned = dinfo["learned_scale"](gsd) if dinfo.get("learned_scale") else None
 
-    # Detect if backbone is AGL-trained (GAMUS fine-tune)
-    is_agl = "gamus" in str(model).lower() or "agl" in str(model).lower() or "gamus" in backbone.lower()
-    datum = "EGM2008" if dem_source == "COP30" else "EGM96" if dem else "WGS84"
-
-    log(f"scale calibration (is_agl={is_agl}, datum={datum}, match_30m={match_dem_30m})")
+    # a fetched global DEM has a known geoid; a user-supplied DEM keeps its own datum
+    datum = vertical_datum or (DATUMS.get(dem_source.upper()) if fetched and dem_source else None)
+    log(f"scale calibration (above-ground model={is_agl}, 30 m match={match_dem_30m})")
     dsm, units, cal = calibrate(
-        rel, img, dem_path=dem, gcp_path=gcp, scene=scene,
-        is_agl=is_agl, match_dem_30m=match_dem_30m, vertical_datum=datum,
-    )
-    log(f"  method={cal.method} {cal.note}")
+        rel, img, dem_path=dem, gcp_path=gcp, scene=scene, agl=is_agl,
+        learned_scale=learned, dem_kind=dem_kind, reference_consistent=match_dem_30m,
+        sun_elevation=sun_elevation, sun_azimuth=sun_azimuth,
+        dem_source=dem_source if fetched else None, vertical_datum=datum)
+    log(f"  method={cal.method} ({cal.scale_source}) {cal.note}")
+    datum = cal.vertical_datum if units == "metre" else None
+    if units == "metre" and cal.dtm is not None:
+        from .analysis import water_mask
+        wm = water_mask(img.rgb, gsd)
+        if wm.any():   # open water is flat: remove spurious "structure" on it
+            dsm = np.where(wm, cal.dtm, dsm).astype(np.float32)
+            cal.ndsm = np.where(wm, 0, cal.ndsm).astype(np.float32)
+            log(f"  flattened {wm.mean() * 100:.1f}% open water to the terrain")
+        meta_water = float(wm.mean())
+    else:
+        meta_water = 0.0
 
     name = "dsm.tif" if units == "metre" else "rdsm.tif"
     dio.write_dsm(out / name, dsm, img, units=units,
-                  description=f"DepthWizard {cal.method} ({backbone})",
-                  vertical_datum=datum if units == "metre" else None)
-
-    # Save additional rasters when available (Part 8: E1)
+                  description=f"DepthWizard {cal.method} ({backbone})", vertical_datum=datum)
     if units == "metre" and cal.dtm is not None:
         dio.write_dsm(out / "dtm.tif", cal.dtm, img, units=units,
-                      description=f"DepthWizard bare-earth DTM ({backbone})",
-                      vertical_datum=datum)
+                      description=f"DepthWizard bare-earth DTM ({backbone})", vertical_datum=datum)
     if units == "metre" and cal.ndsm is not None:
         dio.write_dsm(out / "ndsm.tif", cal.ndsm, img, units=units,
-                      description=f"DepthWizard normalised DSM above-ground ({backbone})",
+                      description=f"DepthWizard above-ground heights nDSM ({backbone})",
                       vertical_datum=datum)
 
-    log("extracting LoD1 building footprints")
-    world_w = img.shape[1] * gsd
-    world_h = img.shape[0] * gsd
-    buildings = extract_buildings(
-        dsm, dtm=cal.dtm if units == "metre" else None,
-        gsd=gsd, world_w=world_w, world_h=world_h,
-    )
-    log(f"  detected {buildings['count']} buildings (total footprint {buildings['total_footprint_m2']} m²)")
+    # per-pixel 1-sigma uncertainty from the rotation ensemble, in output units
+    std_rel = dinfo.get("std_rel")
+    unc_units = None
+    if std_rel is not None:
+        unc_units = std_rel * (cal.scale_k if units == "metre" and cal.scale_k else 1.0)
+        dio.write_dsm(out / "uncertainty.tif", unc_units, img,
+                      units=units if units == "metre" else "relative",
+                      description="1-sigma spread of the rotation ensemble")
 
     meta = {
         "input": Path(image_path).name,
@@ -100,44 +113,120 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         "scene": scene,
         "assumed_gsd_m": assumed_gsd_m,
         "dsm_file": name,
-        "buildings_count": buildings["count"],
-        "total_footprint_m2": buildings["total_footprint_m2"],
+        "tta": dinfo.get("tta"),
+        "water_fraction": meta_water,
+        "agl_model": is_agl,
+        "learned_scale_m_per_unit": learned,
         "timing_s": {"depth": round(t_depth, 2)},
-        "evidence_bundle": {
-            "image_sha256": _file_sha256(image_path),
-            "dem_sha256": _file_sha256(dem),
-            "model_identifier": backbone,
-            "calibration_method": cal.method,
-            "scale_k": cal.scale_k,
-            "software_version": "DepthWizard 2.1 (SIH26175)",
-        },
     }
     if units == "relative":
         # display scale for the viewer: relief ~ 8% of scene width unless given
         meta["display_height_m"] = relative_display_height_m or 0.08 * max(img.shape) * gsd
+    view_h = dsm if units == "metre" else dsm * meta["display_height_m"]
+    unc_view = None
+    if unc_units is not None:
+        unc_view = unc_units if units == "metre" else unc_units * meta["display_height_m"]
+
+    log("extracting LoD1 building footprints")
+    b_dtm = cal.dtm if units == "metre" else None
+    min_h = 2.5 if units == "metre" else 0.12 * float(np.percentile(view_h - view_h.min(), 98))
+    buildings = extract_buildings(view_h, dtm=b_dtm, gsd=gsd, world_w=img.shape[1] * gsd,
+                                  world_h=img.shape[0] * gsd, rgb=img.rgb,
+                                  uncertainty_m=unc_view, min_height_m=max(min_h, 1e-3),
+                                  return_labels=True)
+    labels = buildings.pop("_labels", None)
+    if units != "metre":
+        # relative scene: express heights in relative units, not display metres
+        f = meta["display_height_m"]
+        for b in buildings["buildings"]:
+            for key in ("roof_elevation_m", "ground_elevation_m", "height_m"):
+                b[key] = round(b[key] / f, 4)
+            b.pop("storeys", None)
+            b["volume_m3"] = None
+    log(f"  detected {buildings['count']} buildings (footprint {buildings['total_footprint_m2']} m²)")
+    meta["buildings_count"] = buildings["count"]
+    meta["total_footprint_m2"] = buildings["total_footprint_m2"]
 
     ref = None
     if reference:
         log("validating against reference")
         ref = reference_on_grid(reference, img)
-        baseline = None
-        if dem and img.georeferenced:
-            from .calibrate import dem_to_grid
-            baseline = dem_to_grid(dem, img)
-        meta["metrics"] = evaluate(dsm, ref, units, rgb=img.rgb,
-                                   gsd=gsd, baseline=baseline)
+        baseline = getattr(cal, "extras", {}).get("dem") if units == "metre" else None
+        meta["metrics"] = evaluate(dsm, ref, units, rgb=img.rgb, gsd=gsd, baseline=baseline)
+        if units == "metre" and labels is not None and buildings["count"] >= 5:
+            est_nd = dsm - (cal.dtm if cal.dtm is not None else np.percentile(dsm, 2))
+            bm = building_level(labels, est_nd, ref, gsd)
+            if bm:
+                meta["metrics"]["buildings"] = bm
+                log(f"  per-building heights vs reference: n={bm['n']} "
+                    f"RMSE {bm['rmse']:.2f} m, r {bm['r']:.2f}")
         (out / "metrics.json").write_text(json.dumps(meta["metrics"], indent=2))
 
-    view_h = dsm if units == "metre" else dsm * meta["display_height_m"]
+    meta["evidence_bundle"] = {
+        "image_sha256": _file_sha256(image_path),
+        "dem_sha256": _file_sha256(dem),
+        "gcp_sha256": _file_sha256(gcp),
+        "reference_sha256": _file_sha256(reference),
+        "model_identifier": backbone,
+        "rotation_passes": dinfo.get("tta"),
+        "calibration_method": cal.method,
+        "scale_source": cal.scale_source,
+        "evidence_level": cal.evidence_level,
+        "scale_k": cal.scale_k,
+        "vertical_datum": datum,
+        "software_version": SOFTWARE_VERSION,
+    }
+    if img.georeferenced:
+        try:
+            from rasterio.warp import transform as _tr
+            hh, ww = img.shape
+            xs, ys = zip(*[img.transform * (c, r) for c, r in ((0, 0), (ww, 0), (0, hh), (ww, hh))])
+            lon, lat = _tr(img.crs, "EPSG:4326", list(xs), list(ys))
+            meta["corners_lonlat"] = [[float(a), float(b)] for a, b in zip(lon, lat)]  # TL, TR, BL, BR
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ---- disaster / planning analytics layers
+    analytics = {}
+    try:
+        from .analysis import landslide_susceptibility, roof_solar
+        susc = None
+        if units == "metre" and cal.dtm is not None:   # needs bare-earth terrain in metres
+            susc, sstats = landslide_susceptibility(cal.dtm, img.rgb, gsd)
+            analytics["landslide"] = sstats
+        if units == "metre" and labels is not None and buildings["count"]:
+            lat = float(np.mean([c[1] for c in meta["corners_lonlat"]])) if meta.get("corners_lonlat") else 22.0
+            sol = roof_solar(dsm, labels, gsd, lat_deg=lat)
+            for b in buildings["buildings"]:
+                if b["id"] in sol:
+                    b.update(sol[b["id"]])
+            analytics["solar"] = {"latitude_deg": lat, "buildings": len(sol),
+                                  "total_pv_mwh_yr": round(sum(v["pv_kwh_yr"] for v in sol.values()) / 1000, 1),
+                                  "assumptions": "GHI 1,900 kWh/m²/yr, 18 % modules, 70 % usable roof"}
+        log(f"  analytics: landslide index, {'solar per roof' if 'solar' in analytics else 'no solar'}")
+    except Exception as exc:  # noqa: BLE001
+        susc = None
+        log(f"  analytics skipped: {exc}")
+    meta["analytics"] = analytics
+    if labels is not None:
+        np.save(out / "building_labels.npy", labels.astype(np.int32))
+
     view_ref = ref if units == "metre" else None
     view_dtm = cal.dtm if units == "metre" else None
-    confidence_map = np.clip(1.0 - unc, 0.0, 1.0).astype(np.float32)
+    if unc_view is not None:
+        scale = 2.0 if units == "metre" else max(float(np.percentile(unc_view, 95)), 1e-6)
+        confidence_map = np.exp(-unc_view / scale).astype(np.float32)
+    else:
+        confidence_map = np.clip(1.0 - unc_norm, 0.0, 1.0).astype(np.float32)
+    meta["confidence_definition"] = ("exp(-sigma / 2 m), sigma = rotation-ensemble spread"
+                                     if units == "metre" else "relative ensemble agreement")
 
     meta["timing_s"]["total"] = round(time.time() - t0, 2)
     dio.export_viewer_assets(
         out / "viewer", img, view_h, meta, reference=view_ref,
         dtm=view_dtm, confidence=confidence_map, buildings=buildings,
-    )
+        baseline=getattr(cal, "extras", {}).get("dem") if units == "metre" else None,
+        uncertainty=unc_view, susceptibility=susc)
     dio.save_preview(out / "preview.png", view_h, gsd=gsd)
     (out / "meta.json").write_text(json.dumps(meta, indent=2, default=float))
     log(f"done in {meta['timing_s']['total']} s -> {out}")

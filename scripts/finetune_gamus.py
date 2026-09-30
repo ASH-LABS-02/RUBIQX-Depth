@@ -262,6 +262,14 @@ def main():
         if score < best:
             best = score
             model.save_pretrained(out)
+            try:  # mark as an above-ground-height checkpoint for DepthWizard calibration
+                import json as _json
+                cfg_path = out / "config.json"
+                cfg = _json.loads(cfg_path.read_text())
+                cfg["depthwizard_target"] = "agl"
+                cfg_path.write_text(_json.dumps(cfg, indent=2))
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 AutoImageProcessor.from_pretrained(a.model, cache_dir=cache).save_pretrained(out)
             except Exception:  # noqa: BLE001

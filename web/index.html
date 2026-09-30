@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#0b1826">
 <title>DepthWizard</title>
 <link rel="stylesheet" href="style.css?v=20260929-studio-v1">
-<link rel="stylesheet" href="studio.css?v=20260929-studio-v1">
+<link rel="stylesheet" href="studio.css?v=merge2-20260929-studio-v1">
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
 </script>
@@ -45,6 +45,11 @@
         <button type="button" data-export="dsm" role="menuitem">DSM GeoTIFF <small>Original estimated grid</small></button>
         <button type="button" data-export="glb" role="menuitem">Textured terrain GLB <small>Portable 3D asset</small></button>
         <button type="button" data-export="obj" role="menuitem">Textured terrain OBJ <small>ZIP with texture</small></button>
+        <button type="button" data-export="dtm" role="menuitem">Bare-ground DTM <small>GeoTIFF · metric scenes</small></button>
+        <button type="button" data-export="ndsm" role="menuitem">Above-ground nDSM <small>Building and tree heights</small></button>
+        <button type="button" data-export="uncertainty" role="menuitem">Uncertainty map <small>Per-pixel 1σ from the rotation ensemble</small></button>
+        <button type="button" data-export="cityjson" role="menuitem">Buildings CityJSON <small>LoD1 city model for GIS / planning</small></button>
+        <button type="button" data-export="ply" role="menuitem">Point cloud PLY <small>Coloured surface points</small></button>
         <button type="button" data-export="evidence" role="menuitem">Evidence Passport JSON <small>SHA-256 provenance bundle</small></button>
         <button type="button" data-export="shot" role="menuitem">Viewer screenshot <small>Current camera and layer</small></button>
       </div>
@@ -71,6 +76,7 @@
         <button data-nav="fly" title="First-person fly (F)">Fly</button>
         <button data-nav="tour" title="Automatic flythrough (T)">Tour</button>
       </div>
+      <button id="record-tour" title="Record a 20 s cinematic flythrough as a video file">● Record</button>
       <button id="topdown" title="Top-down view (D)">Top down</button>
       <button id="reset" class="icon-btn" title="Reset view (R)" aria-label="Reset view">↺</button>
       <button id="swipe-toggle" title="Swipe compare DSM vs coarse DEM baseline (S)" aria-pressed="false">3D Swipe</button>
@@ -88,8 +94,8 @@
     <div id="swipe-divider" class="swipe-divider hidden">
       <div class="swipe-handle">◀ ▶</div>
     </div>
-    <div id="swipe-label-left" class="swipe-label left hidden">Copernicus / SRTM 30m DEM (Baseline)</div>
-    <div id="swipe-label-right" class="swipe-label right hidden">DepthWizard Calibrated DSM (Our Reconstruction)</div>
+    <div id="swipe-label-left" class="swipe-label left hidden">Input coarse DEM (baseline)</div>
+    <div id="swipe-label-right" class="swipe-label right hidden">DepthWizard DSM</div>
 
     <!-- North Arrow & Dynamic Scale Bar -->
     <div id="scale-bar-container">
@@ -142,6 +148,8 @@
           <button data-mode="ndsm" id="btn-ndsm">nDSM</button>
           <button data-mode="curvature">Curvature</button>
           <button data-mode="error" id="btn-error" disabled>Error</button>
+          <button data-mode="landslide" id="btn-landslide" disabled title="Landslide susceptibility screening index">Landslide</button>
+          <button data-mode="change" id="btn-change" disabled title="Height change against a pre-event scene">Change</button>
         </div>
         <div id="legend" class="legend"></div>
         <label class="row">Vertical exaggeration <output id="exag-v">1.0×</output>
@@ -161,12 +169,17 @@
           <button data-tool="probe" class="active"><span aria-hidden="true">⌖</span> Probe</button>
           <button data-tool="distance" id="btn-dist"><span aria-hidden="true">📏</span> 3D Distance</button>
           <button data-tool="profile"><span aria-hidden="true">⌁</span> Profile</button>
+          <button data-tool="viewshed" title="Click a point: what can an observer 10 m above it see?"><span aria-hidden="true">👁</span> Viewshed</button>
         </div>
         <div id="probe-info" class="kv muted">Click the terrain to read elevation, slope and coordinates.</div>
         <canvas id="profile" width="560" height="220" class="hidden"></canvas>
       </div>
 
       <!-- LoD1 Building Inspector -->
+      <div class="group" id="change-group">
+        <div class="group-heading"><h3>Change detection</h3><span class="experimental">PRE / POST</span></div>
+        <div id="change-panel" class="change-panel"><p class="note">Load a scene to compare.</p></div>
+      </div>
       <div class="group" id="building-inspector-group">
         <div class="group-heading"><h3>Building Inspector (LoD1)</h3><span class="experimental" id="b-count-badge">0 BUILDINGS</span></div>
         <div id="building-info" class="kv muted">Click any building in 3D to inspect storeys, height, footprint area and volume.</div>
@@ -177,6 +190,11 @@
         <div class="group-heading"><h3>Connected Flood Scenario</h3><span class="experimental">DISASTER SIM</span></div>
         <label class="row">Water elevation <output id="flood-v">—</output>
           <input type="range" id="flood-level" min="0" max="1" step="0.1" value="0"></label>
+        <div class="seg" id="flood-source" aria-label="Water source">
+          <button type="button" data-src="edge" class="active" title="Water enters from the lowest scene edge (river)">Low edge</button>
+          <button type="button" data-src="point" title="Click the terrain to place the source">Click source</button>
+          <button type="button" data-src="plane" title="Every cell below the level (no connectivity)">Level plane</button>
+        </div>
         <div class="flood-controls">
           <button id="flood-play" class="compact-btn" type="button">▶ Animate Rise</button>
           <button id="flood-reset" class="compact-btn" type="button">↺ Drain</button>
@@ -240,6 +258,12 @@
           <label>Depth backbone<select name="model"><option value="small">Depth Anything V2 · Small (fast)</option><option value="base">Depth Anything V2 · Base</option><option value="large">Depth Anything V2 · Large (best)</option></select></label>
           <p class="note" id="local-model-status">Checking local fine-tuned model…</p>
           <label>Fine-tuned checkpoint (optional)<input type="text" name="custom_model" placeholder="D:\DepthWizard\checkpoints\da2-gamus-full"></label>
+          <label>Rotation ensemble<select name="tta"><option value="4" selected>4 passes · accuracy + confidence map</option><option value="8">8 passes · best</option><option value="1">1 pass · fastest</option></select></label>
+          <label>DEM type<select name="dem_kind"><option value="auto">Auto-detect</option><option value="surface">Surface model (Copernicus / SRTM – includes buildings)</option><option value="terrain">Bare-earth terrain (DTM)</option></select></label>
+          <label class="row check"><input type="checkbox" name="match_dem_30m" value="true" checked> Match a surface DEM exactly at its own 30 m cells</label>
+          <div class="two-col"><label>Sun elevation (°)<input type="number" name="sun_elevation" step="any" min="1" max="89" placeholder="from metadata"></label>
+          <label>Sun azimuth (°)<input type="number" name="sun_azimuth" step="any" min="0" max="360" placeholder="auto"></label></div>
+          <p class="note">Sun angles light the 3D scene as in the image and enable the experimental shadow-consistency scale check.</p>
           <label>Scene prior<select name="scene"><option>auto</option><option>urban</option><option>sparse</option><option>forest</option><option>hilly</option></select></label>
           <label>Horizontal pixel size for non-georeferenced display (m/px)<input type="number" name="gsd" value="1.0" step="any" min="0.05"></label>
           <p class="note">This sets the viewer's horizontal distance only. Relative heights stay unitless.</p>
@@ -261,6 +285,6 @@
     <button id="help-close" class="primary">Got it</button>
   </div>
 </div>
-<script type="module" src="app.js?v=20260929-studio-v1"></script>
+<script type="module" src="app.js?v=merge2-20260929-studio-v1"></script>
 </body>
 </html>

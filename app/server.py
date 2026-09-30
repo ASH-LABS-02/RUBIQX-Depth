@@ -69,6 +69,11 @@ async def process(image: UploadFile = File(...),
                   gsd: float = Form(1.0),
                   fetch_dem: bool = Form(False),
                   dem_source: str = Form("COP30"),
+                  tta: int = Form(4),
+                  dem_kind: str = Form("auto"),
+                  match_dem_30m: bool = Form(False),
+                  sun_elevation: str = Form(""),
+                  sun_azimuth: str = Form(""),
                   name: str = Form("")):
     job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
     folder = JOBS / job_id
@@ -77,7 +82,11 @@ async def process(image: UploadFile = File(...),
     kwargs = dict(image_path=_save(image, inputs), out_dir=str(folder),
                   dem=_save(dem, inputs), reference=_save(reference, inputs),
                   gcp=_save(gcp, inputs), model=model, scene=scene, assumed_gsd_m=gsd,
-                  fetch_dem=fetch_dem, dem_source=dem_source)
+                  fetch_dem=fetch_dem, dem_source=dem_source,
+                  tta=max(1, min(8, int(tta))), dem_kind=dem_kind if dem_kind in ("auto", "surface", "terrain") else "auto",
+                  match_dem_30m=match_dem_30m,
+                  sun_elevation=float(sun_elevation) if sun_elevation.strip() else None,
+                  sun_azimuth=float(sun_azimuth) if sun_azimuth.strip() else None)
     (folder / "job.json").write_text(json.dumps({"name": name or image.filename,
                                                  "created": time.time()}))
     _status[job_id] = {"state": "queued", "log": [], "error": None}
@@ -170,6 +179,68 @@ def download_obj(job_id: str, resolution: int = 256):
     return _mesh_download(job_id, resolution, "obj.zip")
 
 
+PRODUCTS = {"dsm": ("dsm.tif", "rdsm.tif"), "dtm": ("dtm.tif",), "ndsm": ("ndsm.tif",),
+            "uncertainty": ("uncertainty.tif",)}
+
+
+@app.get("/api/scenes/{job_id}/product/{kind}")
+def download_product(job_id: str, kind: str):
+    """GeoTIFF products: dsm, dtm, ndsm, uncertainty."""
+    folder = _completed_scene(job_id)
+    for name in PRODUCTS.get(kind, ()):
+        if (folder / name).exists():
+            return FileResponse(folder / name, filename=f"{job_id}_{name}", media_type="image/tiff")
+    raise HTTPException(404, f"{kind} is not available for this scene")
+
+
+@app.get("/api/scenes/{job_id}/buildings.city.json")
+def download_cityjson(job_id: str):
+    """LoD1 buildings as CityJSON 1.1 (convertible to CityGML)."""
+    from depthwizard.exports import export_cityjson
+    folder = _completed_scene(job_id)
+    if not (folder / "viewer" / "buildings.json").exists():
+        raise HTTPException(404, "no buildings in this scene")
+    (folder / "exports").mkdir(exist_ok=True)
+    out = export_cityjson(folder, folder / "exports" / "buildings.city.json")
+    return FileResponse(out, filename=f"{job_id}_buildings.city.json", media_type="application/json")
+
+
+@app.get("/api/scenes/{job_id}/points.ply")
+def download_ply(job_id: str):
+    """Coloured DSM point cloud (binary PLY) for CloudCompare / MeshLab."""
+    from depthwizard.exports import export_ply
+    folder = _completed_scene(job_id)
+    (folder / "exports").mkdir(exist_ok=True)
+    out = export_ply(folder, folder / "exports" / "points.ply")
+    return FileResponse(out, filename=f"{job_id}_points.ply", media_type="application/octet-stream")
+
+
+@app.get("/api/scenes/{job_id}/change/{other_id}")
+def change_detection(job_id: str, other_id: str, drop_m: float = 3.0):
+    """Pre/post comparison: `job_id` = before, `other_id` = after. Writes a
+    change layer into the 'after' scene's viewer and returns statistics."""
+    import numpy as np
+    from depthwizard.analysis import change_detection as cd, load_scene_layer
+    pre_dir, post_dir = _completed_scene(job_id), _completed_scene(other_id)
+    pre, post = load_scene_layer(pre_dir, "height.bin"), load_scene_layer(post_dir, "height.bin")
+    if pre.shape != post.shape:
+        raise HTTPException(422, "scenes must cover the same footprint and grid (process both with the same crop)")
+    vm = json.loads((post_dir / "viewer" / "meta.json").read_text())
+    labels = None
+    lab_path = pre_dir / "building_labels.npy"
+    if lab_path.exists():
+        from PIL import Image
+        lab = np.load(lab_path)
+        labels = np.asarray(Image.fromarray(lab.astype(np.int32)).resize((vm["grid_w"], vm["grid_h"]), Image.NEAREST))
+    d, stats = cd(pre, post, vm["gsd_m"] * vm["src_w"] / vm["grid_w"], labels, drop_m)
+    d.astype("<f4").tofile(post_dir / "viewer" / "change.bin")
+    vm.setdefault("layers", {})["change"] = True
+    vm["change_against"] = job_id
+    vm["change_stats"] = stats
+    (post_dir / "viewer" / "meta.json").write_text(json.dumps(vm, indent=2, default=float))
+    return JSONResponse({"before": job_id, "after": other_id, **stats})
+
+
 @app.get("/api/health")
 def health():
     return JSONResponse({"ok": True})
@@ -179,6 +250,9 @@ def health():
 def local_model():
     """Expose the optional GAMUS checkpoint and its local training stage."""
     checkpoint = TRAINING_ROOT / "checkpoints" / "da2-gamus-full"
+    bundled = ROOT / "models" / "da2-gamus-full"      # portable / packaged build
+    if not (checkpoint / "config.json").exists() and (bundled / "config.json").exists():
+        checkpoint = bundled
     ready = (checkpoint / "config.json").exists() and any(
         (checkpoint / name).exists()
         for name in ("model.safetensors", "pytorch_model.bin")

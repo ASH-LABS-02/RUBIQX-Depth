@@ -1,0 +1,104 @@
+{
+  "input": "rgb_post_simulated.tif",
+  "backbone": "/home/claude/da2-gamus-full",
+  "georeferenced": true,
+  "crs": "EPSG:26985",
+  "transform": [
+    0.5,
+    0.0,
+    394200.0,
+    0.0,
+    -0.5,
+    138612.0
+  ],
+  "units": "metre",
+  "vertical_datum": "same as input DEM",
+  "calibration": {
+    "method": "dem+learned-scale",
+    "scale_k": 12.739947211351023,
+    "n_gcp": 0,
+    "dem_coverage": 1.0,
+    "scale_source": "learned pixel-footprint scale",
+    "evidence_level": "approximate",
+    "dem_kind": "terrain",
+    "dem_hp_r": -0.08038757895250061,
+    "dem_resolution_m": 32.0,
+    "reference_consistent": false,
+    "consistency_rmse_m": 0.16748807339850005,
+    "learned_scale_k": 12.739947211351023,
+    "structure_model": "agl-lower-tail",
+    "vertical_datum": "same as input DEM",
+    "match_dem_30m": false,
+    "is_agl": true,
+    "note": "Structure heights from the fine-tuned model's learned metre-per-pixel scale (\u00b140 % typical); add GCPs or a surface DEM for measured scale."
+  },
+  "scene": "urban",
+  "assumed_gsd_m": 1.0,
+  "dsm_file": "dsm.tif",
+  "tta": 4,
+  "agl_model": true,
+  "learned_scale_m_per_unit": 12.739947211351023,
+  "timing_s": {
+    "depth": 15.75,
+    "total": 20.69
+  },
+  "buildings_count": 115,
+  "total_footprint_m2": 26134.4,
+  "evidence_bundle": {
+    "image_sha256": "c70304e0e66ad3da",
+    "dem_sha256": "6692b21db3b2856b",
+    "gcp_sha256": null,
+    "reference_sha256": null,
+    "model_identifier": "/home/claude/da2-gamus-full",
+    "rotation_passes": 4,
+    "calibration_method": "dem+learned-scale",
+    "scale_source": "learned pixel-footprint scale",
+    "evidence_level": "approximate",
+    "scale_k": 12.739947211351023,
+    "vertical_datum": "same as input DEM",
+    "software_version": "DepthWizard 2.2 (SIH26175)"
+  },
+  "corners_lonlat": [
+    [
+      -77.06687792050413,
+      38.91535539301232
+    ],
+    [
+      -77.06097421625911,
+      38.91535862281725
+    ],
+    [
+      -77.06687359573182,
+      38.910743125617024
+    ],
+    [
+      -77.06097027325946,
+      38.91074635521582
+    ]
+  ],
+  "analytics": {
+    "landslide": {
+      "fractions": {
+        "low": 0.9938688278198242,
+        "moderate": 0.006131172180175781,
+        "high": 0.0,
+        "very_high": 0.0
+      },
+      "mean_slope_deg": 4.5523338375167395,
+      "max_slope_deg": 13.127996450058095,
+      "weights": {
+        "slope": 0.5,
+        "concavity": 0.15,
+        "relief": 0.2,
+        "sparse_vegetation": 0.15
+      }
+    },
+    "solar": {
+      "latitude_deg": 38.913050874165606,
+      "buildings": 115,
+      "total_pv_mwh_yr": 5775.0,
+      "assumptions": "GHI 1,900 kWh/m\u00b2/yr, 18 % modules, 70 % usable roof"
+    }
+  },
+  "confidence_definition": "exp(-sigma / 2 m), sigma = rotation-ensemble spread"
+}
