@@ -15,6 +15,26 @@ GAMUS DC training tiles. The older six-scene **5.04 m RMSE** aggregate includes
 reference-derived simulated DEM inputs and same-survey forest DEMs; it is a
 mixed-evidence pipeline check, not an independent accuracy result.
 
+## Live demo
+
+**http://16.170.173.94/** – hosted on AWS EC2 (CPU only). The demo scenes in the gallery open instantly; a new upload takes a few minutes to process because the server has no GPU. Use plain `http://`.
+
+## Try it yourself – test and validation files
+
+Every file below is in this repository, so you can download it, upload it through **Import** (on the live demo or a local run) and check the result against the included reference. The **Reference DSM / LiDAR** file is used only for scoring; it never enters the height estimate.
+
+| # | What it tests | Satellite image | Low-resolution DEM | Reference (scoring only) | Settings | What to expect |
+|---|---|---|---|---|---|---|
+| 1 | Urban scene, blind LiDAR check | `samples/dc_lidar/glover_park/rgb.tif` | `samples/dc_lidar/glover_park/dtm_2018_32m.tif` | `samples/dc_lidar/glover_park/lidar_dsm_2024.tif` | GAMUS model, scene prior *urban* | ~6.2 m RMSE vs ~10.1 m for the DEM alone (Validate panel) |
+| 2 | Surface-DEM calibration path | `samples/dc_lidar/capitol_hill_east/rgb.tif` | `samples/dc_lidar/capitol_hill_east/sim_cop30_surface.tif` | `samples/dc_lidar/capitol_hill_east/lidar_dsm_2024.tif` | GAMUS, *urban* | calibration method `dem-surface-fit`. The surface DEM is **simulated from the reference LiDAR**, so this checks the code path, not independent accuracy |
+| 3 | Change detection (simulated event) | `samples/dc_lidar/glover_park/rgb_post_simulated.tif` | `samples/dc_lidar/glover_park/dtm_2018_32m.tif` | – | GAMUS, *urban*; then **Disaster → Change detection**, pick the Glover Park scene as the before-event scene | height-loss patches where 12 roofs were removed from the image (the post-event image is **simulated**) |
+| 4 | Forest / vegetation | `samples/quesenbank/forest_south_rgb.tif` | `samples/quesenbank/forest_south_dem_30m.tif` | `samples/quesenbank/forest_south_reference_dsm.tif` | GAMUS, scene prior *forest* | canopy DSM with error scored against the UAV reference. Always pair *north* files with *north* and *south* with *south* |
+| 5 | Ground control points | `samples/synthetic/scene_rgb.tif` | `samples/synthetic/srtm_like.tif` | `samples/synthetic/truth_dsm.tif` | add `samples/synthetic/gcps.csv` as GCPs | calibration uses the GCP fit (synthetic scene with known truth) |
+| 6 | Plain PNG, no georeference | `samples/gamus/NYC_00735_rgb.png` | – | – | horizontal pixel size **0.33** | relative heights only, clearly labelled as not metric |
+| 7 | Existing elevation file | `samples/dc_lidar/glover_park/lidar_dsm_2024.tif` (as the image) | – | – | – | shown directly as *Input DEM (not estimated)*; no model runs |
+
+Tips: tick **Auto-download DEM** instead of giving a DEM file to fetch Copernicus/SRTM automatically (needs internet). A DEM must cover at least 90% of the image or the run stops with a clear message instead of guessing. On any scene, **Buildings → Known height → Add as anchor**, then **Calibrate → Scale Anchors → Apply**, rescales the whole scene from one supplied building height; if that height comes from the reference file, the result is no longer a blind test.
+
 ## Quick start
 
 ```bash
@@ -31,7 +51,7 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 ## Gallery
 
-| **Buildings** – 131 fitted buildings with height, storeys, volume, solar; one known height recalibrates the city | **Topo** – hypsometric tint + index contours + hillshade |
+| **Buildings** – 131 fitted buildings with height, storeys, volume, estimated solar; supplied heights can recalibrate the scene | **Topo** – hypsometric tint + index contours + hillshade |
 |---|---|
 | ![buildings](docs/images/city.jpg) | ![topo](docs/images/topo.jpg) |
 | **Slope hazard** (true slope, 0–30° / 30–45° / >45°) | **Flood & response** – connected flood, buildings and people exposed, mission planning |
