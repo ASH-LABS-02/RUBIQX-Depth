@@ -23,6 +23,7 @@ All 30 tiles improved. Source: `D:\DepthWizard\evaluation\gamus-30-test`.
 |---|---|---|---:|---:|---:|---:|
 | DC Glover Park (urban) | DC 2024 LiDAR DSM | 2018 DTM, 32 m (bare earth) | 10.09 / 7.42 | 9.17 / 7.43 | **6.21 / 4.51** | 0.85 |
 | DC Capitol Hill East (urban) | DC 2024 LiDAR DSM | 2018 DTM, 32 m (bare earth) | 8.00 / 6.41 | 7.89 / 6.64 | **3.93 / 2.97** | 0.79 |
+| DC Glover Park (anchored – 3 LiDAR buildings, not blind) | DC 2024 LiDAR DSM | 2018 DTM, 32 m (bare earth) | 10.09 / 7.42 | - | **4.23 / 2.99** | 0.89 |
 | DC Glover Park | DC 2024 LiDAR DSM | simulated COP30 surface DEM* | 5.74 / 4.62 | 4.44 / 3.40 | **4.60 / 3.64** | 0.86 |
 | DC Capitol Hill East | DC 2024 LiDAR DSM | simulated COP30 surface DEM* | 4.57 / 3.79 | 3.95 / 3.19 | **3.91 / 3.18** | 0.61 |
 | Quesenbank forest north | UAV survey DSM | survey DEM, 30 m | 9.06 / 3.92 | 7.99 / 4.50 | **6.25 / 3.50** | 0.76 |

@@ -13,6 +13,11 @@ import traceback
 import uuid
 from pathlib import Path
 
+import rasterio
+import numpy as np
+from PIL import Image
+from pydantic import BaseModel
+
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -309,6 +314,127 @@ def scene_evidence(job_id: str):
         "evidence_bundle": meta.get("evidence_bundle", {}),
     }
     return JSONResponse(evidence)
+
+
+class RescaleBody(BaseModel):
+    anchors: list[dict] = []
+    reset: bool = False
+
+def _rewrite_tif(path: Path, arr: np.ndarray):
+    """Overwrite a GeoTIFF keeping its CRS/transform/tags."""
+    with rasterio.open(path) as src:
+        profile, tags = src.profile, src.tags()
+    out = np.where(np.isfinite(arr), arr, -9999.0).astype(np.float32)
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(out, 1)
+        dst.update_tags(**tags)
+
+def _viewer_bin(folder: Path, name: str, arr: np.ndarray, vm: dict):
+    """Same downsampling as io.export_viewer_assets.down()."""
+    from depthwizard.io import _resize
+    a = np.where(np.isfinite(arr), arr, np.nanmin(arr)).astype(np.float32)
+    _resize(a, (vm["grid_w"], vm["grid_h"]), Image.BILINEAR).astype("<f4").tofile(folder / "viewer" / name)
+
+@app.post("/api/scenes/{job_id}/rescale")
+def rescale(job_id: str, body: RescaleBody):
+    from depthwizard.calibrate import apply_height_anchors
+    from depthwizard.io import read_raster
+    folder = _completed_scene(job_id)
+    if not (folder / "ndsm.tif").exists() or not (folder / "dtm.tif").exists():
+        raise HTTPException(400, "height anchors need a metric scene (dsm + dtm + ndsm)")
+    with _lock:
+        # 1. snapshot originals once – every rescale starts from these
+        for n in ("ndsm", "dsm", "uncertainty"):
+            src, raw = folder / f"{n}.tif", folder / f"{n}_raw.tif"
+            if src.exists() and not raw.exists():
+                shutil.copy2(src, raw)
+        bpath = folder / "viewer" / "buildings.json"
+        bj = json.loads(bpath.read_text())
+        for b in bj["buildings"]:
+            b.setdefault("height_raw_m", b["height_m"])
+            b.setdefault("volume_raw_m3", b.get("volume_m3"))
+
+        ndsm_raw, _ = read_raster(folder / "ndsm_raw.tif")
+        dsm_raw, _ = read_raster(folder / "dsm_raw.tif")
+        labels = np.load(folder / "building_labels.npy")
+        est = {b["id"]: b["height_raw_m"] for b in bj["buildings"]}
+
+        if body.reset:
+            s, stats = 1.0, {"reset": True}
+        else:
+            s, stats = apply_height_anchors(ndsm_raw, labels, body.anchors, est)
+
+        # 2. rasters (DTM never touched)
+        ndsm = ndsm_raw * s
+        dsm = dsm_raw + (s - 1) * ndsm_raw
+        _rewrite_tif(folder / "ndsm.tif", ndsm)
+        _rewrite_tif(folder / "dsm.tif", dsm)
+        unc = None
+        if (folder / "uncertainty_raw.tif").exists():
+            unc = read_raster(folder / "uncertainty_raw.tif")[0] * s
+            _rewrite_tif(folder / "uncertainty.tif", unc)
+
+        # 3. buildings – same ids/footprints, heights scaled
+        for b in bj["buildings"]:
+            b["height_m"] = round(b["height_raw_m"] * s, 2)
+            b["roof_elevation_m"] = round(b["ground_elevation_m"] + b["height_m"], 2)
+            b["storeys"] = max(1, round(b["height_m"] / 3.0))
+            if b.get("volume_raw_m3") is not None:
+                b["volume_m3"] = round(b["volume_raw_m3"] * s, 1)
+
+        # 4. viewer layers + meta
+        vm = json.loads((folder / "viewer" / "meta.json").read_text())
+        _viewer_bin(folder, "height.bin", dsm, vm)
+        if unc is not None and vm.get("layers", {}).get("unc"):
+            _viewer_bin(folder, "unc.bin", unc, vm)
+        vm["h_min"], vm["h_max"] = float(np.nanmin(dsm)), float(np.nanmax(dsm))
+
+        # 5. solar per roof (optional, cheap)
+        try:
+            from depthwizard.analysis import roof_solar
+            corners = vm.get("corners_lonlat")
+            lat = float(np.mean([c[1] for c in corners])) if corners else 22.0
+            sol = roof_solar(dsm, labels, vm["gsd_m"], lat_deg=lat)
+            for b in bj["buildings"]:
+                b.update(sol.get(b["id"], {}))
+        except Exception:
+            pass
+        bpath.write_text(json.dumps(bj, indent=2), encoding="utf-8")
+
+        # 6. calibration record in both meta files
+        anchor_rec = None if body.reset else {"s": s, "anchors": body.anchors, "stats": stats}
+        for mp in (folder / "meta.json", folder / "viewer" / "meta.json"):
+            m = vm if mp.parent.name == "viewer" else json.loads(mp.read_text())
+            cal = m.setdefault("calibration", {})
+            cal.setdefault("base", {k: v for k, v in cal.items() if k != "base"})
+            if body.reset:
+                base = cal["base"]
+                cal.clear()
+                cal.update(base)
+                m.pop("height_anchor", None)
+            else:
+                cal["method"] = "height-anchor"
+                cal["scale_source"] = f"{stats.get('n_used', 0)} known building height(s)"
+                cal["evidence_level"] = "measured" if stats.get("n_used", 0) >= 2 else "provisional"
+                m["height_anchor"] = anchor_rec
+            if "evidence_bundle" in m:
+                m["evidence_bundle"]["calibration_method"] = cal["method"]
+                m["evidence_bundle"]["height_anchor_s"] = None if body.reset else s
+            mp.write_text(json.dumps(m, indent=2, default=float))
+
+        # 7. re-export derived files
+        from depthwizard.exports import export_cityjson, export_ply
+        (folder / "exports").mkdir(exist_ok=True)
+        export_cityjson(folder, folder / "exports" / "buildings.city.json")
+        export_ply(folder, folder / "exports" / "points.ply")
+
+        if body.reset:   # restore raws exactly, then drop them
+            for n in ("ndsm", "dsm", "uncertainty"):
+                raw = folder / f"{n}_raw.tif"
+                if raw.exists():
+                    shutil.move(raw, folder / f"{n}.tif")
+
+    return {"scale": s, **stats}
 
 
 app.mount("/jobs", StaticFiles(directory=JOBS), name="jobs")

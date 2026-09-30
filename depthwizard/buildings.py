@@ -116,10 +116,14 @@ def extract_buildings(
         # footprint (insensitive to parapets, mixed edge pixels and sloping terrain)
         ground_h = float(np.median(dtm_vals))
         height_agl = max(min_height_m, float(np.percentile(ndsm_vals, 70)))
+        
         roof_h = ground_h + height_agl
         area_m2 = float(round(comp_mask.sum() * pixel_area_m2, 1))
         volume_m3 = float(round(area_m2 * height_agl, 1))
+        
+        # Storey snapping applied only to display variables
         storeys = max(1, int(round(height_agl / 3.0)))
+        roof_elevation_m = ground_h + float(storeys * 3.0)
 
         # Center in world coordinates (Three.js coordinates: X along width, Z along height)
         cols = [p[0] for p in exterior]
@@ -154,7 +158,7 @@ def extract_buildings(
         kept[comp_mask] = b_id
         buildings.append({
             "id": b_id,
-            "roof_elevation_m": round(roof_h, 2),
+            "roof_elevation_m": round(roof_elevation_m, 2),
             "ground_elevation_m": round(ground_h, 2),
             "height_m": round(height_agl, 2),
             "storeys": storeys,

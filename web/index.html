@@ -137,7 +137,13 @@
     </nav>
 
     <section class="panel" id="tab-analyse">
-      <div class="inspector-title"><div><h1>Surface analysis</h1><p>Inspect the reconstruction</p></div><span class="live-indicator"><i></i> Live</span></div>
+      <div class="inspector-title">
+        <div><h1>Surface analysis</h1><p>Inspect the reconstruction</p></div>
+        <div style="display:flex; flex-direction:column; align-items:flex-end;">
+          <span class="live-indicator"><i></i> Live</span>
+          <span id="scale-badge" class="badge hidden" style="margin-top:5px; font-size:10px; background:#29495b; padding:2px 6px; border-radius:4px; color:#edf5f9;"></span>
+        </div>
+      </div>
       <div class="group">
         <h3>Surface layer</h3>
         <div class="seg surface-modes" id="shade-mode">
@@ -183,7 +189,32 @@
       <div class="group" id="building-inspector-group">
         <div class="group-heading"><h3>Building Inspector (LoD1)</h3><span class="experimental" id="b-count-badge">0 BUILDINGS</span></div>
         <div id="building-info" class="kv muted">Click any building in 3D to inspect storeys, height, footprint area and volume.</div>
+        <div id="building-anchor-controls" class="hidden" style="margin-top: 10px; padding: 10px; background: rgba(0,0,0,0.1); border-radius: 4px;">
+          <label class="row" style="margin-bottom: 5px;">Known height (m)
+            <div style="display: flex; gap: 5px;">
+              <input type="number" id="anchor-known-height" step="0.1" min="1.0" style="width: 70px;">
+              <button type="button" id="anchor-storeys-btn" class="compact-btn" title="Set to storeys × 3 m">storeys × 3 m</button>
+            </div>
+          </label>
+          <button type="button" id="anchor-add-btn" class="compact-btn" style="width: 100%;">Add as anchor</button>
+        </div>
       </div>
+
+      <div class="group hidden" id="anchor-panel-group">
+        <div class="group-heading"><h3>Scale Anchors</h3></div>
+        <div id="anchor-panel" class="anchor-panel">
+           <table class="data-table" id="anchor-table" style="width: 100%; text-align: left; font-size: 12px; margin-bottom: 10px;">
+             <thead><tr><th>ID</th><th>Est.</th><th>Known</th><th>Ratio</th><th></th></tr></thead>
+             <tbody></tbody>
+           </table>
+           <p id="anchor-warning" class="hidden" style="color: #ff9800; font-size: 11px; margin-bottom: 10px;"></p>
+           <div class="btns">
+             <button id="anchor-apply-btn" class="primary" style="flex: 1;">Apply</button>
+             <button id="anchor-reset-btn" style="flex: 1;">Reset</button>
+           </div>
+        </div>
+      </div>
+
 
       <!-- Disaster & Flood Simulation -->
       <div class="group">

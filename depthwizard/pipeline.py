@@ -32,7 +32,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         scene="auto", fetch_dem=False, assumed_gsd_m=1.0, allow_fallback=True,
         relative_display_height_m=None, device=None, dem_source="COP30",
         match_dem_30m=True, tta=4, dem_kind="auto", sun_elevation=None, sun_azimuth=None,
-        vertical_datum=None, log=print) -> dict:
+        vertical_datum=None, anchors=None, log=print) -> dict:
     t0 = time.time()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -147,6 +147,73 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     meta["buildings_count"] = buildings["count"]
     meta["total_footprint_m2"] = buildings["total_footprint_m2"]
 
+    # --- Apply Global Scale Anchors ---
+    if anchors:
+        if units != "metre":
+            log("  skipping anchors: scene is relative")
+        else:
+            log("  applying height anchors")
+            resolved_anchors = []
+            for anc in anchors:
+                if "lon" in anc and "lat" in anc:
+                    if not img.georeferenced:
+                        continue
+                    from rasterio.warp import transform as _tr
+                    try:
+                        xs, ys = _tr("EPSG:4326", img.crs, [anc["lon"]], [anc["lat"]])
+                        col, row = ~img.transform * (xs[0], ys[0])
+                        c, r = int(col), int(row)
+                        if 0 <= r < labels.shape[0] and 0 <= c < labels.shape[1]:
+                            b_id = labels[r, c]
+                            if b_id > 0:
+                                resolved_anchors.append({"building_id": int(b_id), "height_m": anc["height_m"]})
+                    except Exception as e:
+                        log(f"    failed to resolve lon/lat anchor: {e}")
+                elif "building_id" in anc:
+                    resolved_anchors.append(anc)
+                    
+            from .calibrate import apply_height_anchors
+            est = {b["id"]: b["height_m"] for b in buildings["buildings"]}
+            s, stats = apply_height_anchors(cal.ndsm, labels, resolved_anchors, est)
+            
+            # Save raw files for potential reset via endpoint later
+            import shutil
+            if not (out / "ndsm_raw.tif").exists():
+                shutil.copy2(out / "ndsm.tif", out / "ndsm_raw.tif")
+            if (out / "uncertainty.tif").exists() and not (out / "uncertainty_raw.tif").exists():
+                shutil.copy2(out / "uncertainty.tif", out / "uncertainty_raw.tif")
+                
+            ndsm0 = cal.ndsm.copy()
+            dsm = dsm + (s - 1) * ndsm0
+            cal.ndsm = ndsm0 * s
+            
+            cal.scale_k = (cal.scale_k or 1.0) * s
+            
+            if unc_units is not None:
+                unc_units = unc_units * s
+                
+            dio.write_dsm(out / "dsm.tif", dsm, img, units="metre", description=f"DepthWizard height-anchor ({backbone})", vertical_datum=datum)
+            dio.write_dsm(out / "ndsm.tif", cal.ndsm, img, units="metre", description=f"DepthWizard above-ground heights nDSM ({backbone})", vertical_datum=datum)
+            if unc_units is not None:
+                dio.write_dsm(out / "uncertainty.tif", unc_units, img, units="metre", description="1-sigma spread of the rotation ensemble")
+            
+            for b in buildings["buildings"]:
+                b["height_raw_m"] = b["height_m"]
+                b["volume_raw_m3"] = b.get("volume_m3")
+                b["height_m"] = round(b["height_m"] * s, 2)
+                b["roof_elevation_m"] = round(b["ground_elevation_m"] + b["height_m"], 2)
+                b["storeys"] = max(1, round(b["height_m"] / 3.0))
+                if b["volume_raw_m3"] is not None:
+                    b["volume_m3"] = round(b["volume_raw_m3"] * s, 1)
+                    
+            cal.method = "height-anchor"
+            cal.scale_source = f"{stats.get('n_used', 0)} known building height(s)"
+            cal.evidence_level = "measured" if stats.get("n_used", 0) >= 2 else "provisional"
+            
+            meta["calibration"] = cal.as_dict()
+            meta["height_anchor"] = {"s": s, "anchors": resolved_anchors, "stats": stats}
+            meta["_tmp_height_anchor_s"] = s
+
     ref = None
     if reference:
         log("validating against reference")
@@ -176,6 +243,8 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         "vertical_datum": datum,
         "software_version": SOFTWARE_VERSION,
     }
+    if "_tmp_height_anchor_s" in meta:
+        meta["evidence_bundle"]["height_anchor_s"] = meta.pop("_tmp_height_anchor_s")
     if img.georeferenced:
         try:
             from rasterio.warp import transform as _tr

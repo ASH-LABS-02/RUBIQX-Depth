@@ -419,3 +419,64 @@ def calibrate(rel: np.ndarray, image, *, dem_path=None, gcp_path=None,
         cal.note += ("; heights above ground can be read approximately in metres "
                      f"using the learned scale ({learned_scale:.1f} m per unit)")
     return rel.astype(np.float32), "relative", cal
+
+def apply_height_anchors(ndsm_raw: np.ndarray, labels: np.ndarray, anchors: list[dict], est_heights: dict[int, float]) -> tuple[float, dict]:
+    """
+    Apply global scale reference using known building heights.
+    anchors: list of dicts with 'building_id' and 'height_m'
+    est_heights: dict of building_id -> original p70 roof height (from extract_buildings)
+    Returns (scale_factor, stats)
+    """
+    ratios = []
+    stats = {
+        "n_used": 0,
+        "rejected": [],
+        "ratios": [],
+        "cv": 0.0,
+        "loo_rmse": None,
+        "warning": None
+    }
+    
+    for anchor in anchors:
+        b_id = anchor.get("building_id")
+        known_h = anchor.get("height_m")
+        if b_id is None or known_h is None:
+            stats["rejected"].append({"anchor": anchor, "reason": "missing building_id or height_m"})
+            continue
+            
+        est_h = est_heights.get(b_id)
+        if est_h is None:
+            stats["rejected"].append({"anchor": anchor, "reason": "building not found or has no height"})
+            continue
+            
+        if est_h < 1.5:
+            stats["rejected"].append({"anchor": anchor, "reason": f"estimated height {est_h:.1f} m is under 1.5 m"})
+            continue
+            
+        r_i = known_h / est_h
+        ratios.append(r_i)
+        stats["ratios"].append({"building_id": b_id, "est": est_h, "known": known_h, "ratio": r_i})
+        
+    stats["n_used"] = len(ratios)
+    
+    if len(ratios) == 0:
+        return 1.0, stats
+        
+    s = float(np.median(ratios))
+    s = min(max(s, 0.5), 3.0)
+    
+    if len(ratios) > 1:
+        cv = float(np.std(ratios) / np.mean(ratios))
+        stats["cv"] = cv
+        if cv > 0.25:
+            stats["warning"] = f"Anchors disagree: coefficient of variation of ratios above 25% ({cv:.2f})"
+            
+    if len(ratios) >= 3:
+        # Leave-one-out error
+        errors = []
+        for i in range(len(ratios)):
+            loo_s = np.median(ratios[:i] + ratios[i+1:])
+            errors.append((loo_s * stats["ratios"][i]["est"]) - stats["ratios"][i]["known"])
+        stats["loo_rmse"] = float(np.sqrt(np.mean(np.square(errors))))
+        
+    return float(s), stats

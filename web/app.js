@@ -632,6 +632,7 @@ function clearBuildingSelection() {
   }
   $('#building-info').classList.add('muted');
   $('#building-info').textContent = 'Click any building in 3D to inspect storeys, height, footprint area and volume.';
+  $('#building-anchor-controls').classList.add('hidden');
 }
 
 function selectBuilding(mesh) {
@@ -654,6 +655,12 @@ function selectBuilding(mesh) {
     ${b.pv_kwh_yr !== undefined ? `<b>Rooftop solar</b><span>${fmt(b.sunlit_fraction * 100, 0)}% sunlit · ≈ ${Math.round(b.pv_kwh_yr).toLocaleString()} kWh/yr</span>` : ''}
     ${S.floodMask ? (() => { const f = floodedBuildings(+$('#flood-level').value).find((x) => x.id === b.id); return f ? `<b>Flood depth at base</b><span class="worse">${fmt(f.depth, 2)} m</span>` : ''; })() : ''}
   `;
+  if (S.meta && S.meta.units === 'metre') {
+    $('#building-anchor-controls').classList.remove('hidden');
+    $('#anchor-known-height').value = (b.storeys * 3.0).toFixed(1);
+    $('#anchor-storeys-btn').onclick = () => { $('#anchor-known-height').value = (b.storeys * 3.0).toFixed(1); };
+    $('#anchor-add-btn').onclick = () => { addAnchor(b.id, b.height_m, parseFloat($('#anchor-known-height').value)); };
+  }
 }
 
 // ------------------------------------------------------------------ cinematic flythrough recording
@@ -1483,3 +1490,136 @@ renderer.setAnimationLoop(() => {
 
 refreshScenes().catch(() => { $('#scene-list').innerHTML = '<p class="worse">Server not reachable – start with <code>python run.py</code>.</p>'; });
 if (!localStorage.getItem('dw-help-seen')) { $('#help').classList.remove('hidden'); try { localStorage.setItem('dw-help-seen', '1'); } catch {} }
+// ------------------------------------------------------------------ Anchors
+let currentAnchors = [];
+
+function renderAnchorPanel() {
+  const panelGroup = $('#anchor-panel-group');
+  if (!S.meta || S.meta.units !== 'metre') {
+    panelGroup.classList.add('hidden');
+    return;
+  }
+  
+  if (S.meta.calibration && S.meta.calibration.method === 'height-anchor') {
+    panelGroup.classList.remove('hidden');
+    const badge = $('#scale-badge');
+    badge.classList.remove('hidden');
+    const cal = S.meta.height_anchor || {};
+    const n = cal.anchors ? cal.anchors.length : 0;
+    const s = cal.s || 1.0;
+    const stats = cal.stats || {};
+    let txt = `Scale: ${n} anchor${n !== 1 ? 's' : ''} · s = ${s.toFixed(2)}`;
+    if (n >= 3 && stats.loo_rmse !== undefined) {
+      txt += ` · ±${stats.loo_rmse.toFixed(1)} m`;
+    }
+    badge.textContent = txt;
+    if (stats.warning) {
+      $('#anchor-warning').textContent = stats.warning;
+      $('#anchor-warning').classList.remove('hidden');
+    } else {
+      $('#anchor-warning').classList.add('hidden');
+    }
+  } else if (currentAnchors.length > 0) {
+    panelGroup.classList.remove('hidden');
+  } else {
+    panelGroup.classList.add('hidden');
+  }
+
+  const tbody = $('#anchor-table tbody');
+  tbody.innerHTML = '';
+  currentAnchors.forEach((a, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>#${a.building_id}</td>
+      <td>${a.est.toFixed(1)}</td>
+      <td>${a.known.toFixed(1)}</td>
+      <td>${(a.known / a.est).toFixed(2)}</td>
+      <td><button class="icon-btn" onclick="removeAnchor(${i})">×</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+window.removeAnchor = function(index) {
+  currentAnchors.splice(index, 1);
+  renderAnchorPanel();
+};
+
+window.addAnchor = function(id, est, known) {
+  const existing = currentAnchors.findIndex(a => a.building_id === id);
+  if (existing >= 0) {
+    currentAnchors[existing].known = known;
+  } else {
+    currentAnchors.push({ building_id: id, est, known });
+  }
+  renderAnchorPanel();
+};
+
+$('#anchor-apply-btn').addEventListener('click', async () => {
+  const btn = $('#anchor-apply-btn');
+  btn.disabled = true;
+  btn.textContent = 'Applying...';
+  try {
+    const res = await fetch(`/api/scenes/${S.id}/rescale`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchors: currentAnchors.map(a => ({building_id: a.building_id, height_m: a.known})) })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    await reloadViewer();
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Apply';
+  }
+});
+
+$('#anchor-reset-btn').addEventListener('click', async () => {
+  const btn = $('#anchor-reset-btn');
+  btn.disabled = true;
+  btn.textContent = 'Resetting...';
+  try {
+    const res = await fetch(`/api/scenes/${S.id}/rescale`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset: true })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    currentAnchors = [];
+    $('#scale-badge').classList.add('hidden');
+    await reloadViewer();
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Reset';
+  }
+});
+
+async function reloadViewer() {
+  const v = Date.now();
+  const metaRes = await fetch(`/jobs/${S.id}/viewer/meta.json?v=${v}`);
+  S.meta = await metaRes.json();
+  const buildRes = await fetch(`/jobs/${S.id}/viewer/buildings.json?v=${v}`);
+  const b = await buildRes.json();
+  S.buildings = b.buildings || [];
+  
+  if (S.meta.height_anchor && S.meta.height_anchor.anchors) {
+    currentAnchors = S.meta.height_anchor.anchors.map(a => {
+      const bd = S.buildings.find(x => x.id === a.building_id);
+      return {
+        building_id: a.building_id,
+        known: a.height_m,
+        est: bd ? bd.height_raw_m || bd.height_m : a.height_m
+      };
+    });
+  }
+  
+  const heightRes = await fetch(`/jobs/${S.id}/viewer/height.bin?v=${v}`);
+  S.height = new Float32Array(await heightRes.arrayBuffer());
+  
+  rebuildMesh();
+  rebuildBuildings();
+  renderAnchorPanel();
+}
