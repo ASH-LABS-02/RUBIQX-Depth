@@ -80,6 +80,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         meta_water = float(wm.mean())
     else:
         meta_water = 0.0
+        wm = None
 
     name = "dsm.tif" if units == "metre" else "rdsm.tif"
     dio.write_dsm(out / name, dsm, img, units=units,
@@ -118,6 +119,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         "agl_model": is_agl,
         "learned_scale_m_per_unit": learned,
         "timing_s": {"depth": round(t_depth, 2)},
+        "sun_input": {"elevation_deg": sun_elevation, "azimuth_deg": sun_azimuth},
     }
     if units == "relative":
         # display scale for the viewer: relief ~ 8% of scene width unless given
@@ -133,6 +135,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     buildings = extract_buildings(view_h, dtm=b_dtm, gsd=gsd, world_w=img.shape[1] * gsd,
                                   world_h=img.shape[0] * gsd, rgb=img.rgb,
                                   uncertainty_m=unc_view, min_height_m=max(min_h, 1e-3),
+                                  edge_refine_for_footprints=True,
                                   return_labels=True)
     labels = buildings.pop("_labels", None)
     if units != "metre":
@@ -147,8 +150,46 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     meta["buildings_count"] = buildings["count"]
     meta["total_footprint_m2"] = buildings["total_footprint_m2"]
 
+    # Automatic anchors are independent height cues, not reference validation.
+    # Only a consistent group may change metric scale; all candidates/rejections
+    # remain visible in metadata for audit and manual review.
+    auto_applied = False
+    if units == "metre" and cal.ndsm is not None and cal.dtm is not None and labels is not None and buildings["count"] and not anchors:
+        try:
+            from .auto_anchors import automatic_height_anchors
+            candidates, diagnostics = automatic_height_anchors(
+                img, labels, buildings["buildings"], gsd_m=gsd, ndsm=cal.ndsm, dtm=cal.dtm,
+                water=wm, sun_elevation_deg=sun_elevation, sun_azimuth_deg=sun_azimuth,
+                cache_dir=out.parent / "osm_cache")
+            reliable = [a for a in candidates if a.get("confidence", 0) >= 0.65 and
+                        (a.get("source") == "shadow geometry" or a.get("osm_tag") == "height")]
+            from .calibrate import apply_height_anchors
+            estimated = {b["id"]: b["height_m"] for b in buildings["buildings"]}
+            proposed_scale, proposed_stats = apply_height_anchors(cal.ndsm, labels, reliable, estimated)
+            consistent = (len(reliable) >= 3 and proposed_stats["n_used"] >= 3 and
+                          proposed_stats["cv"] <= 0.20 and 0.67 <= proposed_scale <= 1.5)
+            if cal.n_gcp > 0 or cal.evidence_level == "measured":
+                consistent = False
+                diagnostics["application_reason"] = "kept stronger measured calibration"
+            elif not consistent:
+                diagnostics["application_reason"] = "fewer than three consistent high-confidence anchors"
+            else:
+                anchors = reliable
+                auto_applied = True
+                diagnostics["application_reason"] = "applied consistent provisional anchors"
+            meta["auto_anchors"] = {"anchors": candidates, "diagnostics": diagnostics,
+                                    "applied": auto_applied, "proposed_scale": proposed_scale,
+                                    "proposed_stats": proposed_stats}
+            log(f"  automatic anchors: {len(candidates)} candidate(s), {len(reliable)} reliable, "
+                f"{'applied' if auto_applied else 'held for review'}")
+        except Exception as exc:  # noqa: BLE001
+            meta["auto_anchors"] = {"anchors": [], "diagnostics": {"error": str(exc)}, "applied": False}
+            log(f"  automatic anchors unavailable: {exc}")
+
     # --- Apply Global Scale Anchors ---
-    if anchors:
+    if anchors and cal.ndsm is None:
+        log("  skipping anchors: this metric scene has no separate nDSM structure layer")
+    if anchors and cal.ndsm is not None:
         if units != "metre":
             log("  skipping anchors: scene is relative")
         else:
@@ -180,6 +221,8 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
             import shutil
             if not (out / "ndsm_raw.tif").exists():
                 shutil.copy2(out / "ndsm.tif", out / "ndsm_raw.tif")
+            if not (out / "dsm_raw.tif").exists():
+                shutil.copy2(out / "dsm.tif", out / "dsm_raw.tif")
             if (out / "uncertainty.tif").exists() and not (out / "uncertainty_raw.tif").exists():
                 shutil.copy2(out / "uncertainty.tif", out / "uncertainty_raw.tif")
                 
@@ -198,6 +241,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
                 dio.write_dsm(out / "uncertainty.tif", unc_units, img, units="metre", description="1-sigma spread of the rotation ensemble")
             
             for b in buildings["buildings"]:
+                from .roof_fit import rescale_roof_fit
                 b["height_raw_m"] = b["height_m"]
                 b["volume_raw_m3"] = b.get("volume_m3")
                 b["height_m"] = round(b["height_m"] * s, 2)
@@ -205,14 +249,28 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
                 b["storeys"] = max(1, round(b["height_m"] / 3.0))
                 if b["volume_raw_m3"] is not None:
                     b["volume_m3"] = round(b["volume_raw_m3"] * s, 1)
+                if b.get("roof_fit"):
+                    rescale_roof_fit(b["roof_fit"], s)
                     
             cal.method = "height-anchor"
-            cal.scale_source = f"{stats.get('n_used', 0)} known building height(s)"
-            cal.evidence_level = "measured" if stats.get("n_used", 0) >= 2 else "provisional"
+            if auto_applied:
+                cal.scale_source = f"{stats.get('n_used', 0)} automatic shadow/OSM estimate(s)"
+                cal.evidence_level = "provisional"
+            else:
+                cal.scale_source = f"{stats.get('n_used', 0)} supplied building height(s)"
+                cal.evidence_level = "measured" if stats.get("n_used", 0) >= 2 else "provisional"
             
+            previous_calibration = meta["calibration"]
             meta["calibration"] = cal.as_dict()
-            meta["height_anchor"] = {"s": s, "anchors": resolved_anchors, "stats": stats}
+            meta["calibration"]["base"] = previous_calibration
+            meta["height_anchor"] = {"s": s, "anchors": resolved_anchors, "stats": stats,
+                                     "source": "automatic" if auto_applied else "supplied"}
             meta["_tmp_height_anchor_s"] = s
+
+            # The viewer and preview must show the same calibrated surface as
+            # the exported GeoTIFF and the validation metrics below.
+            view_h = dsm
+            unc_view = unc_units
 
     ref = None
     if reference:

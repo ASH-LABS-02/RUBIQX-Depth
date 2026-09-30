@@ -2,8 +2,73 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
+from html import escape
 import json
+import math
 from pathlib import Path
+
+
+def _text(value, default="–") -> str:
+    """Escape metadata and user-supplied names before embedding in a report."""
+    return escape(str(value if value is not None and value != "" else default), quote=True)
+
+
+def _finite(value) -> float | None:
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _metric(value, digits=2, suffix="") -> str:
+    number = _finite(value)
+    return f"{number:.{digits}f}{suffix}" if number is not None else "–"
+
+
+def _anchor_provenance(meta: dict) -> tuple[str, str]:
+    """Describe applied automatic anchors without promoting estimates to truth."""
+    record = meta.get("auto_anchors") or meta.get("automatic_anchors") or {}
+    if not isinstance(record, dict):
+        record = {}
+    applied = meta.get("height_anchor") or {}
+    if not isinstance(applied, dict):
+        applied = {}
+    anchors = record.get("anchors") or applied.get("anchors") or []
+    if not isinstance(anchors, list):
+        anchors = []
+    diag = record.get("diagnostics") or record.get("stats") or {}
+    if not isinstance(diag, dict):
+        diag = {}
+    osm_diag = diag.get("osm") or {}
+    shadow_diag = diag.get("shadow") or {}
+    osm_count = sum("openstreetmap" in str(a.get("source", "")).lower() for a in anchors if isinstance(a, dict))
+    shadow_count = sum("shadow" in str(a.get("source", "")).lower() for a in anchors if isinstance(a, dict))
+    if not anchors:
+        osm_count = int(_finite(osm_diag.get("accepted")) or 0)
+        shadow_count = int(_finite(shadow_diag.get("accepted")) or 0)
+    applied_count = (int(_finite((applied.get("stats") or {}).get("n_used")) or 0)
+                     if applied.get("source") == "automatic" and record.get("applied") else 0)
+    if not anchors and not applied_count and not osm_count and not shadow_count:
+        return "No automatic building-height anchors recorded.", ""
+    parts = []
+    if osm_count:
+        parts.append(f"{osm_count} OSM building tag candidate{'s' if osm_count != 1 else ''}")
+    if shadow_count:
+        parts.append(f"{shadow_count} shadow estimate candidate{'s' if shadow_count != 1 else ''}")
+    if applied_count:
+        parts.append(f"{applied_count} applied to scale calibration")
+    elif anchors or osm_count or shadow_count:
+        parts.append("none applied to scale calibration")
+    direct = sum(a.get("osm_tag") == "height" for a in anchors if isinstance(a, dict))
+    levels = sum(a.get("osm_tag") == "building:levels" for a in anchors if isinstance(a, dict))
+    if direct or levels:
+        parts.append(f"{direct} mapped heights; {levels} levels-based estimates")
+    note = ("OSM heights are community mapped and unverified here. Levels use an assumed "
+            "3 m per floor. Shadow geometry depends on solar angle, segmentation and clear ground. "
+            "These anchors are calibration inputs and cannot also serve as independent validation.")
+    return "; ".join(parts) + ".", note
 
 
 def generate_html_report(scene_dir: Path) -> str:
@@ -49,9 +114,13 @@ def generate_html_report(scene_dir: Path) -> str:
         except Exception:
             pass
 
-    scene_name = job_info.get("name") or meta.get("input") or scene_dir.name
-    cal = meta.get("calibration", {})
-    ev = meta.get("evidence_bundle", {})
+    scene_name = _text(job_info.get("name") or meta.get("input") or scene_dir.name)
+    cal = meta.get("calibration") or {}
+    ev = meta.get("evidence_bundle") or {}
+    if not isinstance(cal, dict):
+        cal = {}
+    if not isinstance(ev, dict):
+        ev = {}
 
     # Base64 preview image if available
     preview_b64 = ""
@@ -60,23 +129,30 @@ def generate_html_report(scene_dir: Path) -> str:
         preview_b64 = base64.b64encode(preview_file.read_bytes()).decode("ascii")
 
     an = meta.get("analytics", {}) or {}
+    if not isinstance(an, dict):
+        an = {}
     rows = []
     bm = metrics.get("buildings")
-    if bm:
-        rows.append(f"<tr><td>Per-building roof height vs reference</td><td>n={bm['n']} · RMSE {bm['rmse']:.2f} m · r {bm['r']:.2f} · bias {bm['bias']:.2f} m</td></tr>")
+    if isinstance(bm, dict) and _finite(bm.get("rmse")) is not None:
+        rows.append(f"<tr><td>Per-building roof height vs supplied reference</td><td>n={_text(bm.get('n'))} · RMSE {_metric(bm.get('rmse'))} m · r {_metric(bm.get('r'), 3)} · bias {_metric(bm.get('bias'))} m</td></tr>")
     agg = metrics.get("aggregated_30m")
-    if agg:
-        rows.append(f"<tr><td>DSM averaged to 30 m vs reference</td><td>RMSE {agg['rmse']:.2f} m · MAE {agg['mae']:.2f} m · r {agg['r']:.3f}</td></tr>")
-    if an.get("landslide"):
-        fr = an["landslide"]["fractions"]
-        rows.append(f"<tr><td>Landslide susceptibility (screening)</td><td>high {fr['high']*100:.1f} % · very high {fr['very_high']*100:.1f} % · max slope {an['landslide']['max_slope_deg']:.0f}°</td></tr>")
-    if an.get("solar"):
-        rows.append(f"<tr><td>Rooftop solar (indicative)</td><td>{an['solar']['total_pv_mwh_yr']} MWh/yr over {an['solar']['buildings']} roofs · {an['solar']['assumptions']}</td></tr>")
-    if meta.get("change_stats"):
+    if isinstance(agg, dict) and _finite(agg.get("rmse")) is not None:
+        rows.append(f"<tr><td>DSM averaged to approximately 30 m vs supplied reference</td><td>RMSE {_metric(agg.get('rmse'))} m · MAE {_metric(agg.get('mae'))} m · r {_metric(agg.get('r'), 3)}</td></tr>")
+    if isinstance(an.get("landslide"), dict):
+        land = an["landslide"]
+        fr = land.get("fractions") or {}
+        high, very_high = _finite(fr.get("high")), _finite(fr.get("very_high"))
+        if high is not None and very_high is not None:
+            rows.append(f"<tr><td>Landslide susceptibility (screening only)</td><td>high {high*100:.1f} % · very high {very_high*100:.1f} % · max slope {_metric(land.get('max_slope_deg'), 0)}°</td></tr>")
+    if isinstance(an.get("solar"), dict):
+        solar = an["solar"]
+        rows.append(f"<tr><td>Rooftop solar (indicative)</td><td>{_metric(solar.get('total_pv_mwh_yr'), 1)} MWh/yr over {_text(solar.get('buildings'))} roofs · {_text(solar.get('assumptions'))}</td></tr>")
+    if isinstance(meta.get("change_stats"), dict):
         c = meta["change_stats"]
-        rows.append(f"<tr><td>Change vs {meta.get('change_against')}</td><td>lowered {c['volume_loss_m3']:.0f} m³ · raised {c['volume_gain_m3']:.0f} m³ · buildings with roof loss {c.get('buildings_height_loss', '–')}</td></tr>")
-    if meta.get("water_fraction"):
-        rows.append(f"<tr><td>Open water flattened</td><td>{meta['water_fraction']*100:.1f} % of scene</td></tr>")
+        rows.append(f"<tr><td>Change vs {_text(meta.get('change_against'))}</td><td>lowered {_metric(c.get('volume_loss_m3'), 0)} m³ · raised {_metric(c.get('volume_gain_m3'), 0)} m³ · buildings with roof loss {_text(c.get('buildings_height_loss'))}</td></tr>")
+    water_fraction = _finite(meta.get("water_fraction"))
+    if water_fraction is not None and water_fraction > 0:
+        rows.append(f"<tr><td>Open water flattened</td><td>{water_fraction*100:.1f} % of scene</td></tr>")
     analytics_html = ("<h3>Buildings, hazards and change</h3><table><tbody>" + "".join(rows) + "</tbody></table>") if rows else ""
 
     tex_b64 = ""
@@ -85,17 +161,16 @@ def generate_html_report(scene_dir: Path) -> str:
         tex_b64 = base64.b64encode(tex_file.read_bytes()).decode("ascii")
 
     def fmt(v, d=2):
-        if v is None or v == "–":
-            return "–"
-        try:
-            return f"{float(v):.{d}f}"
-        except (ValueError, TypeError):
-            return str(v)
+        return _metric(v, d)
 
     # Key metrics
-    abs_m = metrics.get("absolute", {})
-    base_m = metrics.get("baseline_dem", {})
-    agg_m = metrics.get("aggregated_30m", {})
+    abs_m = metrics.get("absolute") or {}
+    base_m = metrics.get("baseline_dem") or {}
+    agg_m = metrics.get("aggregated_30m") or {}
+    has_reference = _finite(abs_m.get("rmse")) is not None
+    baseline_rmse = _finite(base_m.get("rmse"))
+    current_rmse = _finite(abs_m.get("rmse"))
+    gain_m = baseline_rmse - current_rmse if has_reference and baseline_rmse is not None else None
 
     rmse_val = fmt(abs_m.get("rmse"))
     dem_rmse_val = fmt(base_m.get("rmse"))
@@ -105,14 +180,46 @@ def generate_html_report(scene_dir: Path) -> str:
     dem_r_val = fmt(base_m.get("r"), 3)
 
     # Building stats
-    b_count = buildings.get("count", 0)
-    b_area = fmt(buildings.get("total_footprint_m2", 0), 1)
+    building_list = buildings.get("buildings") or []
+    if not isinstance(building_list, list):
+        building_list = []
+    b_count = len(building_list)
+    b_area = fmt(buildings.get("total_footprint_m2"), 1)
+    units = str(meta.get("units") or "relative")
+    metric_scene = units == "metre"
+    heights = [v for b in building_list if isinstance(b, dict)
+               if (v := _finite(b.get("height_m"))) is not None]
+    tallest = max(heights) if heights else None
+    scene_summary = (f"{b_count} model-detected building footprint{'s' if b_count != 1 else ''}. "
+                     if b_count else "No building footprints detected. ")
+    if tallest is not None:
+        scene_summary += (f"Tallest estimated above-ground height: {tallest:.1f} m. " if metric_scene
+                          else f"Largest relative building height: {tallest:.3f}. ")
+    scene_summary += (f"Calibration: {_text(cal.get('method'))} "
+                      f"({_text(cal.get('evidence_level'))} evidence). ")
+    if has_reference:
+        scene_summary += f"RMSE against the supplied reference: {current_rmse:.2f} m."
+    else:
+        scene_summary += "No supplied reference was evaluated; metric accuracy is not established for this scene."
+    anchor_summary, anchor_note = _anchor_provenance(meta)
+    validation_summary = ("Metrics below compare this estimate to a supplied reference raster; "
+                          "the report does not establish whether that reference is independent of "
+                          "the calibration data." if has_reference else
+                          "No validation raster or absolute-error metrics are available for this scene.")
+    if gain_m is None:
+        baseline_summary = "A like-for-like DEM baseline comparison is unavailable."
+    elif gain_m > 0:
+        baseline_summary = f"The model RMSE is {gain_m:.2f} m lower than the input DEM baseline on this supplied reference."
+    elif gain_m < 0:
+        baseline_summary = f"The model RMSE is {-gain_m:.2f} m higher than the input DEM baseline on this supplied reference."
+    else:
+        baseline_summary = "The model and input DEM have equal RMSE on this supplied reference."
 
     html = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>DepthWizard Technical Dossier — {scene_name}</title>
+<title>DepthWizard Scene Report — {scene_name}</title>
 <style>
   @page {{ size: A4; margin: 18mm 15mm; }}
   body {{
@@ -283,77 +390,76 @@ def generate_html_report(scene_dir: Path) -> str:
 
 <div class="header">
   <div>
-    <div class="logo">DepthWizard<small>SIH 2026 · PS 26175 · SAC/ISRO Verification Dossier</small></div>
-    <h2 style="margin:8px 0 4px 0; font-size:18px;">Reconstruction & Accuracy Evaluation: {scene_name}</h2>
-    <span class="badge success">{meta.get('units', 'metre').upper()} DSM</span>
-    <span class="badge">Datum: {meta.get('vertical_datum', 'EGM2008')}</span>
-    <span class="badge">Backbone: {meta.get('backbone', 'Depth Anything V2')}</span>
+    <div class="logo">DepthWizard<small>SIH 2026 · PS 26175 · Technical scene report</small></div>
+    <h2 style="margin:8px 0 4px 0; font-size:18px;">Reconstruction and validation: {scene_name}</h2>
+    <span class="badge success">{_text(units.upper())} {'DSM' if metric_scene else 'SURFACE'}</span>
+    <span class="badge">Datum: {_text(meta.get('vertical_datum'))}</span>
+    <span class="badge">Backbone: {_text(meta.get('backbone'))}</span>
   </div>
   <div class="dossier-tag">
-    <div><strong>Evidence ID:</strong> {scene_dir.name}</div>
-    <div><strong>Date:</strong> 2026-09-30</div>
+    <div><strong>Scene ID:</strong> {_text(scene_dir.name)}</div>
+    <div><strong>Generated:</strong> {datetime.now(timezone.utc).strftime('%Y-%m-%d UTC')}</div>
     <div style="margin-top:6px;"><button class="no-print" onclick="window.print()" style="padding:6px 12px; background:#0284c7; color:#fff; border:none; border-radius:4px; cursor:pointer;">Print / Save as PDF</button></div>
   </div>
 </div>
 
 <div class="cards">
   <div class="card">
-    <div class="v">{rmse_val}<small> m</small></div>
-    <div class="l">Native RMSE (vs {dem_rmse_val} m DEM)</div>
+    <div class="v">{rmse_val}<small>{' m' if has_reference else ''}</small></div>
+    <div class="l">RMSE vs supplied reference</div>
   </div>
   <div class="card">
-    <div class="v">{agg_rmse_val or rmse_val}<small> m</small></div>
-    <div class="l">30m Aggregated RMSE (ISRO Target)</div>
+    <div class="v">{agg_rmse_val}<small>{' m' if _finite(agg_m.get('rmse')) is not None else ''}</small></div>
+    <div class="l">Approx. 30 m aggregated RMSE</div>
   </div>
   <div class="card">
-    <div class="v">{r_val}<small> (DEM: {dem_r_val})</small></div>
+    <div class="v">{r_val}<small>{f' (DEM: {dem_r_val})' if baseline_rmse is not None else ''}</small></div>
     <div class="l">Pearson Correlation r</div>
   </div>
   <div class="card">
-    <div class="v">{b_count}<small> LoD1</small></div>
-    <div class="l">3D Buildings ({b_area} m²)</div>
+    <div class="v">{b_count}<small> candidates</small></div>
+    <div class="l">Model-detected footprints ({b_area} m²)</div>
   </div>
 </div>
 
-<div class="section-title">1. Executive Verification Summary</div>
-<p>
-  This automated dossier presents independent evaluation metrics for the monocular 3D surface model produced by <strong>DepthWizard</strong> from a single optical satellite image.
-  Accuracy is benchmarked directly against an absolute surface reference model.
-  {"The reconstruction demonstrates a substantial accuracy gain over the coarse reference DEM baseline." if dem_rmse_val != "–" and float(rmse_val) < float(dem_rmse_val) else ""}
-</p>
+<div class="section-title">1. Scene summary</div>
+<p>{scene_summary}</p>
+<p>{validation_summary} {baseline_summary}</p>
+<p><strong>Automatic building-height anchors:</strong> {_text(anchor_summary)} {_text(anchor_note, '')}</p>
 
 <div class="grid-2">
   <div>
     <div class="section-title">2. Calibration & Geospatial Provenance</div>
     <div class="kv">
-      <b>Calibration Method</b><span>{cal.get('method', '–')}</span>
+      <b>Calibration Method</b><span>{_text(cal.get('method'))}</span>
       <b>Structure Scale k</b><span>{fmt(cal.get('scale_k'))} m / relative unit</span>
       <b>DEM Fit r</b><span>{fmt(cal.get('fit_r'))}</span>
-      <b>Scale Source</b><span>{cal.get('scale_source', '–')}</span>
-      <b>Evidence Level</b><span>{cal.get('evidence_level', '–')}</span>
-      <b>Vertical Datum</b><span>{meta.get('vertical_datum', 'EGM2008')}</span>
-      <b>CRS Projection</b><span>{meta.get('crs', '–')}</span>
-      <b>Pixel GSD</b><span>{fmt(meta.get('gsd_m', meta.get('assumed_gsd_m', 1.0)))} m</span>
-      <b>Scene Dimensions</b><span>{meta.get('src_w', '–')} × {meta.get('src_h', '–')} px</span>
+      <b>Scale Source</b><span>{_text(cal.get('scale_source'))}</span>
+      <b>Evidence Level</b><span>{_text(cal.get('evidence_level'))}</span>
+      <b>Vertical Datum</b><span>{_text(meta.get('vertical_datum'))}</span>
+      <b>CRS Projection</b><span>{_text(meta.get('crs'))}</span>
+      <b>Pixel GSD</b><span>{fmt(meta.get('gsd_m', meta.get('assumed_gsd_m')))} m</span>
+      <b>Scene Dimensions</b><span>{_text(meta.get('src_w'))} × {_text(meta.get('src_h'))} px</span>
     </div>
   </div>
 
   <div>
     <div class="section-title">3. Cryptographic Evidence Passport</div>
     <div class="kv">
-      <b>Software Version</b><span>{ev.get('software_version', 'DepthWizard 2.1 (SIH26175)')}</span>
-      <b>Input Image Hash</b><span><code>{ev.get('image_sha256', 'Verified in-session')}</code></span>
-      <b>DEM Input Hash</b><span><code>{ev.get('dem_sha256', 'Verified')}</code></span>
-      <b>Model Identifier</b><span>{ev.get('model_identifier', meta.get('backbone', 'Depth Anything V2'))}</span>
-      <b>Inference Latency</b><span>{meta.get('timing_s', {}).get('depth', '–')} s</span>
-      <b>Total Pipeline</b><span>{meta.get('timing_s', {}).get('total', '–')} s</span>
-      <b>30m Reference Match</b><span>{"Active (Ref-Consistent)" if cal.get('match_dem_30m') else "Standard"}</span>
-      <b>Canopy Correction</b><span>{"Active (Penetration β applied)" if cal.get('dem_canopy_corrected') else "None"}</span>
+      <b>Software Version</b><span>{_text(ev.get('software_version'))}</span>
+      <b>Input Image Hash</b><span><code>{_text(ev.get('image_sha256'))}</code></span>
+      <b>DEM Input Hash</b><span><code>{_text(ev.get('dem_sha256'))}</code></span>
+      <b>Reference Hash</b><span><code>{_text(ev.get('reference_sha256'))}</code></span>
+      <b>Model Identifier</b><span>{_text(ev.get('model_identifier', meta.get('backbone')))}</span>
+      <b>Inference Latency</b><span>{_text((meta.get('timing_s') or {}).get('depth'))} s</span>
+      <b>Total Pipeline</b><span>{_text((meta.get('timing_s') or {}).get('total'))} s</span>
+      <b>30 m DEM consistency setting</b><span>{'Enabled' if cal.get('match_dem_30m') else 'Not recorded'}</span>
+      <b>Canopy correction</b><span>{'Applied' if cal.get('dem_canopy_corrected') else 'Not recorded'}</span>
     </div>
   </div>
 </div>
 
-<div class="section-title">4. Validation Benchmark vs DEM Baseline</div>
+<div class="section-title">4. Validation against supplied reference</div>
 <table class="t">
   <thead>
     <tr>
@@ -367,20 +473,20 @@ def generate_html_report(scene_dir: Path) -> str:
   </thead>
   <tbody>
     <tr>
-      <td><strong>DepthWizard Estimated DSM (Our Product)</strong></td>
-      <td class="better">{rmse_val}</td>
-      <td class="better">{mae_val}</td>
+      <td><strong>DepthWizard estimated surface</strong></td>
+      <td>{rmse_val}</td>
+      <td>{mae_val}</td>
       <td>{fmt(abs_m.get('nmad'))}</td>
-      <td class="better">{r_val}</td>
-      <td>{fmt((abs_m.get('within_2m', 0)) * 100, 1)}%</td>
+      <td>{r_val}</td>
+      <td>{_metric(_finite(abs_m.get('within_2m')) * 100 if _finite(abs_m.get('within_2m')) is not None else None, 1)}{'%' if _finite(abs_m.get('within_2m')) is not None else ''}</td>
     </tr>
-    {"<tr><td>Input Coarse DEM (Baseline to Beat)</td><td>" + dem_rmse_val + "</td><td>" + fmt(base_m.get('mae')) + "</td><td>" + fmt(base_m.get('nmad')) + "</td><td>" + dem_r_val + "</td><td>" + fmt((base_m.get('within_2m', 0)) * 100, 1) + "%</td></tr>" if dem_rmse_val != "–" else ""}
-    {"<tr><td>30m Aggregated DSM (ISRO Evaluation Target)</td><td class='better'>" + agg_rmse_val + "</td><td>" + fmt(agg_m.get('mae')) + "</td><td>" + fmt(agg_m.get('nmad')) + "</td><td class='better'>" + fmt(agg_m.get('r'), 3) + "</td><td>" + fmt((agg_m.get('within_2m', 0)) * 100, 1) + "%</td></tr>" if agg_rmse_val != "–" else ""}
+    {"<tr><td>Input DEM baseline on same reference</td><td>" + dem_rmse_val + "</td><td>" + fmt(base_m.get('mae')) + "</td><td>" + fmt(base_m.get('nmad')) + "</td><td>" + dem_r_val + "</td><td>" + _metric(_finite(base_m.get('within_2m')) * 100 if _finite(base_m.get('within_2m')) is not None else None, 1) + ("%" if _finite(base_m.get('within_2m')) is not None else "") + "</td></tr>" if dem_rmse_val != "–" else ""}
+    {"<tr><td>DSM averaged to approximately 30 m</td><td>" + agg_rmse_val + "</td><td>" + fmt(agg_m.get('mae')) + "</td><td>" + fmt(agg_m.get('nmad')) + "</td><td>" + fmt(agg_m.get('r'), 3) + "</td><td>" + _metric(_finite(agg_m.get('within_2m')) * 100 if _finite(agg_m.get('within_2m')) is not None else None, 1) + ("%" if _finite(agg_m.get('within_2m')) is not None else "") + "</td></tr>" if agg_rmse_val != "–" else ""}
   </tbody>
 </table>
 
 <div class="callout">
-  <strong>Key Scoring Criterion:</strong> Evaluation against Copernicus GLO-30 / SRTM 30m tests coarse surface consistency alongside fine structure recovery. DepthWizard beats the coarse DEM baseline by resolving local building heights while ensuring vertical datum alignment.
+  <strong>Interpretation:</strong> {_text(baseline_summary)} RMSE and correlation depend on the supplied reference, its quality, alignment and vertical datum. A DEM used for calibration is not an independent accuracy reference.
 </div>
 
 <div class="section-title">5. Urban Morphology & LoD1 Building Footprints</div>
@@ -398,9 +504,9 @@ def generate_html_report(scene_dir: Path) -> str:
     <tr>
       <td><strong>{b_count}</strong></td>
       <td>{b_area} m²</td>
-      <td>{fmt(sum(b['height_m'] for b in buildings.get('buildings', [])) / max(b_count, 1))} m</td>
-      <td>{fmt(sum(b.get('storeys') or 0 for b in buildings.get('buildings', [])) / max(b_count, 1), 1) if any(b.get('storeys') for b in buildings.get('buildings', [])) else '–'}</td>
-      <td>{fmt(sum(b.get('volume_m3') or 0 for b in buildings.get('buildings', []))) if any(b.get('volume_m3') for b in buildings.get('buildings', [])) else '–'} m³</td>
+      <td>{fmt(sum(heights) / len(heights)) if metric_scene and heights else '–'}{' m' if metric_scene and heights else ''}</td>
+      <td>{fmt(sum(_finite(b.get('storeys')) or 0 for b in building_list if isinstance(b, dict)) / b_count, 1) if metric_scene and b_count and any(isinstance(b, dict) and _finite(b.get('storeys')) is not None for b in building_list) else '–'}</td>
+      <td>{fmt(sum(_finite(b.get('volume_m3')) or 0 for b in building_list if isinstance(b, dict))) if metric_scene and any(isinstance(b, dict) and _finite(b.get('volume_m3')) is not None for b in building_list) else '–'}{' m³' if metric_scene and any(isinstance(b, dict) and _finite(b.get('volume_m3')) is not None for b in building_list) else ''}</td>
     </tr>
   </tbody>
 </table>
@@ -408,13 +514,13 @@ def generate_html_report(scene_dir: Path) -> str:
 {analytics_html}
 
 <div class="images-preview">
-  {"<div class='img-box'><img src='data:image/jpeg;base64," + tex_b64 + "' alt='Optical satellite input'><div class='caption'>Optical Satellite Sensor Acquisition</div></div>" if tex_b64 else ""}
-  {"<div class='img-box'><img src='data:image/png;base64," + preview_b64 + "' alt='Estimated 3D DSM Hillshade'><div class='caption'>Calibrated 3D Digital Surface Model (Hillshade)</div></div>" if preview_b64 else ""}
+  {"<div class='img-box'><img src='data:image/jpeg;base64," + tex_b64 + "' alt='Input optical image'><div class='caption'>Input optical image</div></div>" if tex_b64 else ""}
+  {"<div class='img-box'><img src='data:image/png;base64," + preview_b64 + "' alt='Estimated surface preview'><div class='caption'>Estimated surface preview</div></div>" if preview_b64 else ""}
 </div>
 
 <div class="footer">
   <div>DepthWizard System · Smart India Hackathon (SIH26175) · SAC/ISRO Monocular Height Estimation</div>
-  <div>Generated locally · Fail-closed metric provenance verified</div>
+  <div>Generated locally · Estimates require independent field validation for operational use</div>
 </div>
 
 </body>

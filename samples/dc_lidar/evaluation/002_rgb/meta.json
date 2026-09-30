@@ -12,167 +12,246 @@
     136012.0
   ],
   "units": "metre",
+  "vertical_datum": "same as input DEM",
   "calibration": {
-    "method": "dem+prior",
-    "scale_k": 49.9848121359309,
-    "a": 0.9198728090931046,
-    "b": 25.251883944627977,
-    "fit_r": 0.08902316282553899,
+    "method": "dem+learned-scale",
+    "scale_k": 11.2989312967984,
     "n_gcp": 0,
     "dem_coverage": 1.0,
-    "scale_source": "scene prior",
+    "scale_source": "learned pixel-footprint scale",
     "evidence_level": "approximate",
-    "ground_anchor_quantile": 30.0,
-    "structure_upper_quantile": 98.0,
-    "note": "weak DEM correlation (r=0.09); upper-tail structure height assumed from 'urban' prior. Metric heights are approximate until checked against independent reference."
+    "dem_kind": "terrain",
+    "dem_hp_r": 0.163155770842034,
+    "dem_resolution_m": 32.0,
+    "reference_consistent": false,
+    "consistency_rmse_m": 0.0341605345573288,
+    "learned_scale_k": 11.2989312967984,
+    "structure_model": "agl-lower-tail",
+    "vertical_datum": "same as input DEM",
+    "match_dem_30m": false,
+    "is_agl": true,
+    "note": "Structure heights from the fine-tuned model's learned metre-per-pixel scale (\u00b140 % typical); add GCPs or a surface DEM for measured scale."
   },
   "scene": "urban",
   "assumed_gsd_m": 1.0,
   "dsm_file": "dsm.tif",
+  "tta": 4,
+  "water_fraction": 0.0,
+  "agl_model": true,
+  "learned_scale_m_per_unit": 11.2989312967984,
   "timing_s": {
-    "depth": 0.88,
-    "total": 6.17
+    "depth": 12.46,
+    "total": 41.92
+  },
+  "sun_input": {
+    "elevation_deg": null,
+    "azimuth_deg": null
+  },
+  "buildings_count": 86,
+  "total_footprint_m2": 115254.3,
+  "auto_anchors": {
+    "anchors": [],
+    "diagnostics": {
+      "sun_metadata": {
+        "elevation_deg": null,
+        "azimuth_deg": null,
+        "elevation_tag": null,
+        "azimuth_tag": null
+      },
+      "shadow": {
+        "source": "RGB shadow geometry",
+        "candidates": 86,
+        "accepted": 0,
+        "rejected": {},
+        "sun_elevation_deg": null,
+        "sun_azimuth_deg": null,
+        "notes": "single-image shadow length needs known solar elevation",
+        "skipped": "known solar elevation between 8 and 82 degrees is required"
+      },
+      "osm": {
+        "source": "OpenStreetMap",
+        "accepted": 0,
+        "height_tags": 0,
+        "levels_estimates": 0,
+        "rejected": {},
+        "attribution": "\u00a9 OpenStreetMap contributors",
+        "license": "ODbL",
+        "endpoint": "https://overpass-api.de/api/interpreter",
+        "bbox_south_west_north_east": [
+          38.8873404,
+          -77.0,
+          38.8919528,
+          -76.9940982
+        ],
+        "bbox_km2": 0.262,
+        "skipped": "OSM Overpass unavailable: HTTP Error 504: Gateway Timeout"
+      },
+      "selected_count": 0,
+      "warning": "automatic anchors are external/physics estimates, not independent validation",
+      "application_reason": "fewer than three consistent high-confidence anchors"
+    },
+    "applied": false,
+    "proposed_scale": 1.0,
+    "proposed_stats": {
+      "n_used": 0,
+      "rejected": [],
+      "ratios": [],
+      "cv": 0.0,
+      "loo_rmse": null,
+      "warning": null
+    }
   },
   "metrics": {
     "units": "metre",
     "absolute": {
       "n": 1048576,
-      "rmse": 6.599953935789357,
-      "mae": 4.968979064924497,
-      "bias": 1.67955093229466,
-      "nmad": 6.01526898651123,
-      "r": 0.6305160853082646,
-      "within_1m": 0.2272815704345703,
-      "within_2m": 0.33046627044677734,
-      "within_5m": 0.5706291198730469
+      "rmse": 3.934837534280995,
+      "mae": 2.9700058925354824,
+      "bias": -2.2700779702845466,
+      "nmad": 3.2481659036636352,
+      "r": 0.7866086859323773,
+      "within_1m": 0.27669334411621094,
+      "within_2m": 0.45411014556884766,
+      "within_5m": 0.7951469421386719
+    },
+    "aggregated_30m": {
+      "n": 324,
+      "rmse": 2.545396566243515,
+      "mae": 2.2600310408038857,
+      "bias": -2.254274073942208,
+      "nmad": 1.1898186807632445,
+      "r": 0.8971024940800417,
+      "within_1m": 0.12345679012345678,
+      "within_2m": 0.4537037037037037,
+      "within_5m": 0.9783950617283951
     },
     "baseline_dem": {
       "n": 1048576,
-      "rmse": 7.997090916219499,
-      "mae": 6.4026724924133305,
-      "bias": -6.3941512126020825,
-      "nmad": 5.946716608428955,
-      "r": 0.2328203673088015,
-      "within_1m": 0.20505809783935547,
-      "within_2m": 0.2676963806152344,
-      "within_5m": 0.40799808502197266
+      "rmse": 8.00051543470769,
+      "mae": 6.411817556665483,
+      "bias": -6.394151213335135,
+      "nmad": 5.920215551948547,
+      "r": 0.2280237430848856,
+      "within_1m": 0.20513916015625,
+      "within_2m": 0.2667655944824219,
+      "within_5m": 0.4071216583251953
     },
     "affine_aligned": {
       "n": 1048576,
-      "rmse": 3.8313476574994128,
-      "mae": 3.1016040818948483,
-      "bias": -1.5078216453190407e-12,
-      "nmad": 3.8565144866150933,
-      "r": 0.6305160853082622,
-      "within_1m": 0.17545318603515625,
-      "within_2m": 0.35205936431884766,
-      "within_5m": 0.8385448455810547
+      "rmse": 3.047855262634273,
+      "mae": 2.370048540781599,
+      "bias": -5.982589423858542e-12,
+      "nmad": 2.6401250499644378,
+      "r": 0.7866086859323784,
+      "within_1m": 0.2656078338623047,
+      "within_2m": 0.5296411514282227,
+      "within_5m": 0.8952407836914062
     },
     "structure_ndsm": {
       "n": 1048576,
-      "rmse": 6.60214660493016,
-      "mae": 4.972042746956504,
-      "bias": 1.6929125863844092,
-      "nmad": 6.020050855636597,
-      "r": 0.6226386974049553,
-      "within_1m": 0.22763347625732422,
-      "within_2m": 0.33019065856933594,
-      "within_5m": 0.5702505111694336
+      "rmse": 4.455475843674766,
+      "mae": 3.4148693225579336,
+      "bias": -3.037188741935097,
+      "nmad": 3.459147851371765,
+      "r": 0.7704634961408818,
+      "within_1m": 0.2573661804199219,
+      "within_2m": 0.40012550354003906,
+      "within_5m": 0.7297515869140625
     },
-    "edge_gradient_rmse": 2.008496046066284,
-    "baseline_edge_gradient_rmse": 2.2358036041259766,
+    "edge_gradient_rmse": 1.9103516340255737,
+    "baseline_edge_gradient_rmse": 2.240248441696167,
     "by_height_band": {
       "<2 m": {
         "estimate": {
           "n": 276397,
-          "rmse": 3.510876527671252,
-          "mae": 1.6884857221719802,
-          "bias": 1.1203398866506835,
-          "nmad": 0.6578788650512695,
-          "r": 0.37750071681122144,
-          "within_1m": 0.6391892820833801,
-          "within_2m": 0.8007141900961299,
-          "within_5m": 0.893403329269131
+          "rmse": 1.5222024916269736,
+          "mae": 1.0402766097963776,
+          "bias": 0.8971247816794695,
+          "nmad": 0.8148717853546142,
+          "r": 0.6874005004004065,
+          "within_1m": 0.6332955856973845,
+          "within_2m": 0.8352297600914627,
+          "within_5m": 0.9910201630263715
         },
         "baseline_dem": {
           "n": 276397,
-          "rmse": 0.7744352668906623,
-          "mae": 0.5196234951563687,
-          "bias": -0.4872960476827742,
-          "nmad": 0.39475163841247557,
-          "r": 0.8584468062306204,
-          "within_1m": 0.7779353610929207,
-          "within_2m": 0.9905715329761177,
+          "rmse": 0.7738736465840632,
+          "mae": 0.5306041638253396,
+          "bias": -0.46358280098868654,
+          "nmad": 0.4737189331054687,
+          "r": 0.8492898549091551,
+          "within_1m": 0.7782428897564011,
+          "within_2m": 0.9926880537777183,
           "within_5m": 1.0
         }
       },
       "2\u20135 m": {
         "estimate": {
           "n": 148310,
-          "rmse": 5.440778612124888,
-          "mae": 4.140578246025007,
-          "bias": 0.7998489750781165,
-          "nmad": 3.5000270353317258,
-          "r": 0.17419227907820473,
-          "within_1m": 0.10304092778639337,
-          "within_2m": 0.22594565437259795,
-          "within_5m": 0.7912076056907829
+          "rmse": 1.885648539738611,
+          "mae": 1.5496786582462707,
+          "bias": -0.4613828825344569,
+          "nmad": 1.863766718673706,
+          "r": 0.4284009741618208,
+          "within_1m": 0.36589575888341985,
+          "within_2m": 0.6864540489515205,
+          "within_5m": 0.996999528015643
         },
         "baseline_dem": {
           "n": 148310,
-          "rmse": 3.490636762960091,
-          "mae": 3.3745068711059685,
-          "bias": -3.3745068711059685,
-          "nmad": 1.0817317543029785,
-          "r": 0.7162841632661943,
+          "rmse": 3.5089484505619457,
+          "mae": 3.397539045477772,
+          "bias": -3.397539045477772,
+          "nmad": 1.0847264316558838,
+          "r": 0.7260973864681475,
           "within_1m": 0.0,
-          "within_2m": 0.04658485604477109,
-          "within_5m": 0.9837502528487627
+          "within_2m": 0.036059604881666776,
+          "within_5m": 0.9874856719034455
         }
       },
       "5\u201315 m": {
         "estimate": {
           "n": 582962,
-          "rmse": 7.767949093252501,
-          "mae": 6.619260015420958,
-          "bias": 2.264215716448444,
-          "nmad": 8.991783154678345,
-          "r": 0.30564531593871463,
-          "within_1m": 0.07294300486138033,
-          "within_2m": 0.14452228447137205,
-          "within_5m": 0.37001897207708223
+          "rmse": 4.469008799282321,
+          "mae": 3.832194940839226,
+          "bias": -3.7686735756273793,
+          "nmad": 2.453566868019104,
+          "r": 0.533828176583841,
+          "within_1m": 0.10434127781913743,
+          "within_2m": 0.24616698858587696,
+          "within_5m": 0.7050322319465077
         },
         "baseline_dem": {
           "n": 582962,
-          "rmse": 9.53078885593193,
-          "mae": 9.210037014752459,
-          "bias": -9.210037014752459,
-          "nmad": 2.7537655986785885,
-          "r": 0.4031361421470102,
+          "rmse": 9.529582875149622,
+          "mae": 9.212883169316381,
+          "bias": -9.212883169316381,
+          "nmad": 2.7120041301727293,
+          "r": 0.4188944802276741,
           "within_1m": 0.0,
           "within_2m": 0.0,
-          "within_5m": 0.009468884764358568
+          "within_5m": 0.006942133449521581
         }
       },
       "\u226515 m": {
         "estimate": {
           "n": 40907,
-          "rmse": 8.126623859301603,
-          "mae": 6.61973713675652,
-          "bias": 0.31537122607776086,
-          "nmad": 7.899907955932616,
-          "r": 0.3076613742653187,
-          "within_1m": 0.09404258439875816,
-          "within_2m": 0.18194929963087003,
-          "within_5m": 0.4488962769208204
+          "rmse": 9.149316638665494,
+          "mae": 8.871114864140013,
+          "bias": -8.871114864140013,
+          "nmad": 2.200491181182861,
+          "r": 0.42685282126487734,
+          "within_1m": 0.0,
+          "within_2m": 0.0,
+          "within_5m": 0.02407900848265578
         },
         "baseline_dem": {
           "n": 40907,
-          "rmse": 17.22228632483456,
-          "mae": 17.124003812702398,
-          "bias": -17.124003812702398,
-          "nmad": 1.609674425125122,
-          "r": 0.3754574911414097,
+          "rmse": 17.25920590596504,
+          "mae": 17.160163132065616,
+          "bias": -17.160163132065616,
+          "nmad": 1.626731926345825,
+          "r": 0.3636896210519889,
           "within_1m": 0.0,
           "within_2m": 0.0,
           "within_5m": 0.0
@@ -182,28 +261,94 @@
     "by_landscape": {
       "urban": {
         "n": 290176,
-        "rmse": 6.704204800848122,
-        "mae": 5.123023851273025,
-        "bias": 2.066806102165789,
-        "nmad": 6.298076531410217,
-        "r": 0.6419489459051306,
-        "within_1m": 0.21843295103661226,
-        "within_2m": 0.31684908469342743,
-        "within_5m": 0.5562934219232466,
+        "rmse": 3.618907419356089,
+        "mae": 2.695350246560642,
+        "bias": -2.0724933730264987,
+        "nmad": 2.8657492818832395,
+        "r": 0.7756127823400202,
+        "within_1m": 0.2859540416850463,
+        "within_2m": 0.49128804587560654,
+        "within_5m": 0.8467240571239524,
         "tiles": 10
       },
       "forest": {
         "n": 758400,
-        "rmse": 6.559627655006673,
-        "mae": 4.910039059751145,
-        "bias": 1.5313808951473438,
-        "nmad": 5.912515357017517,
-        "r": 0.6288505075543274,
-        "within_1m": 0.23066719409282702,
-        "within_2m": 0.3356764240506329,
-        "within_5m": 0.576114187763713,
+        "rmse": 4.049202707158495,
+        "mae": 3.0750935464468685,
+        "bias": -2.3456770052185543,
+        "nmad": 3.430305347442627,
+        "r": 0.7898944417588993,
+        "within_1m": 0.27315005274261606,
+        "within_2m": 0.43988528481012656,
+        "within_5m": 0.7754127109704642,
         "tiles": 26
       }
+    },
+    "buildings": {
+      "n": 86,
+      "rmse": 3.6912526727954247,
+      "mae": 3.218701856080876,
+      "bias": -3.1885385457859483,
+      "r": 0.6630744921440485,
+      "est_median": 6.120559215545654,
+      "ref_median": 8.936057090759277
     }
-  }
+  },
+  "evidence_bundle": {
+    "image_sha256": "74182ff0524169e2",
+    "dem_sha256": "8f1ad841c2462623",
+    "gcp_sha256": null,
+    "reference_sha256": "b27f2ed7eb2509f3",
+    "model_identifier": "D:\\DepthWizard\\checkpoints\\da2-gamus-full",
+    "rotation_passes": 4,
+    "calibration_method": "dem+learned-scale",
+    "scale_source": "learned pixel-footprint scale",
+    "evidence_level": "approximate",
+    "scale_k": 11.2989312967984,
+    "vertical_datum": "same as input DEM",
+    "software_version": "DepthWizard 2.2 (SIH26175)"
+  },
+  "corners_lonlat": [
+    [
+      -77.0,
+      38.89195281514185
+    ],
+    [
+      -76.9940982310471,
+      38.891952666050535
+    ],
+    [
+      -77.0,
+      38.887340527132594
+    ],
+    [
+      -76.9940986125697,
+      38.88734037805077
+    ]
+  ],
+  "analytics": {
+    "landslide": {
+      "fractions": {
+        "low": 1.0,
+        "moderate": 0.0,
+        "high": 0.0,
+        "very_high": 0.0
+      },
+      "mean_slope_deg": 0.6555540722535196,
+      "max_slope_deg": 2.1458427560497975,
+      "weights": {
+        "slope": 0.5,
+        "concavity": 0.15,
+        "relief": 0.2,
+        "sparse_vegetation": 0.15
+      }
+    },
+    "solar": {
+      "latitude_deg": 38.88964659659394,
+      "buildings": 86,
+      "total_pv_mwh_yr": 24671.0,
+      "assumptions": "GHI 1,900 kWh/m\u00b2/yr, 18 % modules, 70 % usable roof"
+    }
+  },
+  "confidence_definition": "exp(-sigma / 2 m), sigma = rotation-ensemble spread"
 }

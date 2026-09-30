@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from depthwizard.pipeline import run
 from depthwizard.mesh_export import ALLOWED_RESOLUTIONS, export_glb, export_obj_zip
 from depthwizard.report import generate_html_report
+from app.mission_api import create_mission_router
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
@@ -34,7 +35,10 @@ TRAINING_ROOT = Path(os.environ.get("DEPTHWIZARD_TRAINING_ROOT", "D:/DepthWizard
 
 app = FastAPI(title="DepthWizard")
 _status: dict[str, dict] = {}
+_comparison_status: dict[str, dict] = {}
 _lock = threading.Lock()   # one model inference at a time (GPU memory)
+_state_lock = threading.Lock()   # job/comparison status bookkeeping only (never held during work)
+_files_lock = threading.Lock()   # rewrites of scene files (rescale, missions, auto-anchors); never waits on the GPU
 _export_lock = threading.Lock()
 
 
@@ -93,7 +97,11 @@ async def process(image: UploadFile = File(...),
                   sun_elevation=float(sun_elevation) if sun_elevation.strip() else None,
                   sun_azimuth=float(sun_azimuth) if sun_azimuth.strip() else None)
     (folder / "job.json").write_text(json.dumps({"name": name or image.filename,
-                                                 "created": time.time()}))
+                                                 "created": time.time(),
+                                                 "input_names": {"image": image.filename,
+                                                                 "dem": dem.filename if dem else None,
+                                                                 "reference": reference.filename if reference else None,
+                                                                 "gcp": gcp.filename if gcp else None}}))
     _status[job_id] = {"state": "queued", "log": [], "error": None}
     threading.Thread(target=_worker, args=(job_id, kwargs), daemon=True).start()
     return {"id": job_id}
@@ -316,9 +324,135 @@ def scene_evidence(job_id: str):
     return JSONResponse(evidence)
 
 
+def _comparison_worker(job_id: str):
+    """Rerun the saved optical image with the actual off-the-shelf DA2 weights."""
+    st = _comparison_status[job_id]
+    folder = JOBS / job_id
+    try:
+        meta = json.loads((folder / "viewer" / "meta.json").read_text(encoding="utf-8"))
+        job_info = json.loads((folder / "job.json").read_text(encoding="utf-8"))
+        names = job_info.get("input_names", {})
+        inputs = folder / "inputs"
+        image_path = inputs / Path(names.get("image") or meta["input"]).name
+        if not image_path.is_file():
+            raise FileNotFoundError("the original optical upload is unavailable")
+        def find_original(kind):
+            named = names.get(kind)
+            if named and (inputs / Path(named).name).is_file():
+                return str(inputs / Path(named).name)
+            if kind == "dem" and (folder / "dem.tif").is_file():
+                return str(folder / "dem.tif")
+            fingerprint = meta.get("evidence_bundle", {}).get(f"{kind}_sha256")
+            if fingerprint:
+                for path in inputs.iterdir():
+                    if path != image_path and path.is_file() and _file_hash16(path) == fingerprint:
+                        return str(path)
+            return None
+        st["state"] = "running"
+        output = folder / "model_comparison" / "pretrained"
+        with _lock:
+            baseline = run(image_path=str(image_path), out_dir=str(output),
+                           dem=find_original("dem"), gcp=find_original("gcp"),
+                           reference=find_original("reference"),
+                           model="depth-anything/Depth-Anything-V2-Small-hf",
+                           allow_fallback=False, fetch_dem=False, tta=1,
+                           scene=meta.get("scene", "auto"),
+                           assumed_gsd_m=float(meta.get("assumed_gsd_m", 1.0)),
+                           match_dem_30m=bool(meta.get("calibration", {}).get("match_dem_30m", False)),
+                           log=lambda line: st["log"].append(line))
+        base_vm = json.loads((output / "viewer" / "meta.json").read_text(encoding="utf-8"))
+        if base_vm["units"] != meta["units"] or (base_vm["grid_w"], base_vm["grid_h"]) != (meta["grid_w"], meta["grid_h"]):
+            raise ValueError("the pretrained output uses different units or grid; supply the same DEM/GCP evidence for both models")
+        shutil.copy2(output / "viewer" / "height.bin", folder / "viewer" / "pretrained_height.bin")
+        summary = {"backbone": baseline["backbone"], "units": base_vm["units"],
+                   "calibration": base_vm.get("calibration"), "metrics": baseline.get("metrics", {}),
+                   "note": "Each model was processed from the same optical upload; calibration provenance is shown separately."}
+        (folder / "viewer" / "pretrained_comparison.json").write_text(json.dumps(summary, indent=2, default=float))
+        st["state"] = "done"
+    except Exception as exc:  # noqa: BLE001
+        st["state"] = "error"
+        st["error"] = f"{exc.__class__.__name__}: {exc}"
+        st["log"].append(traceback.format_exc(limit=2))
+
+
+def _file_hash16(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with path.open("rb") as src:
+        for part in iter(lambda: src.read(1024 * 1024), b""):
+            h.update(part)
+    return h.hexdigest()[:16]
+
+
+@app.post("/api/scenes/{job_id}/model-comparison")
+def request_model_comparison(job_id: str):
+    folder = _completed_scene(job_id)
+    vm = json.loads((folder / "viewer" / "meta.json").read_text(encoding="utf-8"))
+    if "gamus" not in str(vm.get("backbone", "")).lower():
+        raise HTTPException(400, "model comparison requires a scene made with the GAMUS fine-tuned checkpoint")
+    if (folder / "viewer" / "pretrained_height.bin").is_file():
+        return {"state": "done"}
+    with _state_lock:
+        old = _comparison_status.get(job_id)
+        if old and old["state"] in ("queued", "running"):
+            return old
+        _comparison_status[job_id] = {"state": "queued", "log": [], "error": None}
+    threading.Thread(target=_comparison_worker, args=(job_id,), daemon=True).start()
+    return _comparison_status[job_id]
+
+
+@app.get("/api/scenes/{job_id}/model-comparison")
+def model_comparison_status(job_id: str):
+    folder = _completed_scene(job_id)
+    if (folder / "viewer" / "pretrained_height.bin").is_file():
+        path = folder / "viewer" / "pretrained_comparison.json"
+        return {"state": "done", "comparison": json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}}
+    return _comparison_status.get(job_id, {"state": "idle", "log": [], "error": None})
+
+
+@app.post("/api/scenes/{job_id}/auto-anchors")
+def scan_auto_anchors(job_id: str):
+    """Refresh provisional OSM/shadow candidates for an existing metric scene."""
+    from depthwizard.auto_anchors import automatic_height_anchors
+    from depthwizard.analysis import water_mask
+    from depthwizard.io import read_image, read_raster
+    folder = _completed_scene(job_id)
+    vm_path = folder / "viewer" / "meta.json"
+    vm = json.loads(vm_path.read_text(encoding="utf-8"))
+    if vm.get("units") != "metre" or not (folder / "building_labels.npy").is_file():
+        raise HTTPException(400, "automatic anchors require a metric scene with building footprints")
+    image_path = folder / "inputs" / Path(vm["input"]).name
+    if not image_path.is_file():
+        raise HTTPException(404, "the original optical upload is unavailable")
+    img = read_image(image_path)
+    labels = np.load(folder / "building_labels.npy")
+    building_data = json.loads((folder / "viewer" / "buildings.json").read_text(encoding="utf-8"))
+    ndsm_path = folder / "ndsm_raw.tif" if (folder / "ndsm_raw.tif").is_file() else folder / "ndsm.tif"
+    ndsm = read_raster(ndsm_path)[0]
+    cal = vm.get("calibration", {})
+    sun_input = vm.get("sun_input") or {}
+    anchors, diagnostics = automatic_height_anchors(
+        img, labels, building_data.get("buildings", []),
+        gsd_m=float(vm["gsd_m"]), ndsm=ndsm,
+        dtm=read_raster(folder / "dtm.tif")[0] if (folder / "dtm.tif").is_file() else None,
+        water=water_mask(img.rgb, float(vm["gsd_m"])),
+        sun_elevation_deg=sun_input.get("elevation_deg") or cal.get("sun_elevation_deg"),
+        sun_azimuth_deg=sun_input.get("azimuth_deg") or cal.get("sun_azimuth_deg"),
+        cache_dir=folder.parent / "osm_cache")
+    already_applied = (vm.get("height_anchor") or {}).get("source") == "automatic"
+    record = {"anchors": anchors, "diagnostics": diagnostics, "applied": already_applied}
+    with _files_lock:
+        for path in (folder / "meta.json", vm_path):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["auto_anchors"] = record
+            path.write_text(json.dumps(data, indent=2, default=float), encoding="utf-8")
+    return record
+
+
 class RescaleBody(BaseModel):
     anchors: list[dict] = []
     reset: bool = False
+    automatic: bool = False
 
 def _rewrite_tif(path: Path, arr: np.ndarray):
     """Overwrite a GeoTIFF keeping its CRS/transform/tags."""
@@ -342,7 +476,46 @@ def rescale(job_id: str, body: RescaleBody):
     folder = _completed_scene(job_id)
     if not (folder / "ndsm.tif").exists() or not (folder / "dtm.tif").exists():
         raise HTTPException(400, "height anchors need a metric scene (dsm + dtm + ndsm)")
-    with _lock:
+    with _files_lock:
+        vm_prior = json.loads((folder / "viewer" / "meta.json").read_text(encoding="utf-8"))
+        normalized_anchors = []
+        seen_ids = set()
+        if not body.reset:
+            for anchor in body.anchors:
+                try:
+                    building_id = int(anchor["building_id"])
+                    height_m = float(anchor["height_m"])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    raise HTTPException(422, "each anchor needs a building_id and positive height_m")
+                if building_id <= 0 or not np.isfinite(height_m) or height_m <= 0 or building_id in seen_ids:
+                    raise HTTPException(422, "anchor IDs must be unique and heights must be positive finite metres")
+                seen_ids.add(building_id)
+                normalized_anchors.append({**anchor, "building_id": building_id, "height_m": height_m})
+            if not normalized_anchors:
+                raise HTTPException(422, "provide at least one building height anchor or request reset")
+            if body.automatic:
+                proposals = (vm_prior.get("auto_anchors") or {}).get("anchors") or []
+                approved = {(int(a["building_id"]), round(float(a["height_m"]), 3))
+                            for a in proposals if a.get("building_id") is not None and a.get("height_m") is not None
+                            and float(a.get("confidence", 0)) >= 0.65
+                            and (a.get("source") == "shadow geometry" or a.get("osm_tag") == "height")}
+                if len(normalized_anchors) < 3 or any((a["building_id"], round(a["height_m"], 3)) not in approved
+                                                      for a in normalized_anchors):
+                    raise HTTPException(422, "automatic rescale needs three stored reliable shadow or explicit OSM-height candidates")
+        # Older initially anchored scenes did not save an unscaled DSM. Recover
+        # it from the recorded scale and unscaled nDSM before taking snapshots.
+        old_anchor = vm_prior.get("height_anchor") or {}
+        old_scale = float(old_anchor.get("s") or 1.0)
+        if not np.isfinite(old_scale) or old_scale <= 0:
+            raise HTTPException(409, "recorded previous height-anchor scale is invalid")
+        if old_anchor and not (folder / "ndsm_raw.tif").exists():
+            shutil.copy2(folder / "ndsm.tif", folder / "ndsm_raw.tif")
+            _rewrite_tif(folder / "ndsm_raw.tif", read_raster(folder / "ndsm.tif")[0] / old_scale)
+        if old_anchor and not (folder / "dsm_raw.tif").exists():
+            raw_ndsm = read_raster(folder / "ndsm_raw.tif")[0]
+            current_dsm = read_raster(folder / "dsm.tif")[0]
+            shutil.copy2(folder / "dsm.tif", folder / "dsm_raw.tif")
+            _rewrite_tif(folder / "dsm_raw.tif", current_dsm - (old_scale - 1.0) * raw_ndsm)
         # 1. snapshot originals once – every rescale starts from these
         for n in ("ndsm", "dsm", "uncertainty"):
             src, raw = folder / f"{n}.tif", folder / f"{n}_raw.tif"
@@ -362,7 +535,11 @@ def rescale(job_id: str, body: RescaleBody):
         if body.reset:
             s, stats = 1.0, {"reset": True}
         else:
-            s, stats = apply_height_anchors(ndsm_raw, labels, body.anchors, est)
+            s, stats = apply_height_anchors(ndsm_raw, labels, normalized_anchors, est)
+            if stats["n_used"] != len(normalized_anchors):
+                raise HTTPException(422, "one or more anchor IDs have no usable modelled building height")
+            if body.automatic and (stats["cv"] > 0.20 or not 0.67 <= s <= 1.5):
+                raise HTTPException(422, "automatic height anchors disagree or imply an unsafe scale change")
 
         # 2. rasters (DTM never touched)
         ndsm = ndsm_raw * s
@@ -375,19 +552,82 @@ def rescale(job_id: str, body: RescaleBody):
             _rewrite_tif(folder / "uncertainty.tif", unc)
 
         # 3. buildings – same ids/footprints, heights scaled
+        from depthwizard.roof_fit import rescale_roof_fit
         for b in bj["buildings"]:
             b["height_m"] = round(b["height_raw_m"] * s, 2)
             b["roof_elevation_m"] = round(b["ground_elevation_m"] + b["height_m"], 2)
             b["storeys"] = max(1, round(b["height_m"] / 3.0))
             if b.get("volume_raw_m3") is not None:
                 b["volume_m3"] = round(b["volume_raw_m3"] * s, 1)
+            if b.get("roof_fit"):
+                rescale_roof_fit(b["roof_fit"], s)
 
         # 4. viewer layers + meta
         vm = json.loads((folder / "viewer" / "meta.json").read_text())
         _viewer_bin(folder, "height.bin", dsm, vm)
         if unc is not None and vm.get("layers", {}).get("unc"):
             _viewer_bin(folder, "unc.bin", unc, vm)
+        if unc is not None and vm.get("has_confidence"):
+            _viewer_bin(folder, "confidence.bin", np.exp(-np.maximum(unc, 0) / 2.0), vm)
         vm["h_min"], vm["h_max"] = float(np.nanmin(dsm)), float(np.nanmax(dsm))
+        from depthwizard.io import save_preview
+        save_preview(folder / "preview.png", dsm, gsd=float(vm["gsd_m"]))
+
+        # A height rescale changes validation. Recompute against the same
+        # independent reference when it is still available, or remove stale
+        # scores rather than displaying the previous surface's accuracy.
+        validation = None
+        reference_path = None
+        manifest = folder / "job.json"
+        if manifest.is_file():
+            names = json.loads(manifest.read_text(encoding="utf-8")).get("input_names", {})
+            ref_name = names.get("reference")
+            if ref_name and (folder / "inputs" / Path(ref_name).name).is_file():
+                reference_path = folder / "inputs" / Path(ref_name).name
+        if reference_path is None:
+            fingerprint = vm.get("evidence_bundle", {}).get("reference_sha256")
+            if fingerprint and (folder / "inputs").is_dir():
+                for candidate in (folder / "inputs").iterdir():
+                    if candidate.is_file() and _file_hash16(candidate) == fingerprint:
+                        reference_path = candidate
+                        break
+        if reference_path:
+            from depthwizard.io import read_image
+            from depthwizard.metrics import evaluate, reference_on_grid, building_level
+            image_path = folder / "inputs" / Path(vm["input"]).name
+            if image_path.is_file():
+                image = read_image(image_path)
+                reference_grid = reference_on_grid(reference_path, image)
+                validation = evaluate(dsm, reference_grid, "metre", rgb=image.rgb, gsd=float(vm["gsd_m"]))
+                prior_path = folder / "metrics.json"
+                if prior_path.is_file():
+                    prior = json.loads(prior_path.read_text(encoding="utf-8"))
+                    for key in ("baseline_dem", "baseline_edge_gradient_rmse"):
+                        if key in prior:
+                            validation[key] = prior[key]
+                if bj["count"] >= 5:
+                    bm = building_level(labels, ndsm, reference_grid, float(vm["gsd_m"]))
+                    if bm:
+                        validation["buildings"] = bm
+                prior_path.write_text(json.dumps(validation, indent=2, default=float), encoding="utf-8")
+        if validation is None:
+            (folder / "metrics.json").unlink(missing_ok=True)
+            vm["has_reference"] = False
+            vm["validation_plot"] = None
+        else:
+            vm["has_reference"] = True
+            if (folder / "viewer" / "ref.bin").is_file():
+                rv = np.fromfile(folder / "viewer" / "ref.bin", dtype="<f4")
+                pv = np.fromfile(folder / "viewer" / "height.bin", dtype="<f4")
+                valid = np.flatnonzero(np.isfinite(rv) & np.isfinite(pv))
+                if valid.size:
+                    pick = np.random.default_rng(0).choice(valid, size=min(2500, valid.size), replace=False)
+                    err = pv[valid] - rv[valid]
+                    limit = float(np.percentile(np.abs(err), 99)) or 1.0
+                    hist, edges = np.histogram(np.clip(err, -limit, limit), bins=41, range=(-limit, limit))
+                    vm["validation_plot"] = {"pred": np.round(pv[pick], 2).tolist(),
+                                             "ref": np.round(rv[pick], 2).tolist(),
+                                             "hist": hist.tolist(), "edges": np.round(edges, 3).tolist()}
 
         # 5. solar per roof (optional, cheap)
         try:
@@ -402,24 +642,48 @@ def rescale(job_id: str, body: RescaleBody):
         bpath.write_text(json.dumps(bj, indent=2), encoding="utf-8")
 
         # 6. calibration record in both meta files
-        anchor_rec = None if body.reset else {"s": s, "anchors": body.anchors, "stats": stats}
+        anchor_rec = None if body.reset else {"s": s, "anchors": normalized_anchors, "stats": stats,
+                                              "source": "automatic" if body.automatic else "supplied"}
         for mp in (folder / "meta.json", folder / "viewer" / "meta.json"):
             m = vm if mp.parent.name == "viewer" else json.loads(mp.read_text())
+            if validation is None:
+                m.pop("metrics", None)
+                m["validation_note"] = "Reference scores unavailable after rescale; upload a reference to validate this result."
+            else:
+                m["metrics"] = validation
+                m.pop("validation_note", None)
             cal = m.setdefault("calibration", {})
-            cal.setdefault("base", {k: v for k, v in cal.items() if k != "base"})
+            if "base" not in cal:
+                base_cal = {k: v for k, v in cal.items() if k != "base"}
+                if old_anchor:
+                    previous_k = base_cal.get("scale_k")
+                    if previous_k is not None:
+                        base_cal["scale_k"] = float(previous_k) / old_scale
+                    base_cal["method"] = "pre-anchor baseline (legacy)"
+                    base_cal["scale_source"] = "earlier calibration details unavailable"
+                    base_cal["evidence_level"] = "provisional"
+                cal["base"] = base_cal
             if body.reset:
                 base = cal["base"]
                 cal.clear()
                 cal.update(base)
                 m.pop("height_anchor", None)
+                if "auto_anchors" in m:
+                    m["auto_anchors"]["applied"] = False
             else:
                 cal["method"] = "height-anchor"
-                cal["scale_source"] = f"{stats.get('n_used', 0)} known building height(s)"
-                cal["evidence_level"] = "measured" if stats.get("n_used", 0) >= 2 else "provisional"
+                cal["scale_source"] = (f"{stats.get('n_used', 0)} automatic shadow/OSM estimate(s)" if body.automatic
+                                       else f"{stats.get('n_used', 0)} supplied building height(s)")
+                cal["evidence_level"] = "provisional" if body.automatic else ("measured" if stats.get("n_used", 0) >= 2 else "provisional")
+                base_k = cal["base"].get("scale_k")
+                cal["scale_k"] = float(base_k) * s if base_k is not None else None
                 m["height_anchor"] = anchor_rec
+                if "auto_anchors" in m:
+                    m["auto_anchors"]["applied"] = bool(body.automatic)
             if "evidence_bundle" in m:
                 m["evidence_bundle"]["calibration_method"] = cal["method"]
                 m["evidence_bundle"]["height_anchor_s"] = None if body.reset else s
+                m["evidence_bundle"]["scale_k"] = cal.get("scale_k")
             mp.write_text(json.dumps(m, indent=2, default=float))
 
         # 7. re-export derived files
@@ -437,5 +701,6 @@ def rescale(job_id: str, body: RescaleBody):
     return {"scale": s, **stats}
 
 
+app.include_router(create_mission_router(_completed_scene, _files_lock))
 app.mount("/jobs", StaticFiles(directory=JOBS), name="jobs")
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")

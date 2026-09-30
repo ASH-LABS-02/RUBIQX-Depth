@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#0b1826">
 <title>DepthWizard</title>
 <link rel="stylesheet" href="style.css?v=20260929-studio-v1">
-<link rel="stylesheet" href="studio.css?v=merge2-20260929-studio-v1">
+<link rel="stylesheet" href="studio.css?v=20260930-mission-studio-v2">
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
 </script>
@@ -48,7 +48,7 @@
         <button type="button" data-export="dtm" role="menuitem">Bare-ground DTM <small>GeoTIFF · metric scenes</small></button>
         <button type="button" data-export="ndsm" role="menuitem">Above-ground nDSM <small>Building and tree heights</small></button>
         <button type="button" data-export="uncertainty" role="menuitem">Uncertainty map <small>Per-pixel 1σ from the rotation ensemble</small></button>
-        <button type="button" data-export="cityjson" role="menuitem">Buildings CityJSON <small>LoD1 city model for GIS / planning</small></button>
+        <button type="button" data-export="cityjson" role="menuitem">Buildings CityJSON <small>LoD1 with inferred pitched roofs where supported</small></button>
         <button type="button" data-export="ply" role="menuitem">Point cloud PLY <small>Coloured surface points</small></button>
         <button type="button" data-export="evidence" role="menuitem">Evidence Passport JSON <small>SHA-256 provenance bundle</small></button>
         <button type="button" data-export="shot" role="menuitem">Viewer screenshot <small>Current camera and layer</small></button>
@@ -69,7 +69,7 @@
     <div id="toolbar">
       <div class="seg" id="view-mode" aria-label="View geometry mode">
         <button data-view="surface" class="active" title="Full continuous DSM surface mesh">DSM Mesh</button>
-        <button data-view="city" id="btn-city-view" title="LoD1 3D extruded city model on bare earth DTM">LoD1 City</button>
+        <button data-view="city" id="btn-city-view" title="Fitted flat, plane and gable roof hypotheses on bare-earth terrain">Roof-fit City</button>
       </div>
       <div class="seg" id="nav-mode" aria-label="Navigation mode">
         <button data-nav="orbit" class="active" title="Orbit (O)">Orbit</button>
@@ -80,7 +80,10 @@
       <button id="topdown" title="Top-down view (D)">Top down</button>
       <button id="reset" class="icon-btn" title="Reset view (R)" aria-label="Reset view">↺</button>
       <button id="swipe-toggle" title="Swipe compare DSM vs coarse DEM baseline (S)" aria-pressed="false">3D Swipe</button>
+      <button id="model-swipe-toggle" title="Compare the same image with pretrained Depth Anything V2 and the local GAMUS model" aria-pressed="false">Model Compare</button>
       <button id="compare-toggle" title="Compare optical and height layers (V)" aria-pressed="false">2D Compare</button>
+      <button id="map-toggle" title="Show a synchronized OpenStreetMap basemap beside the 3D scene" aria-pressed="false">2D Map</button>
+      <button id="vr-toggle" title="Enter immersive VR on a supported headset and secure browser" disabled>VR</button>
       <button id="fullscreen" class="icon-btn" title="Fullscreen viewer" aria-label="Fullscreen viewer">⛶</button>
     </div>
     <div id="scene-badge" class="scene-badge hidden"></div>
@@ -96,6 +99,14 @@
     </div>
     <div id="swipe-label-left" class="swipe-label left hidden">Input coarse DEM (baseline)</div>
     <div id="swipe-label-right" class="swipe-label right hidden">DepthWizard DSM</div>
+    <div id="model-compare-note" class="model-compare-note hidden"></div>
+    <div id="scene-summary" class="scene-summary hidden" aria-live="polite"></div>
+    <section id="map-panel" class="map-panel hidden" aria-label="Synchronized 2D basemap">
+      <div class="map-heading"><strong>Site map</strong><span>Click to fly the 3D camera</span></div>
+      <canvas id="map-canvas" aria-label="OpenStreetMap basemap and camera position"></canvas>
+      <div id="map-status" class="map-status">Preparing basemap…</div>
+      <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" class="map-attribution">© OpenStreetMap contributors</a>
+    </section>
 
     <!-- North Arrow & Dynamic Scale Bar -->
     <div id="scale-bar-container">
@@ -153,7 +164,7 @@
           <button data-mode="confidence" id="btn-conf">Confidence</button>
           <button data-mode="ndsm" id="btn-ndsm">nDSM</button>
           <button data-mode="curvature">Curvature</button>
-          <button data-mode="error" id="btn-error" disabled>Error</button>
+          <button data-mode="error" id="btn-error" disabled title="Signed DSM error against an uploaded reference: blue is low, red is high">Truth mode</button>
           <button data-mode="landslide" id="btn-landslide" disabled title="Landslide susceptibility screening index">Landslide</button>
           <button data-mode="change" id="btn-change" disabled title="Height change against a pre-event scene">Change</button>
         </div>
@@ -165,6 +176,8 @@
         <p class="note">Display only · the DSM export and validation use original heights.</p>
         <label class="row">Sun azimuth <output id="sun-v">315°</output>
           <input type="range" id="sun" min="0" max="360" step="1" value="315"></label>
+        <label class="row">Illustrative time of day <output id="time-v">12:00</output>
+          <input type="range" id="time-of-day" min="5" max="19" step="0.1" value="12"></label>
         <label class="row check"><input type="checkbox" id="contours"> Contours every <input type="number" id="contour-int" value="5" min="0.01" step="0.5" class="mini"> <span id="contour-unit">m</span></label>
         <label class="row check"><input type="checkbox" id="wire"> Wireframe</label>
       </div>
@@ -187,7 +200,7 @@
         <div id="change-panel" class="change-panel"><p class="note">Load a scene to compare.</p></div>
       </div>
       <div class="group" id="building-inspector-group">
-        <div class="group-heading"><h3>Building Inspector (LoD1)</h3><span class="experimental" id="b-count-badge">0 BUILDINGS</span></div>
+        <div class="group-heading"><h3>Building Inspector</h3><span class="experimental" id="b-count-badge">0 BUILDINGS</span></div>
         <div id="building-info" class="kv muted">Click any building in 3D to inspect storeys, height, footprint area and volume.</div>
         <div id="building-anchor-controls" class="hidden" style="margin-top: 10px; padding: 10px; background: rgba(0,0,0,0.1); border-radius: 4px;">
           <label class="row" style="margin-bottom: 5px;">Known height (m)
@@ -215,6 +228,12 @@
         </div>
       </div>
 
+      <div class="group" id="automatic-anchor-group">
+        <div class="group-heading"><h3>Automatic scale evidence</h3><span class="experimental">PROVENANCE</span></div>
+        <p id="auto-anchor-status" class="note">Load a metric scene to inspect available shadow and OSM anchors.</p>
+        <div class="btns"><button id="auto-anchor-scan" type="button">Find anchors</button><button id="auto-anchor-apply" type="button" disabled>Apply reviewed anchors</button></div>
+      </div>
+
 
       <!-- Disaster & Flood Simulation -->
       <div class="group">
@@ -230,6 +249,10 @@
           <button id="flood-play" class="compact-btn" type="button">▶ Animate Rise</button>
           <button id="flood-reset" class="compact-btn" type="button">↺ Drain</button>
         </div>
+        <label class="row">Storm rainfall <output id="rainfall-v">50 mm</output>
+          <input type="range" id="rainfall-mm" min="0" max="300" step="5" value="50"></label>
+        <button id="rainfall-play" class="compact-btn" type="button">▶ Storm time-lapse</button>
+        <p class="note">Screening scenario: 60% runoff over the scene footprint, no drainage or upstream catchment model.</p>
         <div class="flood-metrics">
           <div class="metric-box">
             <div class="num" id="flood-submerged-pct">0.0%</div>
@@ -239,8 +262,23 @@
             <div class="num" id="flood-buildings-count">0</div>
             <div class="lbl">Buildings Flooded</div>
           </div>
+          <div class="metric-box">
+            <div class="num" id="flood-population">—</div>
+            <div class="lbl" title="Screening proxy: flooded buildings × storeys × footprint ÷ 30 m² per person. Not a census count.">People exposed · estimate</div>
+          </div>
         </div>
         <div id="flood-info" class="kv muted" style="margin-top:8px;">Available for metric height scenes.</div>
+      </div>
+
+      <div class="group" id="disaster-group">
+        <div class="group-heading"><h3>Mission planning</h3><span class="experimental">SCREENING TOOLS</span></div>
+        <div class="mission-actions">
+          <button id="route-tool" type="button" title="Click a start location in the 3D scene">Evacuation route</button>
+          <button id="shelter-tool" type="button">Vertical shelters</button>
+          <button id="runout-tool" type="button" title="Trace downslope from high-susceptibility cells">Landslide runout</button>
+          <button id="relay-tool" type="button" title="Click a tower or drone location in the 3D scene">Comms relay</button>
+        </div>
+        <div id="mission-result" class="mission-result note">Choose a tool, then click the terrain where prompted.</div>
       </div>
 
       <div class="group">
@@ -311,11 +349,14 @@
       <tr><td>Fly</td><td>Click to capture mouse · WASD move · Q/E down/up · Shift ×4 speed · Esc exit</td></tr>
       <tr><td>Tour</td><td>Automatic circling flythrough for demos</td></tr>
       <tr><td>Compare</td><td>Optical and height maps share a cursor and 3D probe</td></tr>
+      <tr><td>2D map</td><td>Open beside a georeferenced scene; click inside the footprint to fly there</td></tr>
+      <tr><td>Mission</td><td>Choose a flood source and level, then click to plan a route or place a relay</td></tr>
+      <tr><td>Time / VR</td><td>Time slider previews lighting; VR needs a compatible headset and secure browser</td></tr>
       <tr><td>Keys</td><td>O orbit · F fly · T tour · D top down · V compare · R reset · 1–4 surface mode · C contours · H help</td></tr></table>
     <p class="muted">The camera stays above terrain in Fly mode.</p>
     <button id="help-close" class="primary">Got it</button>
   </div>
 </div>
-<script type="module" src="app.js?v=merge2-20260929-studio-v1"></script>
+<script type="module" src="app.js?v=20260930-mission-studio-v2"></script>
 </body>
 </html>

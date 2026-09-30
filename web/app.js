@@ -4,6 +4,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/PointerLockControls.js';
 import { floodFill, boundarySeeds, waterMesh, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-merge';
+// Same occupancy proxy as the server's population_exposure (mission 'population').
+const FLOOR_AREA_PER_PERSON_M2 = 30;
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -72,7 +74,9 @@ const S = {
   marker: null, profileLine: null, profilePts: [],
   distPts: [], distLine: null,
   buildings: null, buildingGroup: null, selectedMesh: null,
-  swipeActive: false, swipeX: 0.5, floodAnimating: false,
+  swipeActive: false, swipeKind: 'dem', swipeX: 0.5, modelBaseline: null, floodAnimating: false,
+  riseStart: 0, riseDuration: 1050, missionAction: null, missionOverlay: null,
+  cameraFlight: null, mapTiles: new Map(), mapView: null,
   keys: {}, tourT: 0, extent: 1,
 };
 const uniforms = {
@@ -321,6 +325,13 @@ function updateAnalysisTools() {
     $('#flood-submerged-pct').textContent = `${subPct.toFixed(1)}%`;
     const hit = floodedBuildings(level);
     $('#flood-buildings-count').textContent = String(hit.length);
+    const people = hit.reduce((total, x) => {
+      const b = S.buildings?.buildings?.find((item) => item.id === x.id);
+      return total + (b ? Math.max(0, b.area_m2 || 0) * Math.max(1, b.storeys || Math.round((b.height_m || 3) / 3)) / FLOOR_AREA_PER_PERSON_M2 : 0);
+    }, 0);
+    $('#flood-population').textContent = S.floodActive ? `≈${Math.round(people).toLocaleString()}` : '—';
+    updateFloodBuildingColors(new Set(hit.map((x) => x.id)));
+    updateSceneSummary(hit.length);
     const srcTxt = S.floodSource === 'plane' ? 'every cell below the level (no connectivity)' : S.floodSource === 'point' ? 'spreading from the clicked source' : 'entering from the lowest scene edge';
     info.innerHTML = S.floodActive
       ? (S.floodSource === 'point' && S.floodSeed == null ? '<span class="note" style="grid-column:1/-1">Click the terrain to place the water source.</span>'
@@ -358,6 +369,20 @@ function floodedBuildings(level) {
     if (wet && level > b.ground_elevation_m) out.push({ id: b.id, depth: level - b.ground_elevation_m });
   }
   return out;
+}
+function updateFloodBuildingColors(wetIds) {
+  if (!S.buildingGroup) return;
+  for (const mesh of S.buildingGroup.children) {
+    const wet = wetIds.has(mesh.userData.building?.id);
+    mesh.traverse((part) => {
+      const mats = Array.isArray(part.material) ? part.material : [part.material];
+      for (const mat of mats) {
+        if (!mat?.emissive) continue;
+        mat.emissive.setHex(wet ? 0x9b231e : mesh === S.selectedMesh ? 0x0284c7 : 0x000000);
+        mat.emissiveIntensity = wet ? 0.75 : 1;
+      }
+    });
+  }
 }
 $$('#flood-source button').forEach((btn) => btn.onclick = () => {
   S.floodSource = btn.dataset.src; $$('#flood-source button').forEach((x) => x.classList.toggle('active', x === btn));
@@ -401,10 +426,37 @@ $('#flood-reset').onclick = () => {
   const slider = $('#flood-level');
   slider.value = slider.min;
   S.floodActive = false;
-  if (S.water) S.water.visible = false;
-  $('#flood-v').textContent = '—';
-  $('#flood-submerged-pct').textContent = '0.0%';
-  $('#flood-buildings-count').textContent = '0';
+  S.floodMask = null;
+  updateAnalysisTools();
+  updateFloodBuildingColors(new Set());
+};
+
+$('#rainfall-mm').oninput = (e) => { $('#rainfall-v').textContent = `${e.target.value} mm`; };
+let rainfallFrame = 0;
+$('#rainfall-play').onclick = () => {
+  if (!S.h || S.meta?.units !== 'metre') return;
+  cancelAnimationFrame(rainfallFrame);
+  const g = S.dtm || S.h, slider = $('#flood-level');
+  const runoff = +$('#rainfall-mm').value / 1000 * S.W * S.H * 0.6;
+  const volumeAt = (stage) => {
+    const mask = floodFill(g, S.gw, S.gh, stage, boundarySeeds(g, S.gw, S.gh));
+    let volume = 0;
+    const cellArea = S.W * S.H / g.length;
+    for (let i = 0; i < g.length; i++) if (mask[i]) volume += Math.max(0, stage - g[i]) * cellArea;
+    return volume;
+  };
+  let lo = +slider.min, hi = +slider.max;
+  for (let i = 0; i < 13; i++) { const mid = (lo + hi) / 2; if (volumeAt(mid) < runoff) lo = mid; else hi = mid; }
+  const start = +slider.min, end = (lo + hi) / 2, t0 = performance.now();
+  S.floodActive = true; S.floodSource = 'edge';
+  $$('#flood-source button').forEach((x) => x.classList.toggle('active', x.dataset.src === 'edge'));
+  const animate = (now) => {
+    const t = Math.min(1, (now - t0) / 6000), smooth = t * t * (3 - 2 * t);
+    slider.value = String(start + (end - start) * smooth);
+    updateAnalysisTools();
+    if (t < 1) rainfallFrame = requestAnimationFrame(animate);
+  };
+  rainfallFrame = requestAnimationFrame(animate);
 };
 
 function setSun(deg, elevDeg) {
@@ -424,19 +476,19 @@ async function loadScene(id) {
   try {
     const base = `jobs/${id}/viewer/`;
     const meta = await (await fetch(base + 'meta.json?' + Date.now())).json();
-    const hBuf = await (await fetch(base + 'height.bin')).arrayBuffer();
+    const hBuf = await (await fetch(base + 'height.bin?' + Date.now())).arrayBuffer();
     const ref = meta.has_reference && meta.units === 'metre'
-      ? new Float32Array(await (await fetch(base + 'ref.bin')).arrayBuffer()) : null;
+      ? new Float32Array(await (await fetch(base + 'ref.bin?' + Date.now())).arrayBuffer()) : null;
 
     let dtm = null;
     try {
-      const dtmRes = await fetch(base + 'dtm.bin');
+      const dtmRes = await fetch(base + 'dtm.bin?' + Date.now());
       if (dtmRes.ok) dtm = new Float32Array(await dtmRes.arrayBuffer());
     } catch {}
 
     let confidence = null;
     try {
-      const confRes = await fetch(base + 'confidence.bin');
+      const confRes = await fetch(base + 'confidence.bin?' + Date.now());
       if (confRes.ok) confidence = new Float32Array(await confRes.arrayBuffer());
     } catch {}
 
@@ -460,8 +512,12 @@ async function loadScene(id) {
     if (S.water) { scene.remove(S.water); S.water.geometry.dispose(); S.water.material.dispose(); S.water = null; }
     for (const k of ['floodMesh', 'baseMesh']) if (S[k]) { scene.remove(S[k]); S[k].geometry.dispose(); S[k].material.dispose(); S[k] = null; }
     if (S.swipeActive) setSwipe(false);
+    clearMissionOverlay();
+    S.cameraFlight = null;
+    S.mapTiles.clear();
     S._bmask = null;
-    Object.assign(S, { demBase, susc, change, viewshed: null, floodMask: null, floodSeed: null, floodSource: S.floodSource || 'edge' });
+    Object.assign(S, { demBase, modelBaseline: null, susc, change, viewshed: null, floodMask: null,
+      floodSeed: null, floodSource: S.floodSource || 'edge', missionAction: null });
     Object.assign(S, { id, meta, gw: meta.grid_w, gh: meta.grid_h, W: meta.ground_w_m, H: meta.ground_h_m,
       h: new Float32Array(hBuf), dtm, confidence, buildings, ref, tex, texImg: tex.image, units: meta.units === 'metre' ? 'm' : 'relative',
       viewGeometry: 'surface' });
@@ -476,16 +532,26 @@ async function loadScene(id) {
     $('#flood-level').value = String(S.hmin + (S.hmax - S.hmin) * 0.25);
     const relief = S.hmax - S.hmin;
     S.exag = Math.min(10, Math.max(1, +(0.06 * S.extent / Math.max(relief, 1e-3)).toFixed(1)));
+    if (meta.scene === 'urban' && relief < 0.15 * S.extent) S.exag = Math.max(2.2, S.exag);
     $('#exag').value = S.exag; $('#exag-v').textContent = S.exag.toFixed(1) + '×';
     camera.near = S.extent / 5000; camera.far = S.extent * 30; camera.updateProjectionMatrix();
     scene.fog.near = S.extent * 1.5; scene.fog.far = S.extent * 6;
     clearTools();
     buildTerrain();
     createBuildingMeshes(S.buildings);
+    const builtFraction = (buildings?.total_footprint_m2 || 0) / Math.max(1, S.W * S.H);
+    if (meta.scene === 'urban' || ((buildings?.count || 0) >= 50 && builtFraction >= 0.025)) setViewGeometry('city');
+    else $$('#view-mode button').forEach((b) => b.classList.toggle('active', b.dataset.view === 'surface'));
     updateAnalysisTools();
     const c0 = meta.calibration || {};
-    S.sunEl = Number.isFinite(c0.sun_elevation_deg) ? c0.sun_elevation_deg : 45;
-    if (Number.isFinite(c0.sun_azimuth_deg)) { $('#sun').value = Math.round(c0.sun_azimuth_deg); $('#sun-v').textContent = `${Math.round(c0.sun_azimuth_deg)}° (image)`; }
+    $('#time-of-day').value = '12'; $('#time-v').textContent = '12:00';
+    sun.intensity = 1.4; hemi.intensity = 1.6; sun.color.setHex(0xffffff);
+    scene.background.copy(SKY); scene.fog.color.copy(SKY);
+    const sunInput = meta.sun_input || {};
+    const imageElevation = Number.isFinite(sunInput.elevation_deg) ? sunInput.elevation_deg : c0.sun_elevation_deg;
+    const imageAzimuth = Number.isFinite(sunInput.azimuth_deg) ? sunInput.azimuth_deg : c0.sun_azimuth_deg;
+    S.sunEl = Number.isFinite(imageElevation) ? imageElevation : 45;
+    if (Number.isFinite(imageAzimuth)) { $('#sun').value = Math.round(imageAzimuth); $('#sun-v').textContent = `${Math.round(imageAzimuth)}° (image)`; }
     setSun(+$('#sun').value);
     resetView();
     $('#swipe-toggle').disabled = !demBase;
@@ -505,7 +571,7 @@ async function loadScene(id) {
     const gsd = meta.gsd_m ? ` · GSD ${fmt(meta.gsd_m, 2)} m/px` : '';
     const datum = meta.vertical_datum ? ` · Datum ${meta.vertical_datum}` : '';
     const evidenceLevel = meta.calibration?.evidence_level || (meta.calibration?.method === 'dem+prior' ? 'approximate' : '');
-    const provisional = evidenceLevel === 'approximate' || evidenceLevel === 'provisional-gcp';
+    const provisional = evidenceLevel === 'approximate' || String(evidenceLevel).startsWith('provisional');
     $('#top-scene-meta').textContent = `${meta.units === 'metre' ? (provisional ? 'Provisional metric DSM' : 'Metric DSM') : 'Relative rDSM'} · ${crs}${gsd}${datum}`;
     $('#dl-dsm-header').disabled = false;
     $('#export-menu-btn').disabled = false;
@@ -525,9 +591,20 @@ async function loadScene(id) {
       el.classList.toggle('active', active);
       el.querySelector('.scene-select')?.setAttribute('aria-pressed', String(active));
     });
+    $('#model-swipe-toggle').disabled = !String(meta.backbone || '').toLowerCase().includes('gamus');
     renderMetrics();
     drawMinimap();
     drawComparison();
+    updateSceneSummary();
+    updateMapAvailability();
+    updateMissionAvailability();
+    currentAnchors = (meta.height_anchor?.anchors || []).map((a) => {
+      const building = buildings?.buildings?.find((b) => b.id === a.building_id);
+      return { building_id: a.building_id, known: +a.height_m,
+        est: +(building?.height_raw_m || building?.height_m || a.height_m) };
+    });
+    renderAnchorPanel();
+    updateAutoAnchorPanel();
     location.hash = id;
   } catch (e) {
     console.error(e); alert('Could not load scene: ' + e.message);
@@ -556,6 +633,17 @@ function topDownView() {
 }
 
 // ------------------------------------------------------------------ LoD1 3D city buildings
+function convexFootprint(points) {
+  let direction = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i + 1) % points.length], c = points[(i + 2) % points.length];
+    const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+    if (Math.abs(cross) < 1e-7) continue;
+    if (direction && Math.sign(cross) !== direction) return false;
+    direction = Math.sign(cross);
+  }
+  return direction !== 0;
+}
 function createBuildingMeshes(bData) {
   if (S.buildingGroup) {
     scene.remove(S.buildingGroup);
@@ -603,24 +691,105 @@ function createBuildingMeshes(bData) {
     // ground plane (x, 0, z_world) and turns the extrusion depth into +Y (upwards)
     geo.rotateX(-Math.PI / 2);
 
+    const roof = b.roof_fit?.type === 'gable' && !convexFootprint(pts)
+      ? { type: 'flat' } : b.roof_fit;
+    const topHeight = (x, z) => {
+      if (!roof || roof.type === 'flat') return hWorld;
+      if (roof.type === 'plane' && roof.center_world && roof.gradient_fraction_per_m) {
+        const [cx, cz] = roof.center_world, [gx, gz] = roof.gradient_fraction_per_m;
+        return Math.max(1, b.height_m * S.exag * (roof.center_fraction + gx * (x - cx) + gz * (z - cz)));
+      }
+      if (roof.type === 'gable' && roof.ridge_world && roof.pitch_fraction_per_m) {
+        const [[ax, az], [bx, bz]] = roof.ridge_world;
+        const dist = Math.abs((bx - ax) * (az - z) - (ax - x) * (bz - az)) / Math.max(1e-6, Math.hypot(bx - ax, bz - az));
+        return Math.max(1, b.height_m * S.exag * (roof.ridge_fraction - roof.pitch_fraction_per_m * dist));
+      }
+      return hWorld;
+    };
+    const gableBase = roof?.type === 'gable' ? Math.min(...pts.map(([x, z]) => topHeight(x, z))) : hWorld;
     const pos = geo.attributes.position;
     const uvs = geo.attributes.uv;
     for (let i = 0; i < pos.count; i++) {
       uvs.setXY(i, pos.getX(i) / S.W + 0.5, 0.5 - pos.getZ(i) / S.H);
+      if (pos.getY(i) > hWorld - 0.001) pos.setY(i,
+        roof?.type === 'gable' ? gableBase : topHeight(pos.getX(i), pos.getZ(i)));
     }
     uvs.needsUpdate = true;
+    pos.needsUpdate = true;
     geo.computeVertexNormals();
 
     // ExtrudeGeometry groups: 0 = caps (roof/floor) · 1 = side walls
-    const mesh = new THREE.Mesh(geo, [roofMat, wallMat.clone()]);
+    const mesh = new THREE.Mesh(geo, [roofMat.clone(), wallMat.clone()]);
     const groundElev = b.ground_elevation_m !== undefined ? b.ground_elevation_m : S.base;
     mesh.position.y = worldY(groundElev);
     mesh.userData.building = b; mesh.castShadow = true; mesh.receiveShadow = true;
+    if (roof?.type === 'gable' && roof.ridge_world) {
+      const [[ax, az], [bx, bz]] = roof.ridge_world;
+      const side = (p) => (bx - ax) * (p[1] - az) - (bz - az) * (p[0] - ax);
+      // Complete the walls between a common eave base and the fitted roof.
+      // Split an edge where it crosses the ridge so its top meets both roof
+      // planes, including the triangular gable ends.
+      const wallVertices = [];
+      const addTriangle = (a, b, c) => wallVertices.push(...a, ...b, ...c);
+      for (let k = 0; k < pts.length; k++) {
+        const a = pts[k], b = pts[(k + 1) % pts.length];
+        const da = side(a), db = side(b);
+        const cut = da * db < -1e-9 ? [a[0] + (b[0] - a[0]) * da / (da - db),
+          a[1] + (b[1] - a[1]) * da / (da - db)] : null;
+        const pieces = cut ? [a, cut, b] : [a, b];
+        for (let j = 0; j + 1 < pieces.length; j++) {
+          const p = pieces[j], q = pieces[j + 1], py = topHeight(p[0], p[1]), qy = topHeight(q[0], q[1]);
+          addTriangle([p[0], gableBase, p[1]], [q[0], gableBase, q[1]], [q[0], qy, q[1]]);
+          addTriangle([p[0], gableBase, p[1]], [q[0], qy, q[1]], [p[0], py, p[1]]);
+        }
+      }
+      const wallGeo = new THREE.BufferGeometry();
+      wallGeo.setAttribute('position', new THREE.Float32BufferAttribute(wallVertices, 3));
+      wallGeo.computeVertexNormals();
+      const wallSections = new THREE.Mesh(wallGeo, wallMat.clone());
+      wallSections.userData.building = b; wallSections.castShadow = true; wallSections.receiveShadow = true;
+      mesh.add(wallSections);
+      const clip = (poly, keepPositive) => {
+        const out = [];
+        for (let k = 0; k < poly.length; k++) {
+          const a = poly[k], q = poly[(k + 1) % poly.length], da = side(a), db = side(q);
+          const inA = keepPositive ? da >= -1e-6 : da <= 1e-6;
+          const inB = keepPositive ? db >= -1e-6 : db <= 1e-6;
+          if (inA) out.push(a);
+          if (inA !== inB && Math.abs(da - db) > 1e-9) {
+            const t = da / (da - db); out.push([a[0] + (q[0] - a[0]) * t, a[1] + (q[1] - a[1]) * t]);
+          }
+        }
+        return out;
+      };
+      for (const positive of [true, false]) {
+        const part = clip(pts, positive);
+        if (part.length < 3) continue;
+        const panelShape = new THREE.Shape();
+        panelShape.moveTo(part[0][0], -part[0][1]);
+        for (let k = 1; k < part.length; k++) panelShape.lineTo(part[k][0], -part[k][1]);
+        const panelGeo = new THREE.ShapeGeometry(panelShape);
+        panelGeo.rotateX(-Math.PI / 2);
+        const pp = panelGeo.attributes.position, puv = panelGeo.attributes.uv;
+        for (let k = 0; k < pp.count; k++) {
+          const x = pp.getX(k), z = pp.getZ(k);
+          pp.setY(k, topHeight(x, z) + 0.03);
+          puv.setXY(k, x / S.W + 0.5, 0.5 - z / S.H);
+        }
+        pp.needsUpdate = true; puv.needsUpdate = true; panelGeo.computeVertexNormals();
+        const panel = new THREE.Mesh(panelGeo, roofMat.clone());
+        panel.userData.building = b; panel.castShadow = true; panel.receiveShadow = true;
+        mesh.add(panel);
+      }
+    }
+    mesh.scale.y = 0.001;
     group.add(mesh);
   }
   S.buildingGroup = group;
+  wallMat.dispose(); roofMat.dispose();
   scene.add(group);
   group.visible = (S.viewGeometry === 'city');
+  S.riseStart = performance.now();
 }
 
 function clearBuildingSelection() {
@@ -652,6 +821,7 @@ function selectBuilding(mesh) {
     <b>Footprint area</b><span>${fmt(b.area_m2, 1)} m²</span>
     <b>Structural volume</b><span>${fmt(b.volume_m3, 0)} m³</span>
     <b>Confidence</b><span>${Math.round(b.confidence * 100)}% <small class="muted">${escapeHtml(b.confidence_basis || b.source || 'LoD1')}</small></span>
+    ${b.roof_fit ? `<b>Roof hypothesis</b><span>${escapeHtml(b.roof_fit.type)}${b.roof_fit.pitch_deg ? ` · ${fmt(b.roof_fit.pitch_deg, 1)}° pitch` : ''} · model-inferred</span>` : ''}
     ${b.pv_kwh_yr !== undefined ? `<b>Rooftop solar</b><span>${fmt(b.sunlit_fraction * 100, 0)}% sunlit · ≈ ${Math.round(b.pv_kwh_yr).toLocaleString()} kWh/yr</span>` : ''}
     ${S.floodMask ? (() => { const f = floodedBuildings(+$('#flood-level').value).find((x) => x.id === b.id); return f ? `<b>Flood depth at base</b><span class="worse">${fmt(f.depth, 2)} m</span>` : ''; })() : ''}
   `;
@@ -776,25 +946,31 @@ function measureDistance(point) {
 
 // ------------------------------------------------------------------ 3D swipe comparison
 function updateBaseMesh() {
-  if (!S.demBase) return;
+  const heights = S.swipeKind === 'model' ? S.modelBaseline : S.demBase;
+  if (!heights) return;
   if (!S.baseMesh) {
     const geo = new THREE.PlaneGeometry(S.W, S.H, S.gw - 1, S.gh - 1); geo.rotateX(-Math.PI / 2);
     S.baseMesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: S.tex, roughness: 1, side: THREE.DoubleSide }));
     S.baseMesh.receiveShadow = true; S.baseMesh.visible = false; scene.add(S.baseMesh);
   }
   const pos = S.baseMesh.geometry.attributes.position;
-  for (let i = 0; i < S.gw * S.gh; i++) pos.setY(i, worldY(S.demBase[i]));
+  for (let i = 0; i < S.gw * S.gh; i++) pos.setY(i, worldY(heights[i]));
   pos.needsUpdate = true; S.baseMesh.geometry.computeVertexNormals();
 }
-function setSwipe(on) {
-  S.swipeActive = Boolean(on && S.demBase);
+function setSwipe(on, kind = 'dem') {
+  S.swipeKind = kind;
+  S.swipeActive = Boolean(on && (kind === 'model' ? S.modelBaseline : S.demBase));
   // geometric swipe: the left side really renders the input DEM surface
   uniforms.uSwipeOn.value = 0.0;
   if (S.swipeActive) updateBaseMesh();
-  $('#swipe-toggle')?.setAttribute('aria-pressed', String(S.swipeActive));
+  $('#model-swipe-toggle')?.setAttribute('aria-pressed', String(S.swipeActive && kind === 'model'));
+  $('#swipe-toggle')?.setAttribute('aria-pressed', String(S.swipeActive && kind === 'dem'));
   $('#swipe-divider')?.classList.toggle('hidden', !S.swipeActive);
   $('#swipe-label-left')?.classList.toggle('hidden', !S.swipeActive);
   $('#swipe-label-right')?.classList.toggle('hidden', !S.swipeActive);
+  $('#model-compare-note')?.classList.toggle('hidden', !(S.swipeActive && kind === 'model'));
+  $('#swipe-label-left').textContent = kind === 'model' ? 'Pretrained Depth Anything V2' : 'Input coarse DEM (baseline)';
+  $('#swipe-label-right').textContent = kind === 'model' ? 'GAMUS fine-tuned DepthWizard' : 'DepthWizard DSM';
   if (S.swipeActive) updateSwipePosition(0.5);
 }
 function updateSwipePosition(frac) {
@@ -821,11 +997,16 @@ function buildingMaskGrid() {
   S._bmask = m; return m;
 }
 function setViewGeometry(mode) {
+  const changed = S.viewGeometry !== mode;
   S.viewGeometry = mode;
   updateRenderHeight(true);
   $$('#view-mode button').forEach((b) => b.classList.toggle('active', b.dataset.view === mode));
   if (S.buildingGroup) {
     S.buildingGroup.visible = (mode === 'city');
+    if (mode === 'city' && changed) {
+      for (const b of S.buildingGroup.children) b.scale.y = 0.001;
+      S.riseStart = performance.now();
+    }
   }
 }
 
@@ -1004,7 +1185,7 @@ canvas.addEventListener('pointerup', (e) => {
   const rect = canvas.getBoundingClientRect();
   const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
 
-  if (S.buildingGroup && S.buildingGroup.visible) {
+  if (!S.missionAction && S.buildingGroup && S.buildingGroup.visible) {
     raycaster.setFromCamera(ndc, camera);
     const bHits = raycaster.intersectObjects(S.buildingGroup.children, true);
     if (bHits.length > 0 && bHits[0].object.userData?.building) {
@@ -1016,13 +1197,14 @@ canvas.addEventListener('pointerup', (e) => {
 
   const hit = raycastFrom(ndc);
   if (!hit) return;
-  if (S.floodSource === 'point' && S.floodSeed == null && S.meta?.units === 'metre') {
+  if (!S.missionAction && S.floodSource === 'point' && S.floodSeed == null && S.meta?.units === 'metre') {
     const { r, c } = toGrid(hit.point.x, hit.point.z);
     S.floodSeed = Math.max(0, Math.min(S.gh - 1, r)) * S.gw + Math.max(0, Math.min(S.gw - 1, c));
     const g = S.dtm || S.h, sl = $('#flood-level');
     if (+sl.value < g[S.floodSeed] + 0.5) sl.value = g[S.floodSeed] + 1.0;
     placeMarker(hit.point.x, hit.point.z); S.floodActive = true; updateAnalysisTools(); return;
   }
+  if (S.missionAction) { runMission(S.missionAction, hit.point); return; }
   showTab('analyse');
   if (S.tool === 'viewshed') { computeViewshed(hit.point); return; }
   if (S.tool === 'probe') probe(hit.point);
@@ -1190,7 +1372,9 @@ function renderMetrics() {
   const calWarning = cal.evidence_level === 'approximate' || cal.method === 'dem+prior'
     ? `<p class="note">Building/tree heights use ${cal.scale_source === 'learned pixel-footprint scale' ? 'the model\'s learned metre-per-pixel scale (±40 %)' : 'a scene prior'}; terrain comes from the DEM. Add GCPs or a surface DEM (Copernicus/SRTM) for measured scale.</p>`
     : cal.evidence_level === 'provisional-gcp'
-      ? '<p class="note">GCP calibration is provisional: more distributed surveyed points and an independent reference are needed.</p>' : '';
+      ? '<p class="note">GCP calibration is provisional: more distributed surveyed points and an independent reference are needed.</p>'
+      : cal.evidence_level === 'provisional'
+        ? '<p class="note">Automatic building-height cues are provisional. They are calibration inputs, not independent validation; compare against held-out LiDAR or surveyed heights before claiming accuracy.</p>' : '';
   if (!m) { el.innerHTML = warn + calWarning + '<p class="muted">No reference supplied for this scene. Upload a reference DSM / LiDAR raster with the image to compute RMSE, MAE and correlation.</p>' + calHtml; return; }
   const main = m.absolute || m.affine_aligned;
   const aligned = !m.absolute;
@@ -1266,9 +1450,9 @@ $$('#tool button').forEach((b) => b.onclick = () => {
   S.tool = b.dataset.tool; $$('#tool button').forEach((x) => x.classList.toggle('active', x === b)); clearTools();
 });
 $$('#nav-mode button').forEach((b) => b.onclick = () => setNav(b.dataset.nav));
-$('#exag').oninput = (e) => { S.exag = +e.target.value; $('#exag-v').textContent = S.exag.toFixed(1) + '×'; if (S.mesh) applyHeights(); };
+$('#exag').oninput = (e) => { S.exag = +e.target.value; $('#exag-v').textContent = S.exag.toFixed(1) + '×'; if (S.mesh) { applyHeights(); createBuildingMeshes(S.buildings); } };
 $('#smooth').oninput = (e) => { S.smoothingM = +e.target.value; $('#smooth-v').textContent = `${S.smoothingM.toFixed(2)} m`; if (S.h) updateRenderHeight(); };
-$('#sun').oninput = (e) => { $('#sun-v').textContent = e.target.value + '°'; setSun(+e.target.value); };
+$('#sun').oninput = (e) => { $('#sun-v').textContent = e.target.value + '° (manual)'; $('#time-v').textContent = 'manual'; setSun(+e.target.value); };
 $('#contours').onchange = (e) => { uniforms.uContourOn.value = e.target.checked ? 1 : 0; };
 $('#contour-int').oninput = (e) => { uniforms.uContourInt.value = Math.max(0.001, (+e.target.value || 0.1) * verticalDisplayFactor()); };
 $('#wire').onchange = (e) => { if (S.mesh) S.mesh.material.wireframe = e.target.checked; };
@@ -1287,7 +1471,7 @@ $('#help-close').onclick = () => $('#help').classList.add('hidden');
 $('#dl-dsm').onclick = () => S.id && (location.href = `api/scenes/${S.id}/dsm`);
 $('#dl-report').onclick = () => S.id && window.open(`api/scenes/${S.id}/report`, '_blank');
 $$('#view-mode button').forEach((b) => b.onclick = () => setViewGeometry(b.dataset.view));
-$('#swipe-toggle').onclick = () => setSwipe(!S.swipeActive);
+$('#swipe-toggle').onclick = () => setSwipe(!(S.swipeActive && S.swipeKind === 'dem'), 'dem');
 let swipeDragging = false;
 const swipeDiv = $('#swipe-divider');
 if (swipeDiv) {
@@ -1440,12 +1624,33 @@ let frames = 0, fpsT = 0, mmT = 0;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
   if (S.mesh) {
+    if (S.riseStart && S.buildingGroup) {
+      const t = Math.min(1, (performance.now() - S.riseStart) / S.riseDuration);
+      const ease = 1 - (1 - t) ** 3;
+      for (const b of S.buildingGroup.children) b.scale.y = Math.max(0.001, ease);
+      if (t >= 1) S.riseStart = 0;
+    }
+    if (S.cameraFlight) {
+      const f = S.cameraFlight, t = Math.min(1, (performance.now() - f.started) / 850), e = t * t * (3 - 2 * t);
+      camera.position.lerpVectors(f.fromCamera, f.toCamera, e);
+      orbit.target.lerpVectors(f.fromTarget, f.toTarget, e);
+      orbit.update();
+      if (t >= 1) S.cameraFlight = null;
+    }
     if (S.nav === 'orbit') { orbit.update(); clampCamera(); }
     else if (S.nav === 'fly') updateFly(dt);
     else if (S.nav === 'tour') updateTour(dt);
     const agl = camera.position.y - (Math.abs(camera.position.x) < S.W / 2 && Math.abs(camera.position.z) < S.H / 2 ? terrainY(camera.position.x, camera.position.z) : 0);
     $('#hud-cam').textContent = S.meta.units === 'metre' ? `alt ${(agl / S.exag).toFixed(0)} m above surface` : 'relative vertical scale';
-    if ((mmT += dt) > 0.1) { drawMinimap(); mmT = 0; }
+    if ((mmT += dt) > 0.1) { drawMinimap(); if ($('#stage').classList.contains('map-open')) drawMap(); mmT = 0; }
+    if (S.missionOverlay) {
+      const elapsed = (performance.now() - S.missionOverlay.userData.started) / 1000;
+      for (const line of S.missionOverlay.children) {
+        if (!line.userData.pathLength) continue;
+        line.geometry.setDrawRange(0, Math.max(2, Math.min(line.userData.pathLength,
+          Math.floor(elapsed * line.userData.pathLength / 2.5))));
+      }
+    }
 
     // Rotate north arrow according to camera azimuth
     const dir = new THREE.Vector3();
@@ -1509,7 +1714,7 @@ function renderAnchorPanel() {
     const s = cal.s || 1.0;
     const stats = cal.stats || {};
     let txt = `Scale: ${n} anchor${n !== 1 ? 's' : ''} · s = ${s.toFixed(2)}`;
-    if (n >= 3 && stats.loo_rmse !== undefined) {
+    if (n >= 3 && Number.isFinite(stats.loo_rmse)) {
       txt += ` · ±${stats.loo_rmse.toFixed(1)} m`;
     }
     badge.textContent = txt;
@@ -1523,6 +1728,7 @@ function renderAnchorPanel() {
     panelGroup.classList.remove('hidden');
   } else {
     panelGroup.classList.add('hidden');
+    $('#scale-badge').classList.add('hidden');
   }
 
   const tbody = $('#anchor-table tbody');
@@ -1598,28 +1804,387 @@ $('#anchor-reset-btn').addEventListener('click', async () => {
 });
 
 async function reloadViewer() {
-  const v = Date.now();
-  const metaRes = await fetch(`/jobs/${S.id}/viewer/meta.json?v=${v}`);
-  S.meta = await metaRes.json();
-  const buildRes = await fetch(`/jobs/${S.id}/viewer/buildings.json?v=${v}`);
-  const b = await buildRes.json();
-  S.buildings = b.buildings || [];
-  
-  if (S.meta.height_anchor && S.meta.height_anchor.anchors) {
-    currentAnchors = S.meta.height_anchor.anchors.map(a => {
-      const bd = S.buildings.find(x => x.id === a.building_id);
-      return {
-        building_id: a.building_id,
-        known: a.height_m,
-        est: bd ? bd.height_raw_m || bd.height_m : a.height_m
-      };
-    });
+  if (S.id) {
+    const id = S.id, geometry = S.viewGeometry;
+    await loadScene(id);
+    if (geometry !== S.viewGeometry) setViewGeometry(geometry);
   }
-  
-  const heightRes = await fetch(`/jobs/${S.id}/viewer/height.bin?v=${v}`);
-  S.height = new Float32Array(await heightRes.arrayBuffer());
-  
-  rebuildMesh();
-  rebuildBuildings();
-  renderAnchorPanel();
+}
+
+function updateAutoAnchorPanel() {
+  const box = $('#automatic-anchor-group');
+  const metric = S.meta?.units === 'metre';
+  box.classList.toggle('hidden', !metric);
+  if (!metric) return;
+  const record = S.meta.auto_anchors || {}, diag = record.diagnostics || {};
+  const osm = diag.osm?.accepted || 0, shadows = diag.shadow?.accepted || 0;
+  const total = record.anchors?.length || 0;
+  const applied = record.applied && S.meta.height_anchor?.source === 'automatic';
+  const appliedAnchors = applied ? S.meta.height_anchor?.stats?.n_used || 0 : 0;
+  $('#auto-anchor-status').textContent = total
+    ? `${total} candidates found (${osm} OSM tags, ${shadows} shadows) · ${applied ? `${appliedAnchors} applied to scale` : 'none applied to scale'}. Tags and shadow geometry are provisional height estimates.`
+    : applied ? `${appliedAnchors} automatic anchors were applied earlier; the latest scan found no current candidates. Check stored calibration provenance.`
+      : `No automatic anchors available yet. ${diag.shadow?.skipped || diag.osm?.skipped || 'Sun metadata and OSM coverage may be absent.'}`;
+  $('#auto-anchor-apply').disabled = !total || applied;
+  const scaleBadge = $('#scale-badge');
+  if (applied) {
+    const usedOsm = (S.meta.height_anchor?.anchors || []).filter((a) => String(a.source || '').includes('OpenStreetMap')).length;
+    if (usedOsm) scaleBadge.textContent += ` · ${usedOsm} OSM heights`;
+  }
+}
+$('#auto-anchor-scan').onclick = async () => {
+  const btn = $('#auto-anchor-scan'); btn.disabled = true;
+  $('#auto-anchor-status').textContent = 'Scanning shadows and OSM height tags…';
+  try {
+    const r = await fetch(`/api/scenes/${S.id}/auto-anchors`, { method: 'POST' });
+    if (!r.ok) throw new Error(await r.text());
+    S.meta.auto_anchors = await r.json();
+    updateAutoAnchorPanel();
+  } catch (e) { $('#auto-anchor-status').textContent = `Anchor scan unavailable: ${e.message}`; }
+  finally { btn.disabled = false; }
+};
+$('#auto-anchor-apply').onclick = async () => {
+  const record = S.meta?.auto_anchors, proposals = record?.anchors || [];
+  const selected = proposals.filter((a) => a.confidence >= 0.65 &&
+    (a.source === 'shadow geometry' || a.osm_tag === 'height'));
+  if (selected.length < 3) {
+    $('#auto-anchor-status').textContent = 'At least three reliable shadow or explicit OSM height anchors are needed for an automatic rescale.';
+    return;
+  }
+  const btn = $('#auto-anchor-apply'); btn.disabled = true;
+  try {
+    const r = await fetch(`/api/scenes/${S.id}/rescale`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ automatic: true, anchors: selected.map((a) => ({ building_id: a.building_id, height_m: a.height_m,
+        source: a.source, confidence: a.confidence })) }) });
+    if (!r.ok) throw new Error(await r.text());
+    await reloadViewer();
+  } catch (e) { $('#auto-anchor-status').textContent = `Rescale unavailable: ${e.message}`; }
+  finally { btn.disabled = false; }
+};
+
+function updateSceneSummary(floodCount = 0) {
+  const el = $('#scene-summary');
+  const list = S.buildings?.buildings || [];
+  if (!S.meta) { el.classList.add('hidden'); return; }
+  const tallest = list.reduce((m, b) => Math.max(m, +b.height_m || 0), 0);
+  const conf = list.length ? list.reduce((t, b) => t + (+b.confidence || 0), 0) / list.length : null;
+  const quality = conf == null ? 'unavailable' : conf >= 0.75 ? 'higher' : conf >= 0.5 ? 'moderate' : 'lower';
+  const mode = S.meta.units === 'metre' ? 'metric DSM' : 'relative rDSM';
+  const flood = S.floodActive ? ` · ${floodCount} buildings affected at ${fmt(+$('#flood-level').value, 1)} m` : '';
+  el.innerHTML = `<strong>Scene summary</strong> · ${list.length} buildings${list.length ? ` · tallest ${fmt(tallest, 1)} ${S.units}` : ''}${flood} · ${quality} building confidence · ${mode}`;
+  el.classList.remove('hidden');
+}
+
+const mapCanvas = $('#map-canvas'), mapCtx = mapCanvas.getContext('2d');
+function mercator(lon, lat, z) {
+  const n = 2 ** z, p = Math.max(-85.05, Math.min(85.05, lat)) * Math.PI / 180;
+  return [(lon + 180) / 360 * n, (1 - Math.asinh(Math.tan(p)) / Math.PI) / 2 * n];
+}
+function mapProjection() {
+  const corners = S.meta?.corners_lonlat;
+  if (!corners || !$('#stage').classList.contains('map-open')) return null;
+  const w = mapCanvas.clientWidth, h = mapCanvas.clientHeight;
+  if (w < 20 || h < 20) return null;
+  let zoom = 2;
+  for (let z = 2; z <= 18; z++) {
+    const points = corners.map(([lon, lat]) => mercator(lon, lat, z));
+    const spanX = (Math.max(...points.map((p) => p[0])) - Math.min(...points.map((p) => p[0]))) * 256;
+    const spanY = (Math.max(...points.map((p) => p[1])) - Math.min(...points.map((p) => p[1]))) * 256;
+    if (spanX > w * 0.72 || spanY > h * 0.72) break;
+    zoom = z;
+  }
+  const points = corners.map(([lon, lat]) => mercator(lon, lat, zoom));
+  return { zoom, center: [(Math.min(...points.map((p) => p[0])) + Math.max(...points.map((p) => p[0]))) / 2,
+                           (Math.min(...points.map((p) => p[1])) + Math.max(...points.map((p) => p[1]))) / 2], w, h, points };
+}
+function mapPixel(lon, lat, m) {
+  const [x, y] = mercator(lon, lat, m.zoom);
+  return [(x - m.center[0]) * 256 + m.w / 2, (y - m.center[1]) * 256 + m.h / 2];
+}
+function drawMap() {
+  const m = mapProjection(); if (!m) return;
+  if (mapCanvas.width !== Math.round(m.w) || mapCanvas.height !== Math.round(m.h)) {
+    mapCanvas.width = Math.round(m.w); mapCanvas.height = Math.round(m.h);
+  }
+  S.mapView = m;
+  mapCtx.fillStyle = '#102b3b'; mapCtx.fillRect(0, 0, m.w, m.h);
+  const x0 = Math.floor(m.center[0] - m.w / 512) - 1, x1 = Math.ceil(m.center[0] + m.w / 512) + 1;
+  const y0 = Math.floor(m.center[1] - m.h / 512) - 1, y1 = Math.ceil(m.center[1] + m.h / 512) + 1;
+  let loaded = 0, pending = 0, failed = 0;
+  for (let tx = x0; tx <= x1; tx++) for (let ty = y0; ty <= y1; ty++) {
+    if (ty < 0 || ty >= 2 ** m.zoom) continue;
+    const tileX = (tx + 2 ** m.zoom) % (2 ** m.zoom), key = `${m.zoom}/${tileX}/${ty}`;
+    let tile = S.mapTiles.get(key);
+    if (!tile && S.mapTiles.size < 96) {
+      tile = new Image(); tile.referrerPolicy = 'strict-origin-when-cross-origin';
+      tile.onload = drawMap; tile.onerror = () => { tile.dataset.failed = '1'; drawMap(); };
+      tile.src = `https://tile.openstreetmap.org/${key}.png`;
+      S.mapTiles.set(key, tile);
+    }
+    if (tile?.complete && tile.naturalWidth) {
+      mapCtx.drawImage(tile, Math.round((tx - m.center[0]) * 256 + m.w / 2),
+        Math.round((ty - m.center[1]) * 256 + m.h / 2), 256, 256);
+      loaded++;
+    } else if (tile?.dataset.failed) failed++;
+    else pending++;
+  }
+  const order = [0, 1, 3, 2];
+  mapCtx.beginPath();
+  order.forEach((i, k) => {
+    const [px, py] = mapPixel(...S.meta.corners_lonlat[i], m);
+    if (k === 0) mapCtx.moveTo(px, py); else mapCtx.lineTo(px, py);
+  });
+  mapCtx.closePath(); mapCtx.fillStyle = '#38bdf833'; mapCtx.fill();
+  mapCtx.strokeStyle = '#45d6ef'; mapCtx.lineWidth = 2; mapCtx.stroke();
+  const u = camera.position.x / S.W + 0.5, v = camera.position.z / S.H + 0.5;
+  if (u >= 0 && u <= 1 && v >= 0 && v <= 1) {
+    const ll = lonLatAt(S.meta.corners_lonlat, u, v);
+    const [px, py] = mapPixel(ll[0], ll[1], m);
+    mapCtx.beginPath(); mapCtx.arc(px, py, 6, 0, Math.PI * 2);
+    mapCtx.fillStyle = '#f8b54d'; mapCtx.fill(); mapCtx.strokeStyle = '#08202d'; mapCtx.lineWidth = 2; mapCtx.stroke();
+  }
+  $('#map-status').textContent = loaded ? `OpenStreetMap · z${m.zoom} · scene outline in cyan` : pending ? 'Loading OpenStreetMap tiles…' : failed ? 'Basemap unavailable; scene outline remains available' : 'Basemap unavailable';
+}
+function updateMapAvailability() {
+  const available = Boolean(S.meta?.corners_lonlat?.length === 4);
+  $('#map-toggle').disabled = !available;
+  if (!available) { $('#stage').classList.remove('map-open'); $('#map-panel').classList.add('hidden'); }
+  else if ($('#stage').classList.contains('map-open')) requestAnimationFrame(drawMap);
+}
+$('#map-toggle').onclick = () => {
+  if (!S.meta?.corners_lonlat) return;
+  const on = !$('#stage').classList.contains('map-open');
+  $('#stage').classList.toggle('map-open', on); $('#map-panel').classList.toggle('hidden', !on);
+  $('#map-toggle').setAttribute('aria-pressed', String(on));
+  if (on) requestAnimationFrame(() => { resize(); drawMap(); }); else requestAnimationFrame(resize);
+};
+mapCanvas.addEventListener('click', (e) => {
+  const m = S.mapView; if (!m || !S.mesh) return;
+  const rect = mapCanvas.getBoundingClientRect();
+  const tx = (e.clientX - rect.left - m.w / 2) / 256 + m.center[0];
+  const ty = (e.clientY - rect.top - m.h / 2) / 256 + m.center[1];
+  const tl = m.points[0], tr = m.points[1], bl = m.points[2];
+  const ax = tr[0] - tl[0], ay = tr[1] - tl[1], bx = bl[0] - tl[0], by = bl[1] - tl[1];
+  const det = ax * by - ay * bx;
+  if (Math.abs(det) < 1e-12) return;
+  const dx = tx - tl[0], dy = ty - tl[1];
+  const u = (dx * by - dy * bx) / det, v = (ax * dy - ay * dx) / det;
+  if (u < 0 || u > 1 || v < 0 || v > 1) return;
+  setNav('orbit');
+  const target = new THREE.Vector3((u - 0.5) * S.W, terrainY((u - 0.5) * S.W, (v - 0.5) * S.H), (v - 0.5) * S.H);
+  const offset = camera.position.clone().sub(orbit.target);
+  S.cameraFlight = { started: performance.now(), fromCamera: camera.position.clone(), toCamera: target.clone().add(offset),
+    fromTarget: orbit.target.clone(), toTarget: target };
+});
+
+async function openModelComparison() {
+  if (!S.id) return;
+  const sceneId = S.id;
+  if (S.swipeActive && S.swipeKind === 'model') { setSwipe(false, 'model'); return; }
+  if (!String(S.meta?.backbone || '').toLowerCase().includes('gamus')) {
+    $('#model-compare-note').textContent = 'Load a scene processed with the GAMUS fine-tuned checkpoint first.';
+    $('#model-compare-note').classList.remove('hidden'); return;
+  }
+  const button = $('#model-swipe-toggle');
+  button.disabled = true; button.textContent = 'Preparing models…';
+  try {
+    let status = await (await fetch(`/api/scenes/${sceneId}/model-comparison`)).json();
+    if (status.state === 'idle') {
+      const r = await fetch(`/api/scenes/${sceneId}/model-comparison`, { method: 'POST' });
+      if (!r.ok) throw new Error(await r.text());
+      status = await r.json();
+    }
+    while (status.state === 'queued' || status.state === 'running') {
+      await new Promise((resolve) => setTimeout(resolve, 1800));
+      status = await (await fetch(`/api/scenes/${sceneId}/model-comparison`)).json();
+      if (S.id !== sceneId) return;
+    }
+    if (status.state !== 'done') throw new Error(status.error || 'Pretrained inference did not finish.');
+    const bin = await (await fetch(`jobs/${sceneId}/viewer/pretrained_height.bin?${Date.now()}`)).arrayBuffer();
+    if (S.id !== sceneId) return;
+    const heights = new Float32Array(bin);
+    if (heights.length !== S.h.length) throw new Error('The model grids are not aligned.');
+    S.modelBaseline = heights;
+    const cm = status.comparison || {};
+    const baselineRmse = cm.metrics?.absolute?.rmse;
+    const oursRmse = S.meta.metrics?.absolute?.rmse;
+    $('#model-compare-note').textContent = Number.isFinite(baselineRmse) && Number.isFinite(oursRmse)
+      ? `Same optical image and reference · RMSE: pretrained ${fmt(baselineRmse, 2)} m · GAMUS ${fmt(oursRmse, 2)} m`
+      : 'Same optical image · each model retains its own calibration · visual comparison only without a reference DSM';
+    setSwipe(true, 'model');
+  } catch (e) {
+    $('#model-compare-note').textContent = `Model comparison unavailable: ${e.message}`;
+    $('#model-compare-note').classList.remove('hidden');
+  } finally {
+    button.disabled = S.id !== sceneId || !String(S.meta?.backbone || '').toLowerCase().includes('gamus');
+    button.textContent = 'Model Compare';
+  }
+}
+$('#model-swipe-toggle').onclick = openModelComparison;
+
+function setIllustrativeTime(hour) {
+  const h = Math.max(5, Math.min(19, +hour));
+  const hr = Math.floor(h), min = Math.round((h - hr) * 60);
+  $('#time-v').textContent = `${String(hr).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+  const daylight = Math.max(0, Math.sin(Math.PI * (h - 6) / 12));
+  const az = 90 + (h - 6) * 15;
+  $('#sun').value = Math.round(az);
+  $('#sun-v').textContent = `${Math.round(az)}° (illustrative)`;
+  setSun(az, Math.max(3, 65 * daylight));
+  sun.intensity = 0.18 + 1.4 * daylight;
+  hemi.intensity = 0.45 + 1.1 * daylight;
+  const warm = 1 - Math.min(1, daylight * 2);
+  sun.color.setRGB(1, 1 - 0.18 * warm, 1 - 0.4 * warm);
+  const sky = new THREE.Color(0x0d1117).lerp(new THREE.Color(0x243b57), 0.4 * daylight);
+  scene.background.copy(sky); scene.fog.color.copy(sky);
+}
+$('#time-of-day').oninput = (e) => setIllustrativeTime(e.target.value);
+
+async function initVr() {
+  const btn = $('#vr-toggle');
+  if (!navigator.xr || !window.isSecureContext) { btn.title = 'VR requires a supported headset/browser on HTTPS or localhost'; return; }
+  try {
+    if (!(await navigator.xr.isSessionSupported('immersive-vr'))) return;
+    btn.disabled = false;
+    renderer.xr.enabled = true;
+    renderer.xr.setReferenceSpaceType('local-floor');
+    btn.onclick = async () => {
+      if (renderer.xr.isPresenting) { await renderer.xr.getSession()?.end(); return; }
+      if (S.swipeActive) setSwipe(false);
+      const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor'] });
+      await renderer.xr.setSession(session);
+      btn.textContent = 'Exit VR';
+      session.addEventListener('end', () => { btn.textContent = 'VR'; });
+    };
+  } catch (e) { btn.title = `VR unavailable: ${e.message}`; }
+}
+initVr();
+
+function clearMissionOverlay() {
+  if (!S.missionOverlay) return;
+  scene.remove(S.missionOverlay);
+  S.missionOverlay.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+  S.missionOverlay = null;
+}
+function drawMissionPaths(paths, color = 0xffb547) {
+  clearMissionOverlay();
+  const group = new THREE.Group(); group.userData.started = performance.now();
+  for (const path of paths.slice(0, 24)) {
+    if (!Array.isArray(path) || path.length < 2) continue;
+    const points = path.map(([u, v]) => {
+      const x = (u - 0.5) * S.W, z = (v - 0.5) * S.H;
+      const ground = S.dtm ? worldY(sampleGrid(S.dtm, x, z)) : terrainY(x, z);
+      return new THREE.Vector3(x, ground + Math.max(1.5, S.extent * 0.003), z);
+    });
+    const geo = new THREE.BufferGeometry().setFromPoints(points);
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, depthTest: false }));
+    line.renderOrder = 8; line.userData.pathLength = points.length;
+    geo.setDrawRange(0, 2); group.add(line);
+    for (const pt of [points[0], points[points.length - 1]]) {
+      const marker = new THREE.Mesh(new THREE.SphereGeometry(Math.max(1, S.extent * 0.004), 12, 8),
+        new THREE.MeshBasicMaterial({ color, depthTest: false }));
+      marker.position.copy(pt); marker.renderOrder = 9; group.add(marker);
+    }
+  }
+  S.missionOverlay = group; scene.add(group);
+}
+function showShelterMarkers(candidates) {
+  clearMissionOverlay();
+  const group = new THREE.Group(); group.userData.started = performance.now();
+  for (const c of candidates.slice(0, 25)) {
+    const b = S.buildings?.buildings?.find((item) => item.id === c.building_id);
+    if (!b?.center) continue;
+    const x = b.center[0], z = b.center[1];
+    const marker = new THREE.Mesh(new THREE.ConeGeometry(Math.max(2, S.extent * 0.008), Math.max(5, S.extent * 0.025), 4),
+      new THREE.MeshBasicMaterial({ color: 0x51e4a8, depthTest: false }));
+    marker.position.set(x, worldY(b.roof_elevation_m) + Math.max(3, S.extent * 0.015), z);
+    marker.renderOrder = 9; group.add(marker);
+  }
+  S.missionOverlay = group; scene.add(group);
+}
+function updateMissionAvailability() {
+  const crs = String(S.meta?.crs || '').toUpperCase();
+  const ready = S.meta?.units === 'metre' && S.meta?.georeferenced && S.meta?.has_dtm && S.dtm &&
+    crs && !/EPSG:?(4326|3857)\b/.test(crs);
+  for (const id of ['route-tool', 'shelter-tool', 'runout-tool', 'relay-tool']) $("#" + id).disabled = !ready;
+  $('#runout-tool').disabled = !ready || !S.susc;
+  if (!ready) $('#mission-result').textContent = 'Mission tools need aligned DSM and bare-ground DTM in a local projected metre CRS.';
+}
+async function missionRequest(action, point) {
+  const u = point ? point.x / S.W + 0.5 : 0.5, v = point ? point.z / S.H + 0.5 : 0.5;
+  const body = { action, u, v, water_level_m: +$('#flood-level').value,
+    flood_source: S.floodSource || 'edge' };
+  if (S.floodSeed != null) {
+    body.flood_seed_u = (S.floodSeed % S.gw) / Math.max(1, S.gw - 1);
+    body.flood_seed_v = Math.floor(S.floodSeed / S.gw) / Math.max(1, S.gh - 1);
+  }
+  const res = await fetch(`/api/scenes/${S.id}/mission`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+async function runMission(action, point = null) {
+  S.missionAction = null;
+  $$('.mission-actions button').forEach((b) => b.classList.remove('active'));
+  const out = $('#mission-result'); out.textContent = 'Analysing terrain…';
+  try {
+    if (action === 'route' || action === 'shelters') {
+      if (S.floodSource === 'point' && S.floodSeed == null) {
+        out.textContent = 'Click the terrain to place the point flood source before running this analysis.';
+        return;
+      }
+      if (!S.floodActive) { S.floodActive = true; updateAnalysisTools(); }
+    }
+    const r = await missionRequest(action, point);
+    if (action === 'route') {
+      if (r.status === 'route_found' && r.route_uv?.length) {
+        drawMissionPaths([r.route_uv], 0x53e1af);
+        out.innerHTML = `<b>Dry route found</b> · ${fmt(r.length_m, 0)} m · climbs ${fmt(r.ascent_m, 1)} m. <span class="note">${escapeHtml(r.warning || 'Screening route only; verify access and hazards on the ground.')}</span>`;
+      } else if (r.status === 'already_on_high_ground') {
+        clearMissionOverlay();
+        if (point) placeMarker(point.x, point.z);
+        out.innerHTML = `<b>Already on high ground</b> · selected cell meets ${fmt(r.clearance_m, 1)} m clearance. <span class="note">This is terrain screening, not a verified refuge.</span>`;
+      } else {
+        const shelters = await missionRequest('shelters', point);
+        showShelterMarkers(shelters.candidates || []);
+        out.innerHTML = `<b>${escapeHtml(r.message || 'No dry route found on this grid')}</b> · ${shelters.candidate_count || 0} vertical-shelter candidates highlighted. <span class="note">Inspect structural safety, access and services before use.</span>`;
+      }
+    } else if (action === 'shelters') {
+      showShelterMarkers(r.candidates || []);
+      out.innerHTML = `<b>${r.candidate_count || 0} refuge candidates</b> · green roof markers. <span class="note">${escapeHtml(r.warning || 'Model-based screening only.')}</span>`;
+    } else if (action === 'runout') {
+      drawMissionPaths((r.paths || []).map((p) => p.path_uv), 0xff7867);
+      out.innerHTML = r.status === 'no_high_sources'
+        ? `<b>No high-susceptibility source cells</b> · none exceeded the ${fmt(r.assumptions?.susceptibility_threshold || 0.7, 2)} screening threshold. No downhill trace is inferred.`
+        : `<b>${r.sources_traced || 0} downhill traces</b> · ${r.buildings_in_path_count || 0} buildings intersect or lie nearby. <span class="note">${escapeHtml(r.warning || 'Screening only.')}</span>`;
+    } else if (action === 'relay') {
+      const coverage = new Float32Array(S.gw * S.gh);
+      for (const [row, start, end] of r.visible_rle || []) {
+        const vr = Math.round(row / Math.max(1, r.grid_h - 1) * (S.gh - 1));
+        const c0 = Math.ceil(start / Math.max(1, r.grid_w - 1) * (S.gw - 1));
+        const c1 = Math.floor((end - 1) / Math.max(1, r.grid_w - 1) * (S.gw - 1));
+        for (let c = c0; c <= c1; c++) if (vr >= 0 && vr < S.gh && c >= 0 && c < S.gw) coverage[vr * S.gw + c] = 1;
+      }
+      S.viewshed = coverage;
+      if (point) placeMarker(point.x, point.z);
+      setMode('viewshed');
+      $('#probe-info').innerHTML = `<b>Relay observer</b><span>${fmt(r.observer_agl_m, 0)} m above surface</span><b>Visible area</b><span>${fmt(r.visible_area_m2 / 1e4, 2)} ha</span><span class="note" style="grid-column:1/-1">Yellow shows the API line-of-sight mask sampled to viewer resolution.</span>`;
+      out.innerHTML = `<b>Relay line of sight</b> · ${fmt((r.visible_fraction || 0) * 100, 1)}% of analysed cells visible. <span class="note">${escapeHtml(r.warning || 'Line of sight only; radio propagation is not modelled.')}</span>`;
+    }
+  } catch (e) { out.textContent = `Analysis unavailable: ${e.message}`; }
+}
+for (const [id, action] of [['route-tool', 'route'], ['shelter-tool', 'shelters'], ['runout-tool', 'runout'], ['relay-tool', 'relay']]) {
+  $('#' + id).onclick = () => {
+    if (!S.id) return;
+    if ((action === 'route' || action === 'shelters') && S.floodSource === 'point' && S.floodSeed == null) {
+      $('#mission-result').textContent = 'Click the terrain to place the point flood source first.';
+      S.missionAction = null;
+      return;
+    }
+    if (action === 'shelters' || action === 'runout') { runMission(action); return; }
+    S.missionAction = action;
+    $$('.mission-actions button').forEach((b) => b.classList.toggle('active', b.id === id));
+    $('#mission-result').textContent = action === 'route' ? 'Click a start point in the 3D terrain.' : 'Click a tower or drone location in the 3D terrain.';
+  };
 }

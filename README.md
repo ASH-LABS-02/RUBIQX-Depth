@@ -23,10 +23,19 @@ RGB image ──► Depth Anything V2 ──► relative height ──► scale 
 |---|---|
 | **Accuracy** | Blind absolute DSM error **5.04 m RMSE / 3.52 m MAE** over six LiDAR/survey scenes, vs 7.94 / 5.17 m for the input DEM alone and 7.06 / 5.05 m for the previous build ([benchmarks](docs/BENCHMARKS.md)). GAMUS fine-tune: correlation 0.41 → 0.79 on 30 held-out tiles. |
 | **Calibration** | Detects whether the DEM is a surface model (Copernicus/SRTM) or bare earth; fits building scale from a surface DEM and matches it exactly at 30 m; otherwise uses GCPs, a learned pixel-footprint scale or a scene prior, always labelled. |
-| **Products** | DSM, DTM, nDSM and per-pixel uncertainty GeoTIFFs · LoD1 buildings (CityJSON) · GLB/OBJ/PLY · HTML report · evidence JSON |
-| **3D** | Textured LoD1 city on bare ground, sun-matched shadows, geometric DEM-vs-DSM swipe, orbit/fly/tour, one-click flythrough video |
+| **Products** | DSM, DTM, nDSM and per-pixel uncertainty GeoTIFFs · CityJSON with LoD1 or supported fitted LoD2 roofs · GLB/OBJ/PLY · HTML report · evidence JSON |
+| **3D** | Textured city on bare ground, fitted roof hypotheses, adjustable sun lighting, geometric DEM-vs-DSM swipe, orbit/fly/tour, one-click flythrough video |
 | **Analysis** | Connected flood (edge / clicked source) with depth, volume and buildings affected · landslide susceptibility · viewshed · rooftop solar · pre/post change detection · profiles, 3D distance, cut/fill |
 | **Engineering** | 12 automated tests + CI, REST API with `/docs`, ONNX export, PyInstaller build script, [model card](docs/MODEL_CARD.md), [roadmap status](docs/ROADMAP_STATUS.md) |
+
+### Mission workbench additions
+
+- **Automatic height cues:** on metric scenes with separate DTM/nDSM, candidate per-building heights come from RGB shadow length and solar elevation or matched OpenStreetMap `height` tags. OSM `building:levels` uses a 3 m/storey heuristic. Shadow candidates are rejected when they cross another building or open water. Only at least three consistent, sufficiently confident explicit-height/shadow anchors change scale automatically; metadata records every candidate, rejection, source, and whether a rescale occurred. User-supplied GCPs or a measured DEM calibration take precedence. These cues are provisional estimates, not validation truth.
+- **Building geometry:** RGB edges guide footprint detection without changing the original DSM or its validation scores. Flat, tilted-plane and gable roof hypotheses are rendered in the Roof-fit City view. CityJSON records fitted pitched roofs as LoD 2.0 solids when supported and otherwise falls back to LoD1; this does not mean surveyed LoD2 accuracy.
+- **Disaster screening:** a full-resolution metric API computes flood-avoiding routes to high ground, vertical refuge candidates, an occupancy proxy based on floor area, downhill landslide traces, and relay line-of-sight coverage. The browser animates routes and runout paths. A rainfall slider animates a connected flood using a 60% runoff fraction over the scene footprint; it is not a hydrologic forecast. Routes, shelters, population and radio coverage need field verification.
+- **Presentation and evidence:** buildings rise when Roof-fit City opens, an illustrative time slider moves lighting and shadows, the Truth mode shows signed errors against an uploaded reference, and the scene summary appears in the viewer and report. A same-image pretrained-vs-GAMUS 3D swipe runs the off-the-shelf model on demand and only appears when both outputs align and use the same units. Geo scenes can open a synchronized OpenStreetMap pane with attribution. Immersive VR activates only in a supported headset and browser on a secure origin or localhost.
+
+The local mission endpoint is `POST /api/scenes/{id}/mission` with actions `route`, `shelters`, `population`, `runout`, and `relay`. It requires a local projected metre CRS with less than 2% ground-scale distortion and aligned full-resolution DSM/DTM; Web Mercator is rejected for ground distances. `/api/scenes/{id}/auto-anchors` refreshes available candidate evidence for an existing scene; `/api/scenes/{id}/model-comparison` prepares or reports the off-the-shelf comparison.
 
 ## Quick start
 
@@ -162,13 +171,13 @@ The app opens into a dark three-part workspace: a thumbnail scene library, a lar
 |---|---|
 | Navigation | **Orbit**; **Fly** (first-person, pointer-lock, WASD/QE/Shift, never drops below the terrain); **Tour** (automatic flythrough); **Top down** and **Fullscreen**; a minimap you can click to jump |
 | Surfaces | Optical drape, height colour ramp, slope (° for metric DSMs; relative gradient otherwise), curvature, error vs a metric reference; contour lines; wireframe |
-| Controls | Vertical exaggeration; display-only mesh smoothing; sun azimuth |
+| Controls | Vertical exaggeration; display-only mesh smoothing; sun azimuth and illustrative time of day |
 | Comparison | Linked source RGB and height maps with a shared cursor; clicking a pixel sets the 3D height probe |
 | Probe | Estimated height, reference height, error, slope, aspect, and map coordinates (E/N) for georeferenced scenes |
 | Profile | Two clicks draw an elevation cross-section: estimate vs reference, length, Δh, grade, profile RMSE |
-| Analysis | Metric scenes support a rising horizontal flood plane with a terrain-only submerged-area estimate. With a metric reference DSM, cut/fill volumes compare the estimated and reference surfaces. |
+| Analysis | Connected flood scenarios from the lowest scene edge or a clicked source, a separate level-plane option, rainfall playback, estimated building and population exposure, route and refuge screening, landslide runout, and relay line of sight. Mission analysis requires an aligned DTM and local projected metre CRS. With a metric reference DSM, cut/fill volumes compare the estimated and reference surfaces. |
 | Validate tab | Metric cards, comparison table including the DEM baseline, per-landscape and reference-height-band tables, edge-gradient score, calibration details |
-| Export | DSM GeoTIFF, textured GLB, textured OBJ ZIP, and a PNG screenshot stamped with scene/model/layer/display-Z provenance |
+| Export | DSM GeoTIFF, textured GLB, textured OBJ ZIP, inferred-roof CityJSON, and a PNG screenshot stamped with scene/model/layer/display-Z provenance |
 | Keyboard | O/F/T/D/V/R/H, 1–4 for surfaces, C for contours |
 
 ## Deployment
@@ -206,5 +215,6 @@ On those two Quesenbank crops, the fine-tuned model with the nonnegative DEM-fus
 - The scene prior for *k* is a fallback and yields approximate metric heights. Sparse GCPs yield provisional calibration even if their in-sample residual is small.
 - Relative viewer geometry uses a display-only vertical scale to make the flythrough legible. The rDSM GeoTIFF and reported probe values remain unitless; no reference DSM is used to shape relative viewer geometry.
 - Mesh exports are decimated to at most 512 samples along their longest side. Relative exports are explicitly unitless; neither mesh export replaces the full-resolution DSM GeoTIFF.
-- Flood estimates use a static elevation plane over the DSM; they do not simulate drainage or water connectivity. Cut/fill compares DSM grids and is a screening estimate, not a surveyed earthwork quantity.
+- Building roof pitch and the 3D local frame assume approximately square ground pixels. Strongly skewed or unequal-axis GeoTIFF pixels can distort this display geometry; the mission API rejects scenes whose ground-distance scale is unsuitable.
+- Flooding is a connected static bathtub calculation over the estimated bare-ground DTM, or an optional all-cells level plane. Rainfall playback assumes 60% runoff over the scene footprint; neither mode simulates drainage, levees, upstream inflow or flood duration. Evacuation, shelter, population, runout and relay outputs are planning screens, not safety certification. Cut/fill is not a surveyed earthwork quantity.
 - If the model weights cannot be loaded, the pipeline falls back to a crude heuristic so the rest of the app still runs. The viewer flags this, and `--no-fallback` disables it.

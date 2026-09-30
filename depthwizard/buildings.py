@@ -14,6 +14,9 @@ import numpy as np
 from rasterio.features import shapes
 from scipy import ndimage
 
+from .edge_refine import refine_ndsm_edges
+from .roof_fit import fit_roof_shape
+
 
 def rdp(points: list[tuple[float, float]], epsilon: float = 1.2) -> list[tuple[float, float]]:
     """Ramer-Douglas-Peucker polygon simplification for clean straight LoD1 walls."""
@@ -50,9 +53,18 @@ def extract_buildings(
     rgb: np.ndarray | None = None,
     uncertainty_m: np.ndarray | None = None,
     return_labels: bool = False,
+    edge_refine_for_footprints: bool = False,
+    roof_fitting: bool | None = None,
 ) -> dict[str, Any]:
-    """Extract LoD1 building footprints, heights, storeys and polygon coordinates."""
+    """Extract LoD1 buildings and optional LoD1.5 roof-shape hypotheses.
+
+    RGB-guided refinement, when requested, affects only footprint detection.
+    All reported heights, validation inputs, and exported DSM pixels continue
+    to come from the unrefined surface.  Roof fitting defaults to metric scenes
+    with a supplied DTM; it only adds visual geometry metadata.
+    """
     h, w = dsm.shape
+    supplied_dtm = dtm is not None
     if dtm is None:
         # Approximate bare-earth terrain via morphological opening
         filter_size = max(3, int(round(60.0 / max(gsd, 0.1))))
@@ -60,10 +72,15 @@ def extract_buildings(
         dtm = ndimage.gaussian_filter(ground, max(1.0, 15.0 / max(gsd, 0.1)))
 
     ndsm = np.maximum(dsm - dtm, 0.0)
+    if roof_fitting is None:
+        roof_fitting = supplied_dtm and rgb is not None
+    footprint_ndsm = ndsm
+    if edge_refine_for_footprints and rgb is not None and rgb.shape[:2] == ndsm.shape:
+        footprint_ndsm = refine_ndsm_edges(ndsm, rgb)
 
     # Threshold for candidate structures; exclude sunlit vegetation (excess-green),
     # which otherwise turns tree canopy into "buildings".
-    mask = ndsm >= min_height_m
+    mask = footprint_ndsm >= min_height_m
     if rgb is not None and rgb.shape[:2] == ndsm.shape:
         f = rgb.astype(np.float32)
         exg = (2 * f[..., 1] - f[..., 0] - f[..., 2]) / (f.sum(-1) + 1e-6)
@@ -85,6 +102,7 @@ def extract_buildings(
 
     # Compute component sizes
     counts = np.bincount(labeled.ravel())
+    component_slices = ndimage.find_objects(labeled)
 
     buildings = []
     # Extract polygon contours via rasterio.features.shapes
@@ -104,13 +122,16 @@ def extract_buildings(
         if len(simplified) < 4:
             simplified = exterior
 
-        comp_mask = labeled == val
+        sl = component_slices[val - 1] if val <= len(component_slices) else None
+        if sl is None:
+            continue
+        comp_mask = labeled[sl] == val
         if not np.any(comp_mask):
             continue
 
-        dsm_vals = dsm[comp_mask]
-        dtm_vals = dtm[comp_mask]
-        ndsm_vals = ndsm[comp_mask]
+        dsm_vals = dsm[sl][comp_mask]
+        dtm_vals = dtm[sl][comp_mask]
+        ndsm_vals = ndsm[sl][comp_mask]
 
         # robust LoD1 roof: 70th percentile of height above ground inside the
         # footprint (insensitive to parapets, mixed edge pixels and sloping terrain)
@@ -148,15 +169,15 @@ def extract_buildings(
         # (exp(-sigma/2 m): 1.0 = all passes agree, 0.61 = 2 m disagreement);
         # otherwise from roof flatness. Reported with its basis, never invented.
         if uncertainty_m is not None:
-            sigma = float(np.mean(uncertainty_m[comp_mask]))
+            sigma = float(np.mean(uncertainty_m[sl][comp_mask]))
             conf, conf_basis = float(np.exp(-sigma / 2.0)), f"ensemble spread {sigma:.2f} m"
         else:
             var = float(np.std(ndsm_vals))
             conf, conf_basis = float(np.exp(-var / max(height_agl, 1.0))), "roof-height spread"
 
         b_id = len(buildings) + 1
-        kept[comp_mask] = b_id
-        buildings.append({
+        kept[sl][comp_mask] = b_id
+        record = {
             "id": b_id,
             "roof_elevation_m": round(roof_elevation_m, 2),
             "ground_elevation_m": round(ground_h, 2),
@@ -170,7 +191,17 @@ def extract_buildings(
             "center": [round(world_center_x, 2), round(world_center_z, 2)],
             "polygon_world": poly_world,
             "polygon_uv": poly_uv,
-        })
+        }
+        if roof_fitting:
+            record["roof_fit"] = fit_roof_shape(
+                ndsm[sl], comp_mask, image_shape=(h, w),
+                row_offset=sl[0].start, col_offset=sl[1].start,
+                gsd=gsd, world_w=world_w, world_h=world_h,
+                height_m=height_agl,
+                uncertainty_crop=uncertainty_m[sl] if uncertainty_m is not None else None,
+                footprint_polygon_world=poly_world,
+            )
+        buildings.append(record)
 
         if len(buildings) >= max_buildings:
             break
