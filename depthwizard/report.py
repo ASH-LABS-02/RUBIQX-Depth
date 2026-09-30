@@ -387,6 +387,10 @@ def generate_html_report(scene_dir: Path) -> str:
 </style>
 </head>
 <body>
+<div class="no-print" style="position:sticky;top:0;display:flex;justify-content:flex-end;padding:8px 0;">
+  <button onclick="window.print()" style="font:600 13px system-ui;padding:8px 14px;border-radius:6px;border:1px solid #1d4d6b;background:#1d6fa5;color:#fff;cursor:pointer">Save as PDF / Print</button>
+</div>
+<script>if (location.search.includes('print=1')) addEventListener('load', () => setTimeout(() => window.print(), 400));</script>
 
 <div class="header">
   <div>

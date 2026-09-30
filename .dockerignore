@@ -1,0 +1,7 @@
+dataset/
+out/
+.git/
+models/cache/
+**/__pycache__/
+data/jobs/*/model_comparison/
+*.tgz

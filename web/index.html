@@ -50,6 +50,7 @@
         <button type="button" data-export="ndsm" role="menuitem">Above-ground nDSM <small>Building and tree heights</small></button>
         <button type="button" data-export="uncertainty" role="menuitem">Uncertainty map <small>Per-pixel 1σ from the rotation ensemble</small></button>
         <button type="button" data-export="cityjson" role="menuitem">Buildings CityJSON <small>LoD1 with inferred pitched roofs where supported</small></button>
+        <button type="button" data-export="heightmap" role="menuitem">Heightmap PNG <small>16-bit greyscale for Blender / game engines</small></button>
         <button type="button" data-export="ply" role="menuitem">Point cloud PLY <small>Coloured surface points</small></button>
         <button type="button" data-export="evidence" role="menuitem">Evidence Passport JSON <small>SHA-256 provenance bundle</small></button>
         <button type="button" data-export="shot" role="menuitem">Viewer screenshot <small>Current camera and layer</small></button>
@@ -66,6 +67,8 @@
   </aside>
 
   <main id="stage" aria-label="3D terrain viewer">
+    <div id="hover-hud" class="hover-hud hidden" aria-live="off"></div>
+    <div id="toast-host" class="toast-host" aria-live="polite"></div>
     <canvas id="gl"></canvas>
     <div id="toolbar">
       <div class="seg" id="view-mode" aria-label="View geometry mode">
@@ -85,6 +88,8 @@
       <button id="compare-toggle" title="Compare optical and height layers (V)" aria-pressed="false">2D Compare</button>
       <button id="map-toggle" title="Show a synchronized OpenStreetMap basemap beside the 3D scene" aria-pressed="false">2D Map</button>
       <button id="vr-toggle" title="Enter immersive VR on a supported headset and secure browser" disabled>VR</button>
+      <button id="gallery-btn" title="Demo scene gallery">Gallery</button>
+      <button id="present-btn" title="Presentation mode: full-screen scene, big labels, automatic tour (P)">Present</button>
       <button id="fullscreen" class="icon-btn" title="Fullscreen viewer" aria-label="Fullscreen viewer">⛶</button>
     </div>
     <div id="scene-badge" class="scene-badge hidden"></div>
@@ -139,6 +144,14 @@
       <div class="comparison-foot"><span id="compare-readout">Move across either image to inspect aligned pixels</span><span id="compare-range"></span></div>
     </section>
     <div id="fly-hint" class="hidden">Click to look around · WASD move · Q/E down/up · Shift fast · Esc release</div>
+    <section id="gallery" class="gallery hidden" aria-label="Demo scenes">
+      <div class="gallery-head"><div><strong>RUBIQX-Depth · single image → 3D surface model</strong><span>Pick a scene to explore, or import your own image.</span></div>
+        <button id="gallery-close" class="icon-btn" aria-label="Close gallery">×</button></div>
+      <div id="gallery-grid" class="gallery-grid"></div>
+      <div class="gallery-foot"><button id="gallery-import" class="primary">+ Import your own image</button>
+        <span>Keys: 1–6 layers · T tour · P present · H help</span></div>
+    </section>
+    <div id="pres-title" class="pres-title hidden"></div>
     <div id="busy" class="hidden"><div class="spinner"></div><span id="busy-text">Loading scene…</span></div>
   </main>
 
@@ -160,18 +173,21 @@
         <h3>Surface layer</h3>
         <div class="seg surface-modes" id="shade-mode">
           <button data-mode="optical" class="active">Optical</button>
+          <button data-mode="topo" title="Hypsometric tint + index contours + hillshade · 5">Topo</button>
+          <button data-mode="topogray" title="Topo in greyscale">Topo B/W</button>
           <button data-mode="height">Height</button>
           <button data-mode="slope">Slope</button>
+          <button data-mode="hazard" id="btn-hazard" title="Slope hazard: 0–30° safe, 30–45° warning, >45° high risk · 6">Hazard</button>
           <button data-mode="confidence" id="btn-conf">Confidence</button>
           <button data-mode="ndsm" id="btn-ndsm">nDSM</button>
           <button data-mode="curvature">Curvature</button>
-          <button data-mode="error" id="btn-error" disabled title="Signed DSM error against an uploaded reference: blue is low, red is high">Truth mode</button>
+          <button data-mode="error" id="btn-error" disabled title="Signed DSM error against an uploaded reference: blue is low, red is high">Truth</button>
           <button data-mode="landslide" id="btn-landslide" disabled title="Landslide susceptibility screening index">Landslide</button>
           <button data-mode="change" id="btn-change" disabled title="Height change against a pre-event scene">Change</button>
         </div>
         <div id="legend" class="legend"></div>
         <label class="row">Vertical exaggeration <output id="exag-v">1.0×</output>
-          <input type="range" id="exag" min="0.5" max="10" step="0.1" value="1"></label>
+          <input type="range" id="exag" min="0.5" max="25" step="0.1" value="1"></label>
         <label class="row">Mesh smoothing <output id="smooth-v">0.0 m</output>
           <input type="range" id="smooth" min="0" max="3" step="0.25" value="0"></label>
         <p class="note">Display only · the DSM export and validation use original heights.</p>
@@ -181,6 +197,20 @@
           <input type="range" id="time-of-day" min="5" max="19" step="0.1" value="12"></label>
         <label class="row check"><input type="checkbox" id="contours"> Contours every <input type="number" id="contour-int" value="5" min="0.01" step="0.5" class="mini"> <span id="contour-unit">m</span></label>
         <label class="row check"><input type="checkbox" id="wire"> Wireframe</label>
+        <label class="row check"><input type="checkbox" id="despike" checked> Remove height spikes <span class="note">(display only)</span></label>
+        <label class="row">Exposure <output id="exposure-v">1.00</output>
+          <input type="range" id="exposure" min="0.5" max="1.8" step="0.05" value="1"></label>
+        <label class="row">Render quality
+          <select id="quality" class="mini-select">
+            <option value="performance">Performance</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="cinematic">Cinematic</option>
+          </select></label>
+        <label class="row">Mesh detail
+          <select id="mesh-detail" class="mini-select">
+            <option value="512" selected>Standard (512)</option>
+            <option value="1024">High (1024)</option>
+          </select></label>
       </div>
 
       <div class="group">
@@ -227,6 +257,18 @@
              <button id="anchor-reset-btn" style="flex: 1;">Reset</button>
            </div>
         </div>
+      </div>
+
+      <div class="group" id="gcp-group">
+        <div class="group-heading"><h3>Ground-control pins</h3><span class="experimental">CALIBRATE</span></div>
+        <p class="note" id="gcp-status">Pin 3+ points of known height on the terrain (e.g. a surveyed benchmark, river level, rooftop) to fit metres. Works on relative scenes too.</p>
+        <div class="btns">
+          <button id="gcp-pin" type="button" aria-pressed="false">Pin points</button>
+          <button id="gcp-apply" type="button" class="primary" disabled>Apply fit</button>
+          <button id="gcp-reset" type="button">Undo</button>
+        </div>
+        <table class="data-table" id="gcp-table"><thead><tr><th>#</th><th>Surface</th><th>Known (m)</th><th>Resid.</th><th></th></tr></thead><tbody></tbody></table>
+        <div id="gcp-stats" class="kv muted"></div>
       </div>
 
       <div class="group" id="automatic-anchor-group">
@@ -320,7 +362,7 @@
       <div class="modal-heading"><div><h2 id="upload-title">Create a DSM</h2><p>Start with a single-view optical satellite image.</p></div><button id="upload-close" class="icon-btn" aria-label="Close import">×</button></div>
       <form id="upload-form">
         <label class="drop" id="drop">
-          <input type="file" name="image" accept=".png,.jpg,.jpeg,.tif,.tiff" required>
+          <input type="file" name="image" accept=".png,.jpg,.jpeg,.tif,.tiff" required title="An RGB satellite image – or a single-band elevation GeoTIFF (DEM), which is shown directly without estimation">
           <span id="drop-text"><b>Drop satellite image</b><br>PNG · JPG · TIFF · GeoTIFF</span>
         </label>
         <details open>

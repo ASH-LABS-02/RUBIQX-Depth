@@ -1,21 +1,70 @@
-# DepthWizard
+# RUBIQX-Depth (DepthWizard)
 
-Single-view height estimation and 3D flythrough (SIH 2026, PS 26175, ISRO/SAC).
+**One ordinary satellite image → a calibrated 3D surface model and a disaster-ready digital twin.**
+Smart India Hackathon 2026 · Problem Statement 26175 (ISRO / SAC) · Team RUBIQX
 
-This tool takes one optical RGB satellite image and turns it into two things:
+![3D city from a single image, presentation mode](docs/images/present.jpg)
 
-- A **Digital Surface Model (DSM)** saved as a GeoTIFF.
-  - For a PNG/JPG, it is *relative* (heights on an arbitrary scale).
-  - For a georeferenced GeoTIFF, it is *absolute*, in metres.
-- An interactive **3D terrain** you can orbit, fly through and measure in the browser.
+| Blind accuracy (6 scenes vs LiDAR/survey) | Model fine-tuned on aerial LiDAR | Runs offline |
+|---|---|---|
+| **5.04 m RMSE** vs 7.94 m for the input DEM alone | correlation **0.41 → 0.79** on 30 held-out tiles | one laptop, no cloud, open formats |
 
+## Quick start
+
+```bash
+# Windows (Python 3.12)
+py -3.12 -m pip install -r requirements.txt
+py -3.12 run.py                     # opens http://127.0.0.1:8000
+
+# Docker (any OS) – one command
+docker compose up --build           # then open http://localhost:8000
 ```
-RGB image ──► Depth Anything V2 ──► relative height ──► scale calibration ──► DSM GeoTIFF
- (PNG/JPG/TIFF)   (pre-trained or      (tiled, globally      (DEM fusion / GCPs /        │
-                   GAMUS fine-tuned)     aligned)              scene prior)               ▼
-                                                                    Three.js viewer: orbit · fly · tour,
-                                                                    probe, profiles, slope, error vs reference
-```
+
+The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
+`models/da2-gamus-full` (or `D:/DepthWizard/checkpoints/da2-gamus-full`) and it is used automatically.
+
+## Gallery
+
+| Textured 3D city (LoD1 buildings on bare ground) | Topo: hypsometric tint + index contours + hillshade |
+|---|---|
+| ![city](docs/images/city.jpg) | ![topo](docs/images/topo.jpg) |
+| **Slope hazard** (true slope, 0–30° / 30–45° / >45°) | **Connected flood** – water, depth colour, buildings affected |
+| ![hazard](docs/images/hazard.jpg) | ![flood](docs/images/flood.jpg) |
+| **DEM vs our DSM swipe** – what the AI adds to a 30 m DEM | **Demo gallery** – one click to an impressive view |
+| ![swipe](docs/images/swipe.jpg) | ![gallery](docs/images/gallery.jpg) |
+
+## How it works
+
+![approach](docs/images/approach.jpg)
+
+## PS 26175 alignment
+
+| Requirement | How RUBIQX-Depth meets it |
+|---|---|
+| Non-georeferenced RGB → relative DSM | Depth Anything V2 fine-tuned on GAMUS LiDAR; rotation ensemble; `rdsm.tif` clearly labelled relative |
+| Georeferenced RGB → absolute DSM (m) | Evidence-ranked calibration: GCPs → known building heights → surface DEM (auto surface/bare-earth detection) → learned scale → scene prior; every output states which it used |
+| Scale calibration | Interactive ground-control pins with live R², RMSE and leave-one-out error (turns a relative scene metric); height anchors; CSV GCPs |
+| 3D visualisation | Three.js digital twin: textured terrain + LoD1/fitted roofs, orbit/fly/tour, Topo and slope-hazard modes, live hover readout, DEM-vs-DSM swipe, cinematic quality (ambient occlusion, sky), presentation mode, one-click video |
+| Validation | Blind LiDAR benchmark against a DEM-only baseline, per-building checks, uncertainty coverage test ([benchmarks](docs/BENCHMARKS.md)) |
+| Disaster management | Connected flood with buildings and people affected, landslide index, pre/post change detection, evacuation routes, refuges, runout, relay coverage |
+| GIS interoperability | GeoTIFF DSM/DTM/nDSM/σ, CityJSON, GLB, OBJ, PLY, 8/16-bit heightmap PNG, HTML/PDF report, evidence JSON, one-click export-all ZIP |
+
+## How we differ from a typical single-image pipeline
+
+| | Typical approach | RUBIQX-Depth |
+|---|---|---|
+| Height model | Off-the-shelf depth model trained on street-level photos | Fine-tuned on aerial LiDAR above-ground height |
+| Metres | Assumed, hand-scaled, or only after manual pins | Automatic calibration from the best available evidence, always labelled |
+| Existing DEM input | Displayed as if it were an estimate | Shown as *Input DEM (not estimated)*; used only for calibration of image estimates |
+| Uncertainty | None | Per-pixel map and per-building confidence (ranks reliability; see benchmarks §5) |
+| Proof | Screenshots | Blind benchmark vs LiDAR and the DEM-only baseline |
+
+## New in v3 (viewer and workflow)
+
+- **Rendering:** ACES tone mapping, tightly fitted soft shadows, crisp hillshade from a full-resolution normal map, 512/1024 mesh detail, display-only spike removal, Cinematic quality (ambient occlusion, SMAA, physical sky, hazy ground), animated depth-tinted flood water, building walls with floors and windows.
+- **Layers:** Topo (hypsometric tint + index contours + hillshade, colour or B/W) and 3-class slope hazard with area shares; vertical exaggeration up to 25×.
+- **Workflow:** live hover readout (lat/lon, surface, ground, height above ground, slope, confidence, building), double-click fly-to, zoom to cursor, click-to-pin ground-control points with R²/RMSE/leave-one-out, demo gallery, presentation mode (P), shareable `#scene` links, toasts instead of pop-ups, render-on-demand to keep laptops cool.
+- **Inputs/outputs:** single-band DEM GeoTIFFs are visualised directly and labelled *Input DEM (not estimated)*; 8/16-bit heightmap PNG; export-all ZIP; report "Save as PDF" button; Docker compose.
 
 ## Highlights (v2.2)
 
@@ -37,7 +86,7 @@ RGB image ──► Depth Anything V2 ──► relative height ──► scale 
 
 The local mission endpoint is `POST /api/scenes/{id}/mission` with actions `route`, `shelters`, `population`, `runout`, and `relay`. It requires a local projected metre CRS with less than 2% ground-scale distortion and aligned full-resolution DSM/DTM; Web Mercator is rejected for ground distances. `/api/scenes/{id}/auto-anchors` refreshes available candidate evidence for an existing scene; `/api/scenes/{id}/model-comparison` prepares or reports the off-the-shelf comparison.
 
-## Quick start
+## Other ways to start
 
 ```bash
 # Linux / macOS
@@ -88,7 +137,7 @@ Each run writes these files to the output folder:
 | `preview.png` | Colour-relief hillshade image |
 | `viewer/` | Assets for the 3D viewer |
 
-## How it works
+## Pipeline details
 
 ### 1. Elevation extraction (`depthwizard/depth.py`)
 

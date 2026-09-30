@@ -219,5 +219,16 @@
   "has_dtm": true,
   "has_confidence": true,
   "buildings_count": 14,
-  "vertical_datum": "EGM2008"
+  "vertical_datum": "EGM2008",
+  "layers": {
+    "change": true
+  },
+  "change_against": "dc-capitol-hill",
+  "change_stats": {
+    "mean_change_m": 653.6485595703125,
+    "volume_loss_m3": 0.0,
+    "volume_gain_m3": 9435927.0,
+    "area_lowered_ha": 0.0,
+    "area_raised_ha": 1.443578027861333
+  }
 }

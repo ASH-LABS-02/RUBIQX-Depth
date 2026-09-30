@@ -3,7 +3,13 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/PointerLockControls.js';
-import { floodFill, boundarySeeds, waterMesh, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-merge';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { Sky } from 'three/addons/objects/Sky.js';
+import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-v3';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
 const FLOOR_AREA_PER_PERSON_M2 = 30;
 
@@ -21,7 +27,14 @@ const RAMPS = {
   landslide: [[0, [0.18, 0.55, 0.34]], [0.25, [0.62, 0.78, 0.32]], [0.5, [0.96, 0.78, 0.25]], [0.7, [0.93, 0.42, 0.18]], [1, [0.65, 0.08, 0.15]]],
   change: [[0, [0.70, 0.10, 0.14]], [0.5, [0.94, 0.94, 0.92]], [1, [0.12, 0.42, 0.80]]],
   viewshed: [[0, [0.25, 0.25, 0.3]], [1, [0.98, 0.86, 0.3]]],
+  // hypsometric tint: valley green -> olive -> tan -> brown -> rock grey -> snow
+  topo: [[0, [0.106, 0.220, 0.169]], [0.16, [0.235, 0.431, 0.259]], [0.33, [0.557, 0.627, 0.353]],
+    [0.5, [0.847, 0.776, 0.537]], [0.67, [0.690, 0.537, 0.380]], [0.84, [0.600, 0.588, 0.576]], [1, [0.973, 0.976, 0.980]]],
 };
+const HAZARD = [{ max: 30, color: [0.133, 0.773, 0.369], label: 'Safe 0–30°' },
+  { max: 45, color: [0.918, 0.702, 0.031], label: 'Warning 30–45°' },
+  { max: 91, color: [0.937, 0.267, 0.267], label: 'High risk >45°' }];
+const niceStep = (x) => { const p = 10 ** Math.floor(Math.log10(Math.max(x, 1e-9))), d = x / p; return (d < 1.5 ? 1 : d < 3.5 ? 2 : d < 7.5 ? 5 : 10) * p; };
 function ramp(name, t) {
   const r = RAMPS[name] || RAMPS.height; t = Math.min(1, Math.max(0, t));
   for (let i = 1; i < r.length; i++) {
@@ -45,21 +58,71 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;       // no clipped roofs, richer shadows
+renderer.toneMappingExposure = 1.0;
+const SUN_I = 2.6, HEMI_I = 0.95;                          // balanced for ACES tone mapping
 const scene = new THREE.Scene();
 const SKY = new THREE.Color(0x0d1117);
-scene.background = SKY;
-scene.fog = new THREE.Fog(SKY, 1e6, 2e6);
+scene.background = SKY.clone();
+scene.fog = new THREE.Fog(SKY.clone(), 1e6, 2e6);
 const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 1e5);
-const hemi = new THREE.HemisphereLight(0xdfe9ff, 0x3a3226, 1.6);
-const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+const hemi = new THREE.HemisphereLight(0xdfe9ff, 0x3a3226, HEMI_I);
+const sun = new THREE.DirectionalLight(0xfff6ea, SUN_I);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.02;
 scene.add(hemi, sun, sun.target);
 
+// ---- render on demand: full frame rate while something moves, a trickle when idle
+let lastActivity = performance.now();
+function requestRender() { lastActivity = performance.now(); }
+['pointerdown', 'pointermove', 'wheel', 'keydown', 'input', 'change', 'click'].forEach((ev) =>
+  addEventListener(ev, requestRender, { passive: true, capture: true }));
+
+// ---- Cinematic quality: ambient occlusion + SMAA through a post-processing chain,
+// physical sky and a ground plane that fades into haze. Built lazily on first use.
+const post = { composer: null, gtao: null, smaa: null, sky: null, ground: null };
+function ensurePost() {
+  if (post.composer) return;
+  const w = canvas.clientWidth || 800, h = canvas.clientHeight || 600;
+  post.composer = new EffectComposer(renderer);
+  post.composer.addPass(new RenderPass(scene, camera));
+  post.gtao = new GTAOPass(scene, camera, w, h);
+  post.gtao.output = GTAOPass.OUTPUT.Default;
+  post.composer.addPass(post.gtao);
+  post.composer.addPass(new OutputPass());
+  post.smaa = new SMAAPass(w * renderer.getPixelRatio(), h * renderer.getPixelRatio());
+  post.composer.addPass(post.smaa);
+  post.sky = new Sky(); post.sky.visible = false; scene.add(post.sky);
+  post.ground = new THREE.Mesh(new THREE.CircleGeometry(1, 64), new THREE.MeshStandardMaterial({ color: 0x3b4a3f, roughness: 1 }));
+  post.ground.rotation.x = -Math.PI / 2; post.ground.receiveShadow = true; post.ground.visible = false; scene.add(post.ground);
+}
+function updateCinematicScene() {
+  const on = S.quality === 'cinematic' && !!S.mesh;
+  if (on) ensurePost();
+  if (!post.sky) return;
+  post.sky.visible = on; post.ground.visible = on;
+  if (on) {
+    post.sky.scale.setScalar(S.extent * 20);
+    const u = post.sky.material.uniforms;
+    u.turbidity.value = 6; u.rayleigh.value = 1.6; u.mieCoefficient.value = 0.004; u.mieDirectionalG.value = 0.82;
+    u.sunPosition.value.copy(sun.position).normalize();
+    post.ground.scale.setScalar(S.extent * 8);
+    post.ground.position.y = -Math.max(S.extent * 0.02, (S.hmax - S.hmin) * S.exag * 0.15) - 0.05;
+    scene.fog.color.set(0xa9bccb); scene.background = null;
+    post.gtao.updateGtaoMaterial({ radius: Math.max(1, S.extent * 0.008), distanceExponent: 1.5, thickness: Math.max(1, S.extent * 0.004), scale: 1 });
+    post.gtao.blendIntensity = 1.0;
+  } else {
+    scene.background = SKY.clone(); scene.fog.color.copy(SKY);
+  }
+  requestRender();
+}
+
 const orbit = new OrbitControls(camera, canvas);
 orbit.enableDamping = true; orbit.dampingFactor = 0.08;
+orbit.zoomToCursor = true;                                  // zoom towards what you point at
+orbit.addEventListener('change', requestRender);
 orbit.maxPolarAngle = Math.PI * 0.495;
 orbit.screenSpacePanning = false;
 const fly = new PointerLockControls(camera, canvas);
@@ -103,6 +166,18 @@ const terrainY = (x, z) => worldY(sampleGrid(S.renderH || S.h, x, z));
 const verticalDisplayFactor = () => S.meta?.units === 'relative' ? Math.max(+S.meta.display_height_m || 1, 1e-9) : 1;
 const reportedHeight = (viewHeight) => viewHeight / verticalDisplayFactor();
 
+function upsampleGrid(a, w, h, nw, nh) {      // bilinear resample of a viewer layer
+  const out = new Float32Array(nw * nh);
+  for (let r = 0; r < nh; r++) {
+    const y = r * (h - 1) / Math.max(nh - 1, 1), y0 = Math.min(h - 2, Math.floor(y)), fy = y - y0;
+    for (let c = 0; c < nw; c++) {
+      const x = c * (w - 1) / Math.max(nw - 1, 1), x0 = Math.min(w - 2, Math.floor(x)), fx = x - x0, i = y0 * w + x0;
+      out[r * nw + c] = (a[i] * (1 - fx) + a[i + 1] * fx) * (1 - fy) + (a[i + w] * (1 - fx) + a[i + w + 1] * fx) * fy;
+    }
+  }
+  return out;
+}
+
 function smoothGrid(source, sigmaPixels) {
   if (sigmaPixels < 0.5) return source;
   const radius = Math.ceil(sigmaPixels * 3), kernel = new Float32Array(radius * 2 + 1);
@@ -121,6 +196,28 @@ function smoothGrid(source, sigmaPixels) {
     output[r * S.gw + c] = sum;
   }
   return output;
+}
+
+// Display-only removal of isolated needles (1-2 cell spikes and pits): a cell is replaced by
+// its 3x3 median when it differs by more than 6 robust sigmas. Exports are never touched.
+function despikeGrid(src) {
+  const w = S.gw, h = S.gh, out = Float32Array.from(src), med = new Float32Array(src.length), win = new Float32Array(9);
+  for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
+    let k = 0;
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      const rr = Math.min(h - 1, Math.max(0, r + dr)), cc = Math.min(w - 1, Math.max(0, c + dc));
+      win[k++] = src[rr * w + cc];
+    }
+    win.sort(); med[r * w + c] = win[4];
+  }
+  const step = Math.max(1, Math.floor(src.length / 20000)), res = [];
+  for (let i = 0; i < src.length; i += step) res.push(Math.abs(src[i] - med[i]));
+  res.sort((a, b) => a - b);
+  const mad = Math.max(res[Math.floor(res.length / 2)] * 1.4826, (S.hmax - S.hmin) * 0.002, 1e-6);
+  let n = 0;
+  for (let i = 0; i < src.length; i++) if (Math.abs(src[i] - med[i]) > 6 * mad) { out[i] = med[i]; n++; }
+  S.despiked = n;
+  return out;
 }
 
 function updateRenderHeight(rebuild = true) {
@@ -147,6 +244,7 @@ function updateRenderHeight(rebuild = true) {
       }
     }
   }
+  if ($('#despike')?.checked !== false) src = despikeGrid(src);
   S.renderH = smoothGrid(src, S.smoothingM / Math.max(S.W / (S.gw - 1), 1e-6));
   if (rebuild && S.mesh) applyHeights();
 }
@@ -175,6 +273,7 @@ function buildTerrain() {
   geo.rotateX(-Math.PI / 2);
   geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(S.gw * S.gh * 3).fill(1), 3));
   const mat = new THREE.MeshStandardMaterial({ map: S.tex, vertexColors: true, roughness: 1, metalness: 0, side: THREE.DoubleSide });
+  if (S.normalTex) { mat.normalMap = S.normalTex; const k = Math.min(4, S.exag); mat.normalScale.set(k, k); }
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uniforms);
     sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying float vElev;')
@@ -233,14 +332,46 @@ function applyHeights() {
   if (S.marker) placeMarker(S.marker.userData.x, S.marker.userData.z);
   if (S.profilePts.length === 2) drawProfileLine();
   if (S.water) S.water.position.y = worldY(+$('#flood-level').value);
+  if (S.gcpPins?.length) drawGcpPins();
 }
 
 function applyShading() {
   const col = S.mesh.geometry.attributes.color, n = S.gw * S.gh;
   const mat = S.mesh.material;
   let legend = null;
+  const topo = S.mode === 'topo' || S.mode === 'topogray';
+  // Topo turns on index contours at an automatic interval; other modes restore the user's choice.
+  if (topo) {
+    const relief = (pct(S.renderH || S.h, 0.98) - pct(S.renderH || S.h, 0.02)) / verticalDisplayFactor();
+    const step = niceStep(Math.max(relief, 1e-6) / 14);
+    uniforms.uContourOn.value = 1; uniforms.uContourInt.value = step * verticalDisplayFactor();
+    S.topoStep = step;
+  } else {
+    uniforms.uContourOn.value = $('#contours').checked ? 1 : 0;
+    uniforms.uContourInt.value = Math.max(0.001, (+$('#contour-int').value || 0.1) * verticalDisplayFactor());
+  }
   if (S.mode === 'optical') {
     col.array.fill(1); mat.map = S.tex;
+  } else if (topo) {
+    mat.map = null;
+    const src = S.renderH || S.h, lo = pct(src, 0.02), hi = pct(src, 0.98);
+    for (let i = 0; i < n; i++) {
+      let c = ramp('topo', (src[i] - lo) / (hi - lo || 1));
+      if (S.mode === 'topogray') { const g = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; c = [g, g, g]; }
+      col.array[i * 3] = c[0]; col.array[i * 3 + 1] = c[1]; col.array[i * 3 + 2] = c[2];
+    }
+    legend = { name: 'topo', lo: reportedHeight(lo), hi: reportedHeight(hi),
+      unit: `${S.units} · contours every ${fmt(S.topoStep, S.topoStep < 1 ? 2 : 0)} ${S.units}, bold every 5th` };
+  } else if (S.mode === 'hazard') {
+    mat.map = null;
+    const counts = [0, 0, 0];
+    for (let r = 0; r < S.gh; r++) for (let c = 0; c < S.gw; c++) {
+      const i = r * S.gw + c, sl = slopeAt(r, c).slope;          // true slope: exaggeration not included
+      const k = sl < 30 ? 0 : sl < 45 ? 1 : 2; counts[k]++;
+      const col3 = HAZARD[k].color;
+      col.array[i * 3] = col3[0]; col.array[i * 3 + 1] = col3[1]; col.array[i * 3 + 2] = col3[2];
+    }
+    S.hazardShare = counts.map((v) => v / n);
   } else {
     mat.map = null;
     let vals = new Float32Array(n), lo, hi, name = S.mode;
@@ -284,6 +415,12 @@ function applyShading() {
   }
   col.needsUpdate = true; mat.needsUpdate = true;
   const L = $('#legend');
+  if (S.mode === 'hazard' && S.hazardShare) {
+    L.innerHTML = `<div class="hazard-legend">${HAZARD.map((h, k) => `<span><i style="background:rgb(${h.color.map((v) => Math.round(v * 255)).join(',')})"></i>${h.label}<b>${(S.hazardShare[k] * 100).toFixed(1)}%</b></span>`).join('')}</div>
+      <p class="note">True surface slope (vertical exaggeration removed) · screening classes, not a landslide forecast.</p>`;
+    requestRender();
+    return;
+  }
   L.innerHTML = legend ? `<div class="bar" style="background:${cssRamp(legend.name)}"></div>
     <div class="ticks"><span>${fmt(legend.lo, 1)}</span><span>${legend.unit}</span><span>${fmt(legend.hi, 1)}</span></div>` : '';
 }
@@ -316,7 +453,9 @@ function updateAnalysisTools() {
     if (S.floodActive && !(S.floodSource === 'point' && S.floodSeed == null)) {
       if (S.floodSource === 'plane') { mask = new Uint8Array(g.length); for (let i = 0; i < g.length; i++) mask[i] = g[i] <= level ? 1 : 0; }
       else mask = floodFill(g, S.gw, S.gh, level, S.floodSource === 'point' ? [S.floodSeed] : boundarySeeds(g, S.gw, S.gh));
-      S.floodMesh = waterMesh(mask, S.gw, S.gh, S.W, S.H); S.floodMesh.position.y = worldY(level); scene.add(S.floodMesh);
+      const depthArr = new Float32Array(mask.length); let dmax = 0.1;
+      for (let i = 0; i < mask.length; i++) if (mask[i]) { depthArr[i] = level - g[i]; if (depthArr[i] > dmax) dmax = depthArr[i]; }
+      S.floodMesh = waterMesh(mask, S.gw, S.gh, S.W, S.H, depthArr, dmax); S.floodMesh.position.y = worldY(level); scene.add(S.floodMesh);
       for (let i = 0; i < mask.length; i++) if (mask[i]) { count++; const d = level - g[i]; depthSum += d; if (d > maxDepth) maxDepth = d; }
     }
     S.floodMask = mask;
@@ -502,9 +641,14 @@ function setSun(deg, elevDeg) {
   const cy = worldY((S.hmin + S.hmax) / 2) || 0;
   sun.position.set(Math.sin(a) * Math.cos(el) * R, cy + Math.sin(el) * R, -Math.cos(a) * Math.cos(el) * R);
   sun.target.position.set(0, cy, 0);
-  const sc = sun.shadow.camera, half = S.extent * 0.75;
-  sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half; sc.near = 0.1; sc.far = R * 3;
+  const sc = sun.shadow.camera, half = Math.hypot(S.W, S.H) * 0.5 * 1.02;   // tight fit around the scene
+  sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half; sc.near = R * 0.2; sc.far = R * 2.2;
   sc.updateProjectionMatrix();
+  const texel = (2 * half) / sun.shadow.mapSize.x;
+  sun.shadow.bias = -0.0002;
+  sun.shadow.normalBias = texel * 1.5;                   // removes acne without detaching shadows
+  if (post.sky?.visible) post.sky.material.uniforms.sunPosition.value.copy(sun.position).normalize();
+  requestRender();
 }
 
 // ------------------------------------------------------------------ loading scenes
@@ -515,37 +659,66 @@ async function loadScene(id) {
   busy(true, 'Loading terrain & 3D buildings…');
   try {
     const base = `jobs/${id}/viewer/`;
-    const meta = await (await fetch(base + 'meta.json?' + Date.now())).json();
+    let meta = await (await fetch(base + 'meta.json?' + Date.now())).json();
     const hBuf = await (await fetch(base + 'height.bin?' + Date.now())).arrayBuffer();
-    const ref = meta.has_reference && meta.units === 'metre'
+    let ref = meta.has_reference && meta.units === 'metre'
       ? new Float32Array(await (await fetch(base + 'ref.bin?' + Date.now())).arrayBuffer()) : null;
 
     let dtm = null;
     try {
-      const dtmRes = await fetch(base + 'dtm.bin?' + Date.now());
-      if (dtmRes.ok) dtm = new Float32Array(await dtmRes.arrayBuffer());
+      if (meta.has_dtm !== false) {
+        const dtmRes = await fetch(base + 'dtm.bin?' + Date.now());
+        if (dtmRes.ok) dtm = new Float32Array(await dtmRes.arrayBuffer());
+      }
     } catch {}
 
     let confidence = null;
     try {
-      const confRes = await fetch(base + 'confidence.bin?' + Date.now());
-      if (confRes.ok) confidence = new Float32Array(await confRes.arrayBuffer());
+      if (meta.has_confidence !== false) {
+        const confRes = await fetch(base + 'confidence.bin?' + Date.now());
+        if (confRes.ok) confidence = new Float32Array(await confRes.arrayBuffer());
+      }
     } catch {}
 
     let buildings = null;
     try {
-      const bRes = await fetch(base + 'buildings.json?' + Date.now());
-      if (bRes.ok) buildings = await bRes.json();
+      if (meta.buildings_count !== 0) {
+        const bRes = await fetch(base + 'buildings.json?' + Date.now());
+        if (bRes.ok) buildings = await bRes.json();
+      }
     } catch {}
 
     const layerBin = async (name) => { try { const r = await fetch(base + name + '?' + Date.now()); return r.ok ? new Float32Array(await r.arrayBuffer()) : null; } catch { return null; } };
-    const susc = meta.layers?.susc ? await layerBin('susc.bin') : null;
-    const change = meta.layers?.change ? await layerBin('change.bin') : null;
+    let susc = meta.layers?.susc ? await layerBin('susc.bin') : null;
+    let change = meta.layers?.change ? await layerBin('change.bin') : null;
     let demBase = null;
     if (meta.layers?.base) {
       try { const r = await fetch(base + 'base.bin'); if (r.ok) demBase = new Float32Array(await r.arrayBuffer()); } catch {}
     }
 
+    // High mesh detail: real 1024 heights from the full-resolution rasters; other layers upsampled
+    let hArr = new Float32Array(hBuf);
+    if ($('#mesh-detail').value === '1024' && Math.max(meta.src_w || 0, meta.src_h || 0) > meta.grid_w) {
+      try {
+        const r = await fetch(`api/scenes/${id}/grid/height.bin?size=1024`);
+        if (r.ok) {
+          const nw = +r.headers.get('X-Grid-W'), nh = +r.headers.get('X-Grid-H');
+          const up = (a) => a ? upsampleGrid(a, meta.grid_w, meta.grid_h, nw, nh) : a;
+          let dtmHi = null;
+          if (dtm) { const rd = await fetch(`api/scenes/${id}/grid/dtm.bin?size=1024`); dtmHi = rd.ok ? new Float32Array(await rd.arrayBuffer()) : up(dtm); }
+          hArr = new Float32Array(await r.arrayBuffer());
+          ref = up(ref); confidence = up(confidence); susc = up(susc); change = up(change); demBase = up(demBase); dtm = dtmHi;
+          meta = { ...meta, grid_w: nw, grid_h: nh };
+        }
+      } catch (err) { console.warn('high-detail mesh unavailable', err); }
+    }
+    let normalTex = null;
+    try {
+      normalTex = await new THREE.TextureLoader().loadAsync(`api/scenes/${id}/normal.png?` + Date.now());
+      normalTex.colorSpace = THREE.NoColorSpace; normalTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    } catch { normalTex = null; }
+    if (S.normalTex) S.normalTex.dispose();
+    S.normalTex = normalTex;
     const tex = await new THREE.TextureLoader().loadAsync(base + 'texture.jpg?' + Date.now());
     tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     if (S.tex) S.tex.dispose();
@@ -559,7 +732,7 @@ async function loadScene(id) {
     Object.assign(S, { demBase, modelBaseline: null, susc, change, viewshed: null, floodMask: null,
       floodSeed: null, floodSource: S.floodSource || 'edge', missionAction: null });
     Object.assign(S, { id, meta, gw: meta.grid_w, gh: meta.grid_h, W: meta.ground_w_m, H: meta.ground_h_m,
-      h: new Float32Array(hBuf), dtm, confidence, buildings, ref, tex, texImg: tex.image, units: meta.units === 'metre' ? 'm' : 'relative',
+      h: hArr, dtm, confidence, buildings, ref, tex, texImg: tex.image, units: meta.units === 'metre' ? 'm' : 'relative',
       viewGeometry: 'surface' });
     S.hmin = Math.min(...[pct(S.h, 0), ref ? pct(ref, 0) : Infinity]);
     S.hmax = Math.max(pct(S.h, 1), ref ? pct(ref, 1) : -Infinity);
@@ -585,8 +758,8 @@ async function loadScene(id) {
     updateAnalysisTools();
     const c0 = meta.calibration || {};
     $('#time-of-day').value = '12'; $('#time-v').textContent = '12:00';
-    sun.intensity = 1.4; hemi.intensity = 1.6; sun.color.setHex(0xffffff);
-    scene.background.copy(SKY); scene.fog.color.copy(SKY);
+    sun.intensity = SUN_I; hemi.intensity = HEMI_I; sun.color.setHex(0xfff6ea);
+    if (S.quality !== 'cinematic') { scene.background = SKY.clone(); scene.fog.color.copy(SKY); }
     const sunInput = meta.sun_input || {};
     const imageElevation = Number.isFinite(sunInput.elevation_deg) ? sunInput.elevation_deg : c0.sun_elevation_deg;
     const imageAzimuth = Number.isFinite(sunInput.azimuth_deg) ? sunInput.azimuth_deg : c0.sun_azimuth_deg;
@@ -600,6 +773,9 @@ async function loadScene(id) {
     renderChangePanel();
     $('#swipe-toggle').title = demBase ? 'Swipe: input 30 m DEM (left) vs DepthWizard DSM (right) · S' : 'Swipe needs a georeferenced scene with an input DEM';
     $('#btn-error').disabled = !ref;
+    $('#btn-hazard').disabled = meta.units !== 'metre';
+    $('#btn-hazard').title = meta.units === 'metre' ? 'Slope hazard: 0–30° safe, 30–45° warning, >45° high risk · 6' : 'Slope hazard needs a metric scene (degrees are meaningless in relative units)';
+    if (S.mode === 'hazard' && meta.units !== 'metre') setMode('optical');
     if (!ref && S.mode === 'error') setMode('optical');
     $('#contour-unit').textContent = meta.units === 'metre' ? 'm' : 'rel';
     $('#contour-int').value = meta.units === 'metre' ? '5' : '0.1';
@@ -612,13 +788,14 @@ async function loadScene(id) {
     const datum = meta.vertical_datum ? ` · Datum ${meta.vertical_datum}` : '';
     const evidenceLevel = meta.calibration?.evidence_level || (meta.calibration?.method === 'dem+prior' ? 'approximate' : '');
     const provisional = evidenceLevel === 'approximate' || String(evidenceLevel).startsWith('provisional');
-    $('#top-scene-meta').textContent = `${meta.units === 'metre' ? (provisional ? 'Provisional metric DSM' : 'Metric DSM') : 'Relative rDSM'} · ${crs}${gsd}${datum}`;
+    const inputDem = meta.calibration?.method === 'input-dem';
+    $('#top-scene-meta').textContent = `${inputDem ? 'Input DEM · visualised, not estimated' : meta.units === 'metre' ? (provisional ? 'Provisional metric DSM' : 'Metric DSM') : 'Relative rDSM'} · ${crs}${gsd}${datum}`;
     $('#dl-dsm-header').disabled = false;
     $('#export-menu-btn').disabled = false;
     const cal = meta.calibration || {};
     const evidence = meta.units === 'metre' ? `${evidenceLevel ? `${evidenceLevel} evidence · ` : ''}${cal.method || 'calibrated'}${cal.fit_r !== undefined && Number.isFinite(cal.fit_r) ? ` · DEM fit r ${fmt(cal.fit_r, 2)}` : ''}` : 'relative height · no vertical datum';
     const badge = $('#scene-badge');
-    const label = document.createElement('strong'); label.textContent = meta.units === 'metre' ? (provisional ? 'Provisional DSM' : 'Metric scene') : 'Relative scene';
+    const label = document.createElement('strong'); label.textContent = inputDem ? 'Input DEM (not estimated)' : meta.units === 'metre' ? (provisional ? 'Provisional DSM' : 'Metric scene') : 'Relative scene';
     badge.replaceChildren(label, document.createTextNode(` · ${evidence}`));
     badge.dataset.evidence = evidenceLevel;
     badge.classList.remove('hidden');
@@ -645,9 +822,10 @@ async function loadScene(id) {
     });
     renderAnchorPanel();
     updateAutoAnchorPanel();
+    updateCinematicScene();
     location.hash = id;
   } catch (e) {
-    console.error(e); alert('Could not load scene: ' + e.message);
+    console.error(e); toast('Could not load scene: ' + e.message, 'error', 8000);
   } finally { busy(false); }
 }
 
@@ -684,7 +862,32 @@ function convexFootprint(points) {
   }
   return direction !== 0;
 }
+// Walls with floor lines, window rows and darker bases (fake ambient occlusion).
+// One floor = 3 m of true height, so the pattern follows the vertical exaggeration.
+const wallUniforms = { uFloor: { value: 3 }, uWin: { value: 3.2 }, uWinOn: { value: 1 } };
+function makeWallMaterial() {
+  const m = new THREE.MeshStandardMaterial({ color: 0xdfe6ec, roughness: 0.72, metalness: 0.05, side: THREE.DoubleSide });
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, wallUniforms);
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying float vLy;\nvarying float vLu;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvLy = position.y;\nvLu = position.x + position.z;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vLy;\nvarying float vLu;\nuniform float uFloor, uWin, uWinOn;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float fy = fract(vLy / uFloor);
+        float slab = 1.0 - smoothstep(0.0, 0.07, fy) * (1.0 - smoothstep(0.93, 1.0, fy));
+        float wx = fract(vLu / uWin);
+        float win = uWinOn * step(0.3, fy) * step(fy, 0.78) * step(0.22, wx) * step(wx, 0.78) * step(uFloor * 0.6, vLy);
+        diffuseColor.rgb *= 1.0 - 0.18 * slab;
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.20, 0.29, 0.37), 0.62 * win);
+        diffuseColor.rgb *= 0.62 + 0.38 * smoothstep(0.0, uFloor * 1.3, vLy);`);
+  };
+  m.customProgramCacheKey = () => 'dw-wall-v3';
+  return m;
+}
+
 function createBuildingMeshes(bData) {
+  wallUniforms.uFloor.value = 3 * S.exag; wallUniforms.uWin.value = 3.2;
   if (S.buildingGroup) {
     scene.remove(S.buildingGroup);
     S.buildingGroup.traverse((c) => {
@@ -704,12 +907,7 @@ function createBuildingMeshes(bData) {
   const group = new THREE.Group();
   group.name = 'buildingsGroup';
 
-  const wallMat = new THREE.MeshStandardMaterial({
-    color: 0xdae4eb,
-    roughness: 0.7,
-    metalness: 0.1,
-    side: THREE.DoubleSide,
-  });
+  const wallMat = makeWallMaterial();
 
   const roofMat = new THREE.MeshStandardMaterial({
     map: S.tex,
@@ -759,7 +957,7 @@ function createBuildingMeshes(bData) {
     geo.computeVertexNormals();
 
     // ExtrudeGeometry groups: 0 = caps (roof/floor) · 1 = side walls
-    const mesh = new THREE.Mesh(geo, [roofMat.clone(), wallMat.clone()]);
+    const mesh = new THREE.Mesh(geo, [roofMat.clone(), makeWallMaterial()]);
     const groundElev = b.ground_elevation_m !== undefined ? b.ground_elevation_m : S.base;
     mesh.position.y = worldY(groundElev);
     mesh.userData.building = b; mesh.castShadow = true; mesh.receiveShadow = true;
@@ -786,7 +984,7 @@ function createBuildingMeshes(bData) {
       const wallGeo = new THREE.BufferGeometry();
       wallGeo.setAttribute('position', new THREE.Float32BufferAttribute(wallVertices, 3));
       wallGeo.computeVertexNormals();
-      const wallSections = new THREE.Mesh(wallGeo, wallMat.clone());
+      const wallSections = new THREE.Mesh(wallGeo, makeWallMaterial());
       wallSections.userData.building = b; wallSections.castShadow = true; wallSections.receiveShadow = true;
       mesh.add(wallSections);
       const clip = (poly, keepPositive) => {
@@ -875,7 +1073,7 @@ function selectBuilding(mesh) {
 
 // ------------------------------------------------------------------ cinematic flythrough recording
 async function recordTour(seconds = 20) {
-  if (!S.mesh || !canvas.captureStream || typeof MediaRecorder === 'undefined') { alert('Video recording is not supported in this browser.'); return; }
+  if (!S.mesh || !canvas.captureStream || typeof MediaRecorder === 'undefined') { toast('Video recording is not supported in this browser.', 'error'); return; }
   const btn = $('#record-tour');
   const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
   const rec = new MediaRecorder(canvas.captureStream(30), type ? { mimeType: type, videoBitsPerSecond: 8e6 } : undefined);
@@ -1244,6 +1442,7 @@ canvas.addEventListener('pointerup', (e) => {
     if (+sl.value < g[S.floodSeed] + 0.5) sl.value = g[S.floodSeed] + 1.0;
     placeMarker(hit.point.x, hit.point.z); S.floodActive = true; updateAnalysisTools(); return;
   }
+  if (S.gcpMode) { addGcpPin(hit.point); return; }
   if (S.missionAction) { runMission(S.missionAction, hit.point); return; }
   showTab('analyse');
   if (S.tool === 'viewshed') { computeViewshed(hit.point); return; }
@@ -1252,8 +1451,16 @@ canvas.addEventListener('pointerup', (e) => {
   else profile(hit.point);
 });
 
+let hoverPending = null;
+canvas.addEventListener('pointerleave', () => $('#hover-hud').classList.add('hidden'));
 canvas.addEventListener('pointermove', (e) => {
   if (!S.mesh) return;
+  if (hoverPending) { hoverPending = e; return; }       // one raycast per frame at most
+  hoverPending = e;
+  requestAnimationFrame(() => { const ev = hoverPending; hoverPending = null; hoverUpdate(ev); });
+});
+function hoverUpdate(e) {
+  if (!S.mesh || !e) return;
   const rect = canvas.getBoundingClientRect();
   const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
   const hit = raycastFrom(ndc);
@@ -1276,7 +1483,52 @@ canvas.addEventListener('pointermove', (e) => {
     const nEl = $('#hud-ndsm'); if (nEl) nEl.textContent = ndsmVal !== null ? `${fmt(ndsmVal, 1)} m` : '–';
     const sEl = $('#hud-slope'); if (sEl) sEl.textContent = `${fmt(sa.slope, 1)}°`;
     const cfEl = $('#hud-conf'); if (cfEl) cfEl.textContent = confVal !== null ? `${Math.round(confVal * 100)}%` : '95%';
-  }
+    // floating HUD next to the cursor
+    const hud = $('#hover-hud');
+    if (S.hoverHud !== false && S.nav === 'orbit' && !S.presentation) {
+      let bldg = null;
+      if (S.buildingGroup?.visible) {
+        raycaster.setFromCamera(ndc, camera);
+        const bh = raycaster.intersectObjects(S.buildingGroup.children, true)[0];
+        bldg = bh?.object?.userData?.building || null;
+      }
+      const ll = S.meta?.corners_lonlat ? lonLatAt?.(S.meta.corners_lonlat, (x / S.W) + 0.5, (z / S.H) + 0.5) : null;
+      const metric = S.meta.units === 'metre';
+      const rows = [
+        [ll ? 'Lat, lon' : (mc ? 'E, N' : 'x, y'), ll ? `${ll[1].toFixed(5)}, ${ll[0].toFixed(5)}` : mc ? `${mc.E.toFixed(1)}, ${mc.N.toFixed(1)}` : `${(x + S.W / 2).toFixed(1)}, ${(z + S.H / 2).toFixed(1)} m`],
+        ['Surface', `${fmt(reportedHeight(h), metric ? 1 : 3)} ${S.units}`],
+      ];
+      if (dtmVal !== null) rows.push(['Ground', `${fmt(reportedHeight(dtmVal), 1)} ${S.units}`], ['Above ground', `${fmt(ndsmVal, 1)} m`]);
+      if (metric) rows.push(['Slope', `${fmt(sa.slope, 1)}°`]);
+      if (confVal !== null) rows.push(['Confidence', `${Math.round(confVal * 100)}%`]);
+      if (bldg) rows.push(['Building', `#${bldg.id} · ${fmt(bldg.height_m, 1)} ${metric ? 'm' : ''}${bldg.storeys ? ` · ${bldg.storeys} fl` : ''}`]);
+      hud.innerHTML = rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
+      const sr = $('#stage').getBoundingClientRect();
+      let left = e.clientX - sr.left + 16, top = e.clientY - sr.top + 16;
+      if (left + 230 > sr.width) left -= 250;
+      if (top + 160 > sr.height) top -= 176;
+      hud.style.transform = `translate(${left}px, ${top}px)`;
+      hud.classList.remove('hidden');
+    } else hud.classList.add('hidden');
+  } else $('#hover-hud').classList.add('hidden');
+}
+
+// double-click: smooth fly-to the clicked point
+canvas.addEventListener('dblclick', (e) => {
+  if (!S.mesh || S.nav !== 'orbit') return;
+  const rect = canvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const targets = [S.mesh].concat(S.buildingGroup?.visible ? S.buildingGroup.children : []);
+  const hit = raycaster.intersectObjects(targets, true)[0];
+  if (!hit) return;
+  const toTarget = hit.point.clone();
+  const offset = camera.position.clone().sub(orbit.target).multiplyScalar(0.45);
+  const minDist = S.extent * 0.04;
+  if (offset.length() < minDist) offset.setLength(minDist);
+  S.cameraFlight = { started: performance.now(), fromCamera: camera.position.clone(), toCamera: toTarget.clone().add(offset),
+    fromTarget: orbit.target.clone(), toTarget };
+  requestRender();
 });
 
 // ------------------------------------------------------------------ minimap
@@ -1490,12 +1742,43 @@ $$('#tool button').forEach((b) => b.onclick = () => {
   S.tool = b.dataset.tool; $$('#tool button').forEach((x) => x.classList.toggle('active', x === b)); clearTools();
 });
 $$('#nav-mode button').forEach((b) => b.onclick = () => setNav(b.dataset.nav));
-$('#exag').oninput = (e) => { S.exag = +e.target.value; $('#exag-v').textContent = S.exag.toFixed(1) + '×'; if (S.mesh) { applyHeights(); createBuildingMeshes(S.buildings); } };
+$('#exag').oninput = (e) => {
+  S.exag = +e.target.value; $('#exag-v').textContent = S.exag.toFixed(1) + '×';
+  if (S.mesh) {
+    applyHeights(); createBuildingMeshes(S.buildings);
+    if (S.mesh.material.normalMap) { const k = Math.min(4, S.exag); S.mesh.material.normalScale.set(k, k); }
+  }
+};
 $('#smooth').oninput = (e) => { S.smoothingM = +e.target.value; $('#smooth-v').textContent = `${S.smoothingM.toFixed(2)} m`; if (S.h) updateRenderHeight(); };
 $('#sun').oninput = (e) => { $('#sun-v').textContent = e.target.value + '° (manual)'; $('#time-v').textContent = 'manual'; setSun(+e.target.value); };
 $('#contours').onchange = (e) => { uniforms.uContourOn.value = e.target.checked ? 1 : 0; };
 $('#contour-int').oninput = (e) => { uniforms.uContourInt.value = Math.max(0.001, (+e.target.value || 0.1) * verticalDisplayFactor()); };
 $('#wire').onchange = (e) => { if (S.mesh) S.mesh.material.wireframe = e.target.checked; };
+$('#despike').onchange = () => { if (S.h) updateRenderHeight(); };
+$('#exposure').oninput = (e) => { renderer.toneMappingExposure = +e.target.value; $('#exposure-v').textContent = (+e.target.value).toFixed(2); };
+$('#quality').onchange = (e) => applyQuality(e.target.value);
+function applyQuality(q) {
+  S.quality = q;
+  const size = q === 'cinematic' ? 4096 : q === 'performance' ? 1024 : 2048;
+  if (sun.shadow.mapSize.x !== size) {
+    sun.shadow.mapSize.set(size, size);
+    sun.shadow.map?.dispose(); sun.shadow.map = null;
+  }
+  renderer.shadowMap.enabled = q !== 'performance' || true;
+  renderer.setPixelRatio(q === 'performance' ? 1 : Math.min(devicePixelRatio, 2));
+  resize();
+  if (S.mesh) setSun(+$('#sun').value);
+  updateCinematicScene();
+  try { localStorage.setItem('dw-quality', q); } catch {}
+}
+{ let q = 'balanced'; try { q = localStorage.getItem('dw-quality') || q; } catch {} $('#quality').value = q; S.quality = q; setTimeout(() => applyQuality(q), 0); }
+
+// small non-blocking notifications instead of alert()
+function toast(msg, kind = 'info', ms = 5000) {
+  const t = document.createElement('div'); t.className = `toast ${kind}`; t.textContent = msg;
+  $('#toast-host').appendChild(t); setTimeout(() => t.remove(), ms);
+}
+window.toast = toast;
 $('#reset').onclick = () => S.mesh && resetView();
 $('#topdown').onclick = topDownView;
 $('#compare-toggle').onclick = () => setComparison($('#comparison').classList.contains('hidden'));
@@ -1570,6 +1853,7 @@ $$('#export-menu [data-export]').forEach((b) => b.onclick = () => {
   else if (['dtm', 'ndsm', 'uncertainty'].includes(kind)) location.href = `api/scenes/${S.id}/product/${kind}`;
   else if (kind === 'cityjson') location.href = `api/scenes/${S.id}/buildings.city.json`;
   else if (kind === 'ply') location.href = `api/scenes/${S.id}/points.ply`;
+  else if (kind === 'heightmap') location.href = `api/scenes/${S.id}/heightmap.png?bits=16`;
 });
 document.addEventListener('pointerdown', (e) => {
   if (!e.target.closest('.header-actions')) closeExportMenu();
@@ -1586,7 +1870,11 @@ addEventListener('keydown', (e) => {
   else if (k === 'd') topDownView(); else if (k === 'v') setComparison($('#comparison').classList.contains('hidden'));
   else if (k === 'r' && S.mesh) resetView(); else if (k === 'h') $('#help').classList.toggle('hidden');
   else if (k === 'c') { const c = $('#contours'); c.checked = !c.checked; c.onchange({ target: c }); }
-  else if ('1234'.includes(k)) { const m = ['optical', 'height', 'slope', 'error'][+k - 1]; if (m !== 'error' || S.ref) setMode(m); }
+  else if ('123456'.includes(k)) {
+    const m = ['optical', 'height', 'slope', 'error', 'topo', 'hazard'][+k - 1];
+    if ((m !== 'error' || S.ref) && (m !== 'hazard' || S.meta?.units === 'metre')) setMode(m);
+  }
+  else if (k === 'p') window.togglePresentation?.();
 });
 addEventListener('keyup', (e) => { S.keys[e.code] = false; });
 addEventListener('blur', () => { S.keys = {}; });
@@ -1660,10 +1948,15 @@ function resize() {
   renderer.setSize(r.width, r.height, false);
   camera.aspect = r.width / r.height; camera.updateProjectionMatrix();
   uniforms.uResolution.value.set(r.width, r.height);
+  if (post.composer) { post.composer.setSize(r.width, r.height); post.gtao.setSize(r.width, r.height); }
 }
 new ResizeObserver(resize).observe(canvas);
 let frames = 0, fpsT = 0, mmT = 0;
+let idleSkip = 0;
 renderer.setAnimationLoop(() => {
+  const busyAnim = S.nav !== 'orbit' || S.riseStart || S.cameraFlight || S.floodAnimating || S.missionOverlay
+    || swipeDragging || S.recording || S.floodMesh || S.waterAnim;
+  if (!busyAnim && performance.now() - lastActivity > 1500 && (idleSkip++ % 15) !== 0) { clock.getDelta(); return; }
   const dt = Math.min(clock.getDelta(), 0.1);
   if (S.mesh) {
     if (S.riseStart && S.buildingGroup) {
@@ -1729,14 +2022,16 @@ renderer.setAnimationLoop(() => {
     S.baseMesh.visible = false; S.mesh.visible = true; if (hideCity) S.buildingGroup.visible = true;
     renderer.setScissor(split, 0, w - split, h); renderer.render(scene, camera);
     renderer.setScissorTest(false);
-  } else renderer.render(scene, camera);
-  if (S.floodMesh) S.floodMesh.material.emissiveIntensity = 0.85 + 0.15 * Math.sin(performance.now() / 600);
+  } else if (S.quality === 'cinematic' && post.composer && !S.recording) post.composer.render(dt);
+  else renderer.render(scene, camera);
+  if (S.floodMesh) waterUniforms.uTime.value = performance.now() / 1000;
   frames++; fpsT += dt;
   if (fpsT > 1) { $('#hud-fps').textContent = `${Math.round(frames / fpsT)} fps`; frames = 0; fpsT = 0; }
 });
 
 refreshScenes().catch(() => { $('#scene-list').innerHTML = '<p class="worse">Server not reachable – start with <code>python run.py</code>.</p>'; });
-if (!localStorage.getItem('dw-help-seen')) { $('#help').classList.remove('hidden'); try { localStorage.setItem('dw-help-seen', '1'); } catch {} }
+{ let seen = false; try { seen = !!localStorage.getItem('dw-gallery-seen'); localStorage.setItem('dw-gallery-seen', '1'); } catch {}
+  if (!seen && !location.hash) setTimeout(() => openGallery(), 400); }
 // ------------------------------------------------------------------ Anchors
 let currentAnchors = [];
 
@@ -1816,7 +2111,7 @@ $('#anchor-apply-btn').addEventListener('click', async () => {
     if (!res.ok) throw new Error(await res.text());
     await reloadViewer();
   } catch (e) {
-    alert(e.message);
+    toast(e.message, 'error', 8000);
   } finally {
     btn.disabled = false;
     btn.textContent = 'Apply';
@@ -1838,7 +2133,7 @@ $('#anchor-reset-btn').addEventListener('click', async () => {
     $('#scale-badge').classList.add('hidden');
     await reloadViewer();
   } catch (e) {
-    alert(e.message);
+    toast(e.message, 'error', 8000);
   } finally {
     btn.disabled = false;
     btn.textContent = 'Reset';
@@ -2074,12 +2369,13 @@ function setIllustrativeTime(hour) {
   $('#sun').value = Math.round(az);
   $('#sun-v').textContent = `${Math.round(az)}° (illustrative)`;
   setSun(az, Math.max(3, 65 * daylight));
-  sun.intensity = 0.18 + 1.4 * daylight;
-  hemi.intensity = 0.45 + 1.1 * daylight;
+  sun.intensity = SUN_I * (0.12 + 0.88 * daylight);
+  hemi.intensity = HEMI_I * (0.35 + 0.65 * daylight);
   const warm = 1 - Math.min(1, daylight * 2);
   sun.color.setRGB(1, 1 - 0.18 * warm, 1 - 0.4 * warm);
   const sky = new THREE.Color(0x0d1117).lerp(new THREE.Color(0x243b57), 0.4 * daylight);
-  scene.background.copy(sky); scene.fog.color.copy(sky);
+  if (S.quality !== 'cinematic') { scene.background = sky; scene.fog.color.copy(sky); }
+  if (post.sky?.visible) post.sky.material.uniforms.sunPosition.value.copy(sun.position).normalize();
 }
 $('#time-of-day').oninput = (e) => setIllustrativeTime(e.target.value);
 
@@ -2230,3 +2526,124 @@ for (const [id, action] of [['route-tool', 'route'], ['shelter-tool', 'shelters'
     $('#mission-result').textContent = action === 'route' ? 'Click a start point in the 3D terrain.' : 'Click a tower or drone location in the 3D terrain.';
   };
 }
+
+
+// ------------------------------------------------------------------ v3: mesh detail, GCP pins, gallery, presentation
+$('#mesh-detail').onchange = () => { if (S.id) reloadViewer(); };
+
+S.gcpPins = []; S.gcpMode = false;
+function setGcpMode(on) {
+  S.gcpMode = on; $('#gcp-pin').setAttribute('aria-pressed', String(on));
+  $('#gcp-pin').textContent = on ? 'Pinning… (click terrain)' : 'Pin points';
+  if (on) { S.missionAction = null; toast('Click the terrain to drop a ground-control pin, then type its known height.', 'info', 4000); }
+}
+$('#gcp-pin').onclick = () => setGcpMode(!S.gcpMode);
+function addGcpPin(point) {
+  const u = point.x / S.W + 0.5, v = point.z / S.H + 0.5;
+  const surface = reportedHeight(sampleGrid(S.h, point.x, point.z));
+  S.gcpPins.push({ x: point.x, z: point.z, u, v, surface, known: S.meta?.units === 'metre' ? +surface.toFixed(2) : NaN });
+  drawGcpPins(); renderGcpTable(); fitGcp();
+}
+function drawGcpPins() {
+  if (S.gcpGroup) { scene.remove(S.gcpGroup); S.gcpGroup.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); }); }
+  S.gcpGroup = new THREE.Group();
+  const s = S.extent / 220;
+  S.gcpPins.forEach((p) => {
+    const y = terrainY(p.x, p.z);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(s * 0.9, 16, 12), new THREE.MeshBasicMaterial({ color: 0x22d3ee }));
+    head.position.set(p.x, y + s * 4, p.z);
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(s * 0.12, s * 0.12, s * 4, 6), new THREE.MeshBasicMaterial({ color: 0x22d3ee }));
+    stem.position.set(p.x, y + s * 2, p.z);
+    S.gcpGroup.add(head, stem);
+  });
+  scene.add(S.gcpGroup); requestRender();
+}
+function renderGcpTable(residuals = []) {
+  const tb = $('#gcp-table tbody'); tb.innerHTML = '';
+  S.gcpPins.forEach((p, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i + 1}</td><td>${fmt(p.surface, S.meta?.units === 'metre' ? 1 : 3)}</td><td><input type="number" step="0.1" value="${Number.isFinite(p.known) ? p.known : ''}" aria-label="Known height of pin ${i + 1}"></td><td>${residuals[i] !== undefined ? fmt(residuals[i], 2) : '–'}</td><td><button class="x" title="Remove pin">✕</button></td>`;
+    tr.querySelector('input').onchange = (e) => { p.known = parseFloat(e.target.value); fitGcp(); };
+    tr.querySelector('button').onclick = () => { S.gcpPins.splice(i, 1); drawGcpPins(); renderGcpTable(); fitGcp(); };
+    tb.appendChild(tr);
+  });
+}
+let gcpTimer = null;
+function fitGcp() {
+  clearTimeout(gcpTimer);
+  gcpTimer = setTimeout(async () => {
+    const pts = S.gcpPins.filter((p) => Number.isFinite(p.known)).map((p) => ({ u: p.u, v: p.v, height_m: p.known }));
+    const out = $('#gcp-stats');
+    $('#gcp-apply').disabled = true;
+    if (pts.length < 2) { out.textContent = pts.length ? 'Add at least one more pin with a known height.' : ''; return; }
+    try {
+      const r = await fetch(`api/scenes/${S.id}/gcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ points: pts }) });
+      const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
+      out.classList.remove('muted');
+      out.innerHTML = `<b>Fit</b><span>height = ${fmt(j.a, 3)} × surface + ${fmt(j.b, 2)}</span><b>R²</b><span>${fmt(j.r2, 3)}</span>
+        <b>RMSE</b><span>${fmt(j.rmse_m, 2)} m (n=${j.n})</span><b>Leave-one-out</b><span>${j.loo_rmse_m != null ? fmt(j.loo_rmse_m, 2) + ' m' : 'needs 3+ pins'}</span>
+        ${j.warning ? `<span class="note" style="grid-column:1/-1;color:#f5b454">${escapeHtml(j.warning)}</span>` : ''}`;
+      const withKnown = S.gcpPins.filter((p) => Number.isFinite(p.known));
+      const res = []; let k = 0; S.gcpPins.forEach((p, i) => { if (Number.isFinite(p.known)) res[i] = j.residuals_m[k++]; });
+      renderGcpTable(res);
+      $('#gcp-apply').disabled = !(j.a > 0);
+    } catch (err) { out.textContent = String(err.message || err); }
+  }, 250);
+}
+$('#gcp-apply').onclick = async () => {
+  const pts = S.gcpPins.filter((p) => Number.isFinite(p.known)).map((p) => ({ u: p.u, v: p.v, height_m: p.known }));
+  busy(true, 'Applying ground-control fit…');
+  try {
+    const r = await fetch(`api/scenes/${S.id}/gcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ points: pts, apply: true }) });
+    const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
+    toast(`Calibrated with ${j.n} pins · RMSE ${fmt(j.rmse_m, 2)} m${j.relative_input ? ' · scene is now metric' : ''}`, 'ok');
+    setGcpMode(false); S.gcpPins = []; renderGcpTable(); await reloadViewer();
+  } catch (err) { toast('GCP apply failed: ' + (err.message || err), 'error', 8000); }
+  finally { busy(false); }
+};
+$('#gcp-reset').onclick = async () => {
+  const r = await fetch(`api/scenes/${S.id}/gcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reset: true }) });
+  const j = await r.json();
+  S.gcpPins = []; renderGcpTable(); $('#gcp-stats').textContent = '';
+  if (S.gcpGroup) { scene.remove(S.gcpGroup); S.gcpGroup = null; }
+  if (j.reset) { toast('Ground-control calibration undone.', 'ok'); await reloadViewer(); }
+  else toast(j.note || 'Nothing to undo.');
+};
+
+// first-run demo gallery
+async function openGallery() {
+  const list = await (await fetch('api/scenes')).json();
+  const grid = $('#gallery-grid'); grid.innerHTML = '';
+  for (const sc of list) {
+    const card = document.createElement('button'); card.className = 'gallery-card'; card.type = 'button';
+    const what = sc.units === 'metre'
+      ? `Metric 3D surface · ${sc.method || 'calibrated'}${sc.has_reference ? ' · LiDAR-validated' : ''}`
+      : 'Relative 3D surface from a plain image';
+    card.innerHTML = `<img alt="" loading="lazy"><b></b><small></small>`;
+    card.querySelector('img').src = `jobs/${encodeURIComponent(sc.id)}/viewer/texture.jpg`;
+    card.querySelector('b').textContent = sc.name; card.querySelector('small').textContent = what;
+    card.onclick = () => { $('#gallery').classList.add('hidden'); loadScene(sc.id); };
+    grid.appendChild(card);
+  }
+  $('#gallery').classList.remove('hidden');
+}
+window.openGallery = openGallery;
+$('#gallery-btn').onclick = openGallery;
+$('#gallery-close').onclick = () => $('#gallery').classList.add('hidden');
+$('#gallery-import').onclick = () => { $('#gallery').classList.add('hidden'); showTab('upload'); };
+
+// presentation mode
+window.togglePresentation = (on = !$('#app').classList.contains('presentation')) => {
+  S.presentation = on;
+  $('#app').classList.toggle('presentation', on);
+  const t = $('#pres-title');
+  if (on && S.meta) {
+    t.innerHTML = `${escapeHtml(S.meta.input || 'Scene')}<small>${S.meta.units === 'metre' ? 'Metric 3D surface model' : 'Relative 3D surface model'} · ${escapeHtml(S.meta.calibration?.method || '')} · RUBIQX-Depth</small>`;
+    t.classList.remove('hidden'); setNav('tour');
+  } else { t.classList.add('hidden'); setNav('orbit'); }
+  requestAnimationFrame(resize); requestRender();
+};
+$('#present-btn').onclick = () => window.togglePresentation();
+addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.presentation) window.togglePresentation(false); });
+// shareable links: #scene-id opens that scene (also when the hash changes)
+addEventListener('hashchange', () => { const id = decodeURIComponent(location.hash.slice(1)); if (id && id !== S.id) loadScene(id); });

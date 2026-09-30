@@ -38,6 +38,11 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
+    from .dem_view import is_elevation_raster, run_dem_only
+    if is_elevation_raster(image_path):
+        mp = int(float(os.environ.get("DEPTHWIZARD_MAX_MP", "64")) * 1e6) if max_pixels is None else int(max_pixels)
+        return run_dem_only(image_path, out_dir, max_pixels=mp, assumed_gsd_m=assumed_gsd_m, log=log)
+
     log("reading image")
     img = dio.read_image(image_path)
     max_pixels = int(float(os.environ.get("DEPTHWIZARD_MAX_MP", "64")) * 1e6) if max_pixels is None else int(max_pixels)
@@ -111,6 +116,8 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
 
     meta = {
         "input": Path(image_path).name,
+        "input_paths": {k: str(Path(v).resolve()) for k, v in
+                        (("image", image_path), ("dem", dem), ("gcp", gcp), ("reference", reference)) if v},
         "backbone": backbone,
         "georeferenced": img.georeferenced,
         "crs": img.crs.to_string() if img.crs else None,

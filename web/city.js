@@ -134,16 +134,40 @@ export function boundarySeeds(ground, gw, gh) {
   return idx.slice(0, Math.max(4, Math.round(idx.length * 0.02)));
 }
 
-export function waterMesh(mask, gw, gh, W, H) {
+export const waterUniforms = { uTime: { value: 0 } };
+export function waterMesh(mask, gw, gh, W, H, depth = null, maxDepth = 1) {
+  // R = water mask (alpha), G = depth / maxDepth (colour: light at the shore, dark where deep)
   const data = new Uint8Array(gw * gh * 4);
-  for (let i = 0; i < gw * gh; i++) { const v = mask[i] ? 255 : 0; data[i * 4] = v; data[i * 4 + 1] = v; data[i * 4 + 2] = v; data[i * 4 + 3] = 255; }
+  for (let i = 0; i < gw * gh; i++) {
+    const v = mask[i] ? 255 : 0;
+    const d = depth && mask[i] ? Math.min(255, Math.round(255 * Math.sqrt(Math.max(0, depth[i]) / Math.max(maxDepth, 1e-6)))) : 0;
+    data[i * 4] = v; data[i * 4 + 1] = v; data[i * 4 + 2] = v; data[i * 4 + 3] = d;
+  }
   const alpha = new THREE.DataTexture(data, gw, gh, THREE.RGBAFormat);
   alpha.flipY = false; alpha.magFilter = THREE.LinearFilter; alpha.minFilter = THREE.LinearFilter; alpha.needsUpdate = true;
-  const geo = new THREE.PlaneGeometry(W, H); geo.rotateX(-Math.PI / 2);
+  const geo = new THREE.PlaneGeometry(W, H, 1, 1); geo.rotateX(-Math.PI / 2);
   // PlaneGeometry after rotation: uv v=1 at z=-H/2 (row 0). DataTexture row 0 is v=0 -> flip in shader via repeat.
   alpha.repeat.set(1, -1); alpha.offset.set(0, 1); alpha.wrapT = THREE.RepeatWrapping;
-  const mat = new THREE.MeshStandardMaterial({ color: 0x2f7fd0, transparent: true, opacity: 0.72, alphaMap: alpha,
-    roughness: 0.15, metalness: 0.1, depthWrite: false, side: THREE.DoubleSide, emissive: 0x0a2440 });
+  const mat = new THREE.MeshStandardMaterial({ color: 0x2f7fd0, transparent: true, opacity: 0.8, alphaMap: alpha,
+    roughness: 0.08, metalness: 0.15, depthWrite: false, side: THREE.DoubleSide, emissive: 0x06182c });
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = waterUniforms.uTime;
+    sh.uniforms.uDepthMap = { value: alpha };
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
+      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\nuniform float uTime;\nuniform sampler2D uDepthMap;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float wd = texture2D(uDepthMap, vAlphaMapUv).a;
+        diffuseColor.rgb = mix(vec3(0.38, 0.72, 0.86), vec3(0.04, 0.20, 0.42), smoothstep(0.0, 1.0, wd));`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        float k = 0.35 / max(1.0, length(vWPos.xz) * 0.0);
+        vec2 q = vWPos.xz * 0.35;
+        vec3 ripple = vec3(sin(q.x * 1.7 + uTime * 1.3) + sin(q.y * 2.3 - uTime * 1.1), 0.0,
+                           cos(q.y * 1.9 + uTime * 1.2) + cos(q.x * 1.3 - uTime * 0.9)) * 0.045;
+        normal = normalize(normal + (viewMatrix * vec4(ripple, 0.0)).xyz);`);
+  };
+  mat.customProgramCacheKey = () => 'dw-water-v3';
   const mesh = new THREE.Mesh(geo, mat);
   mesh.renderOrder = 3; mesh.receiveShadow = true;
   return mesh;

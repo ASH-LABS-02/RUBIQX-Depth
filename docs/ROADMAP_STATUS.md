@@ -32,7 +32,7 @@ Competitor columns summarise what their public material shows (see
 | Vertical datum handling | 🟡 | datum recorded in GeoTIFF tags/metadata; auto-download sets EGM2008/EGM96; no grid conversion yet |
 | 30 m reference consistency | ✅ | only for surface DEMs (fixed a bug that pulled buildings down on bare-earth DEMs) |
 | Robust GCP fit | ✅ | Huber, leave-one-out error, spread check, provisional flag |
-| Active-learning GCP suggestions | ⬜ | uncertainty map is the input it would need |
+| Active-learning GCP suggestions | 🟡 | interactive GCP pins with live R²/RMSE/LOO; suggestions not yet |
 | Stereo/multi-date photogrammetry | ⬜ | |
 
 ## 4. Post-processing
@@ -58,9 +58,9 @@ Competitor columns summarise what their public material shows (see
 | Item | Status | Notes |
 |---|---|---|
 | Textured LoD1 buildings | ✅ | fixed mirrored/downward extrusion; roofs textured, stand on DTM |
-| AI facades / Gaussian splatting | ⬜ | |
-| LOD tiles / globe mode | ⬜ | mesh capped at 512² per scene |
-| Lighting | ✅ | sun-matched directional light with soft shadow maps |
+| AI facades / Gaussian splatting | 🟡 | procedural floors/windows on walls; no AI facades |
+| LOD tiles / globe mode | 🟡 | 512 / 1024 mesh detail toggle; globe mode not started |
+| Lighting | ✅ | ACES tone mapping, fitted soft shadows, normal-map hillshade, Cinematic mode (GTAO + SMAA + sky) |
 | DEM vs DSM swipe | ✅ | geometric: left half really renders the input DEM |
 | Uncertainty overlay | ✅ | confidence layer (exp(−σ/2 m)) |
 | Recorded flythrough | ✅ | one-click 20 s WebM recording of the cinematic tour |

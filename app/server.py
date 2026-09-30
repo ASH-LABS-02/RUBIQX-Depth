@@ -19,7 +19,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from depthwizard.pipeline import run
@@ -288,6 +288,32 @@ def download_product(job_id: str, kind: str):
     raise HTTPException(404, f"{kind} is not available for this scene")
 
 
+@app.get("/api/scenes/{job_id}/heightmap.png")
+def heightmap_png(job_id: str, bits: int = 16):
+    """Greyscale heightmap for game engines / Blender (16-bit default, or 8-bit).
+    The height range is written in the PNG text chunk and the filename."""
+    from PIL import PngImagePlugin
+    from depthwizard.io import read_raster
+    folder = _completed_scene(job_id)
+    z = read_raster(_surface_tif(folder))[0]
+    z = np.where(np.isfinite(z), z, np.nanmin(z))
+    lo, hi = float(np.percentile(z, 0.1)), float(np.percentile(z, 99.9))
+    t = np.clip((z - lo) / max(hi - lo, 1e-9), 0, 1)
+    out = folder / "exports"
+    out.mkdir(exist_ok=True)
+    info = PngImagePlugin.PngInfo()
+    info.add_text("height_min", f"{lo:.3f}"); info.add_text("height_max", f"{hi:.3f}")
+    info.add_text("units", "metre" if (folder / "dsm.tif").is_file() else "relative")
+    if int(bits) == 8:
+        img = Image.fromarray((t * 255 + 0.5).astype(np.uint8), "L")
+    else:
+        img = Image.fromarray((t * 65535 + 0.5).astype(np.uint16))
+    path = out / f"heightmap_{int(bits)}bit.png"
+    img.save(path, pnginfo=info)
+    name = f"{job_id}_heightmap_{int(bits)}bit_{lo:.1f}_to_{hi:.1f}.png"
+    return FileResponse(path, filename=name, media_type="image/png")
+
+
 @app.get("/api/scenes/{job_id}/export-all.zip")
 def download_all(job_id: str):
     """Every product for a scene in one ZIP: GeoTIFFs, CityJSON, PLY, GLB,
@@ -320,6 +346,11 @@ def download_all(job_id: str):
             members.append((glb, "terrain.glb"))
         except Exception as exc:  # noqa: BLE001
             notes.append(f"GLB skipped: {exc}")
+        try:
+            heightmap_png(job_id, 16)
+            members.append((out_dir / "heightmap_16bit.png", "heightmap_16bit.png"))
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"heightmap skipped: {exc}")
         report = out_dir / "report.html"
         try:
             report.write_text(generate_html_report(folder), encoding="utf-8")
@@ -459,30 +490,79 @@ def scene_evidence(job_id: str):
     return JSONResponse(evidence)
 
 
+_HASH_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def _hash16_cached(path: Path) -> str:
+    key = str(path.resolve())
+    mtime = path.stat().st_mtime
+    hit = _HASH_CACHE.get(key)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    value = _file_hash16(path)
+    _HASH_CACHE[key] = (mtime, value)
+    return value
+
+
+def _find_original(folder: Path, meta: dict, kind: str, near: Path | None = None) -> Path | None:
+    """Locate an original input (image, dem, gcp, reference) for a scene.
+
+    Web uploads live in <scene>/inputs. Scenes made from the command line (the
+    bundled demos) have no copy, so fall back to the recorded path and then to
+    a SHA-256 match in the sample folders, checked against the evidence bundle."""
+    fingerprint = (meta.get("evidence_bundle") or {}).get(f"{kind}_sha256")
+    names = {}
+    if (folder / "job.json").is_file():
+        try:
+            names = json.loads((folder / "job.json").read_text(encoding="utf-8")).get("input_names", {}) or {}
+        except ValueError:
+            names = {}
+    wanted = names.get(kind) or (meta.get("input") if kind == "image" else None)
+    inputs = folder / "inputs"
+    if wanted and (inputs / Path(wanted).name).is_file():
+        return inputs / Path(wanted).name
+    if kind == "dem" and (folder / "dem.tif").is_file():
+        return folder / "dem.tif"
+    recorded = (meta.get("input_paths") or {}).get(kind)
+    if recorded and Path(recorded).is_file() and (not fingerprint or _hash16_cached(Path(recorded)) == fingerprint):
+        return Path(recorded)
+    if not fingerprint:
+        return None
+    suffixes = {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".csv"}
+    search = [inputs] + ([near] if near else []) + [ROOT / "samples", ROOT / "data" / "inputs"]
+    seen = set()
+    for base in search:
+        if not base or not base.is_dir():
+            continue
+        candidates = sorted(base.iterdir()) if base in (inputs, near) else sorted(base.rglob("*"))
+        # try files with the expected name first, then the rest
+        candidates.sort(key=lambda c: 0 if wanted and c.name == Path(wanted).name else 1)
+        for cand in candidates:
+            if cand in seen or not cand.is_file() or cand.suffix.lower() not in suffixes:
+                continue
+            seen.add(cand)
+            if cand.stat().st_size > 2_000_000_000:
+                continue
+            if _hash16_cached(cand) == fingerprint:
+                return cand
+    return None
+
+
 def _comparison_worker(job_id: str):
     """Rerun the saved optical image with the actual off-the-shelf DA2 weights."""
     st = _comparison_status[job_id]
     folder = JOBS / job_id
     try:
         meta = json.loads((folder / "viewer" / "meta.json").read_text(encoding="utf-8"))
-        job_info = json.loads((folder / "job.json").read_text(encoding="utf-8"))
-        names = job_info.get("input_names", {})
-        inputs = folder / "inputs"
-        image_path = inputs / Path(names.get("image") or meta["input"]).name
-        if not image_path.is_file():
-            raise FileNotFoundError("the original optical upload is unavailable")
+        image_path = _find_original(folder, meta, "image")
+        if image_path is None:
+            raise FileNotFoundError("the original optical image for this scene could not be found "
+                                    "(looked in the scene's inputs folder and in samples/)")
+        near = image_path.parent
+
         def find_original(kind):
-            named = names.get(kind)
-            if named and (inputs / Path(named).name).is_file():
-                return str(inputs / Path(named).name)
-            if kind == "dem" and (folder / "dem.tif").is_file():
-                return str(folder / "dem.tif")
-            fingerprint = meta.get("evidence_bundle", {}).get(f"{kind}_sha256")
-            if fingerprint:
-                for path in inputs.iterdir():
-                    if path != image_path and path.is_file() and _file_hash16(path) == fingerprint:
-                        return str(path)
-            return None
+            found = _find_original(folder, meta, kind, near=near)
+            return str(found) if found else None
         st["state"] = "running"
         output = folder / "model_comparison" / "pretrained"
         with _lock:
@@ -556,9 +636,10 @@ def scan_auto_anchors(job_id: str):
     vm = json.loads(vm_path.read_text(encoding="utf-8"))
     if vm.get("units") != "metre" or not (folder / "building_labels.npy").is_file():
         raise HTTPException(400, "automatic anchors require a metric scene with building footprints")
-    image_path = folder / "inputs" / Path(vm["input"]).name
-    if not image_path.is_file():
-        raise HTTPException(404, "the original optical upload is unavailable")
+    top_meta = json.loads((folder / "meta.json").read_text(encoding="utf-8")) if (folder / "meta.json").is_file() else vm
+    image_path = _find_original(folder, {**vm, **top_meta}, "image")
+    if image_path is None:
+        raise HTTPException(404, "the original optical image for this scene could not be found")
     from depthwizard.io import match_grid
     labels = np.load(folder / "building_labels.npy")
     img = match_grid(read_image(image_path), labels.shape)
@@ -604,6 +685,210 @@ def _viewer_bin(folder: Path, name: str, arr: np.ndarray, vm: dict):
     from depthwizard.io import _resize
     a = np.where(np.isfinite(arr), arr, np.nanmin(arr)).astype(np.float32)
     _resize(a, (vm["grid_w"], vm["grid_h"]), Image.BILINEAR).astype("<f4").tofile(folder / "viewer" / name)
+
+# ---------------------------------------------------------------- v3: hi-res grids, normal map, GCP pins
+def _surface_tif(folder: Path) -> Path:
+    for name in ("dsm.tif", "rdsm.tif"):
+        if (folder / name).is_file():
+            return folder / name
+    raise HTTPException(404, "scene has no surface raster")
+
+
+def _view_scale(vm: dict) -> float:
+    """height.bin is in display units: metres, or relative x display_height_m."""
+    return 1.0 if vm.get("units") == "metre" else float(vm.get("display_height_m") or 1.0)
+
+
+@app.get("/api/scenes/{job_id}/grid/{layer}.bin")
+def grid_layer(job_id: str, layer: str, size: int = 1024):
+    """A viewer layer at a higher mesh resolution (up to 2048), resampled from
+    the full-resolution GeoTIFF exactly like the 512 viewer export."""
+    from depthwizard.io import _resize, read_raster
+    folder = _completed_scene(job_id)
+    vm = json.loads((folder / "viewer" / "meta.json").read_text(encoding="utf-8"))
+    size = int(max(64, min(2048, size)))
+    src_name = {"height": None, "dtm": "dtm.tif"}.get(layer, "missing")
+    if src_name == "missing":
+        raise HTTPException(404, "layer must be height or dtm")
+    path = _surface_tif(folder) if layer == "height" else folder / src_name
+    if not path.is_file():
+        raise HTTPException(404, f"{layer} not available")
+    arr = read_raster(path)[0]
+    h, w = arr.shape
+    f = min(1.0, size / max(h, w))
+    gw, gh = max(2, int(round(w * f))), max(2, int(round(h * f)))
+    a = np.where(np.isfinite(arr), arr, np.nanmin(arr)).astype(np.float32)
+    if path.name == "rdsm.tif" or (layer == "height" and vm.get("units") != "metre"):
+        a = a * _view_scale(vm)
+    out = _resize(a, (gw, gh), Image.BILINEAR).astype("<f4")
+    return Response(out.tobytes(), media_type="application/octet-stream",
+                    headers={"X-Grid-W": str(gw), "X-Grid-H": str(gh), "Cache-Control": "no-store"})
+
+
+@app.get("/api/scenes/{job_id}/normal.png")
+def normal_map(job_id: str):
+    """Tangent-space normal map of fine surface detail (high-pass of the DSM),
+    so hillshade shows roof edges and ridges beyond the mesh resolution."""
+    from scipy import ndimage as ndi
+    from depthwizard.io import read_raster
+    folder = _completed_scene(job_id)
+    out = folder / "viewer" / "normal.png"
+    surf = _surface_tif(folder)
+    if not out.is_file() or out.stat().st_mtime < surf.stat().st_mtime:
+        vm = json.loads((folder / "viewer" / "meta.json").read_text(encoding="utf-8"))
+        z = read_raster(surf)[0].astype(np.float32) * _view_scale(vm)
+        z = np.where(np.isfinite(z), z, np.nanmedian(z))
+        h, w = z.shape
+        scale = min(1.0, 4096 / max(h, w))
+        if scale < 1:
+            z = np.asarray(Image.fromarray(z).resize((int(w * scale), int(h * scale)), Image.BILINEAR))
+        gsd = float(vm.get("gsd_m") or 1.0) / scale
+        mesh_cell = max(vm["ground_w_m"] / max(vm["grid_w"] - 1, 1), gsd)
+        detail = z - ndi.gaussian_filter(z, sigma=max(1.0, mesh_cell / gsd))   # only what the mesh cannot show
+        gy, gx = np.gradient(detail, gsd)              # gy: +south (image rows), gx: +east
+        nx, ny, nz = -gx, gy, np.ones_like(gx)         # tangent space: +x east, +y north
+        n = np.sqrt(nx * nx + ny * ny + nz * nz)
+        rgb = np.stack([nx / n, ny / n, nz / n], -1) * 0.5 + 0.5
+        Image.fromarray((rgb * 255).clip(0, 255).astype(np.uint8)).save(out)
+    return FileResponse(out, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+class GcpBody(BaseModel):
+    points: list[dict] = []          # {u, v, height_m} in normalised image coordinates
+    apply: bool = False
+    reset: bool = False
+
+
+_GCP_BACKUP = ("dsm.tif", "rdsm.tif", "dtm.tif", "ndsm.tif", "uncertainty.tif", "meta.json",
+               "viewer/meta.json", "viewer/height.bin", "viewer/dtm.bin", "viewer/buildings.json", "viewer/unc.bin")
+
+
+@app.post("/api/scenes/{job_id}/gcp")
+def gcp_fit(job_id: str, body: GcpBody):
+    """Interactive ground-control points: robust affine fit of known heights
+    against the current surface, with R², RMSE and leave-one-out error; optional
+    apply (turns a relative scene metric) and exact reset."""
+    from depthwizard.calibrate import huber_affine
+    from depthwizard.io import read_raster
+    folder = _completed_scene(job_id)
+    backup = folder / "gcp_backup"
+    with _files_lock:
+        if body.reset:
+            if not backup.is_dir():
+                return {"reset": False, "note": "no GCP calibration to undo"}
+            created = json.loads((backup / "created.json").read_text()) if (backup / "created.json").is_file() else []
+            for rel in created:
+                (folder / rel).unlink(missing_ok=True)
+            for rel in _GCP_BACKUP:
+                src = backup / rel
+                if src.is_file():
+                    (folder / rel).parent.mkdir(exist_ok=True)
+                    shutil.copy2(src, folder / rel)
+            shutil.rmtree(backup)
+            for stale in (folder / "exports").glob("*") if (folder / "exports").is_dir() else ():
+                stale.unlink(missing_ok=True)
+            return {"reset": True}
+        pts = [p for p in body.points if all(k in p for k in ("u", "v", "height_m"))]
+        if len(pts) < 2:
+            raise HTTPException(422, "place at least 2 points (3 or more gives an error estimate)")
+        # always fit against the ORIGINAL surface so repeated applies never compound
+        surf_path = (backup / "dsm.tif") if (backup / "dsm.tif").is_file() else (backup / "rdsm.tif") if (backup / "rdsm.tif").is_file() else _surface_tif(folder)
+        surf = read_raster(surf_path)[0]
+        relative = surf_path.name == "rdsm.tif"
+        h, w = surf.shape
+        xs, ys = [], []
+        for p in pts:
+            u, v, hm = float(p["u"]), float(p["v"]), float(p["height_m"])
+            if not (0 <= u <= 1 and 0 <= v <= 1 and np.isfinite(hm)):
+                raise HTTPException(422, "points need u, v in [0, 1] and a finite height_m")
+            c, r = min(w - 1, int(u * (w - 1) + 0.5)), min(h - 1, int(v * (h - 1) + 0.5))
+            win = surf[max(0, r - 1):r + 2, max(0, c - 1):c + 2]
+            xs.append(float(np.nanmedian(win))); ys.append(hm)
+        x, y = np.array(xs), np.array(ys)
+        if np.ptp(x) < 1e-6:
+            raise HTTPException(422, "points sit at the same surface height; spread them over low and high ground")
+        a, b = huber_affine(x, y)
+        pred = a * x + b
+        ss_res = float(np.sum((y - pred) ** 2)); ss_tot = float(np.sum((y - y.mean()) ** 2)) or 1e-9
+        loo = []
+        if len(x) >= 3:
+            for i in range(len(x)):
+                m = np.arange(len(x)) != i
+                if np.ptp(x[m]) > 1e-6:
+                    ai, bi = huber_affine(x[m], y[m]); loo.append(float(y[i] - (ai * x[i] + bi)))
+        result = {"a": a, "b": b, "n": len(x), "r2": 1 - ss_res / ss_tot,
+                  "rmse_m": float(np.sqrt(ss_res / len(x))),
+                  "loo_rmse_m": float(np.sqrt(np.mean(np.square(loo)))) if loo else None,
+                  "residuals_m": [float(v) for v in (y - pred)], "relative_input": relative,
+                  "warning": ("a is negative – check the points" if a <= 0 else
+                              "only 2 points: no error estimate" if len(x) < 3 else None)}
+        if not body.apply:
+            return result
+        if a <= 0:
+            raise HTTPException(422, "refusing to apply a negative scale; check the points")
+        # ---- apply: back up once, then rewrite from the originals
+        created = []
+        if not backup.is_dir():
+            (backup / "viewer").mkdir(parents=True)
+            for rel in _GCP_BACKUP:
+                if (folder / rel).is_file():
+                    shutil.copy2(folder / rel, backup / rel)
+            if not (folder / "dsm.tif").is_file():
+                created.append("dsm.tif")
+            (backup / "created.json").write_text(json.dumps(created))
+        vm = json.loads((backup / "viewer" / "meta.json").read_text(encoding="utf-8"))
+        top = json.loads((backup / "meta.json").read_text(encoding="utf-8")) if (backup / "meta.json").is_file() else {}
+        new = a * surf + b
+        target = folder / "dsm.tif"
+        shutil.copy2(surf_path, target) if not target.is_file() or relative else None
+        _rewrite_tif(target, new)
+        with rasterio.open(target, "r+") as dst:
+            dst.update_tags(UNITS="metre", DESCRIPTION="DepthWizard DSM calibrated with interactive GCPs")
+        for name, fn in (("dtm.tif", lambda z: a * z + b), ("ndsm.tif", lambda z: a * z), ("uncertainty.tif", lambda z: abs(a) * z)):
+            if (backup / name).is_file():
+                _rewrite_tif(folder / name, fn(read_raster(backup / name)[0]))
+        # viewer layers (height.bin is in display units)
+        scale_in = _view_scale(vm)
+        hb = np.fromfile(backup / "viewer" / "height.bin", dtype="<f4") / scale_in
+        (a * hb + b).astype("<f4").tofile(folder / "viewer" / "height.bin")
+        if (backup / "viewer" / "dtm.bin").is_file():
+            (a * np.fromfile(backup / "viewer" / "dtm.bin", dtype="<f4") + b).astype("<f4").tofile(folder / "viewer" / "dtm.bin")
+        if (backup / "viewer" / "unc.bin").is_file():
+            (abs(a) * np.fromfile(backup / "viewer" / "unc.bin", dtype="<f4") / scale_in).astype("<f4").tofile(folder / "viewer" / "unc.bin")
+        if (backup / "viewer" / "buildings.json").is_file():
+            bj = json.loads((backup / "viewer" / "buildings.json").read_text(encoding="utf-8"))
+            for bd in bj.get("buildings", []):
+                for k in ("height_m", "height_raw_m"):
+                    if bd.get(k) is not None:
+                        bd[k] = round(float(bd[k]) * a, 2)
+                for k in ("ground_elevation_m", "roof_elevation_m"):
+                    if bd.get(k) is not None:
+                        bd[k] = round(float(bd[k]) * a + b, 2)
+                if bd.get("volume_m3") is not None:
+                    bd["volume_m3"] = round(float(bd["volume_m3"]) * a * (1 if not relative else 1), 1)
+                bd["storeys"] = max(1, round(bd.get("height_m", 0) / 3.0))
+            (folder / "viewer" / "buildings.json").write_text(json.dumps(bj, indent=2), encoding="utf-8")
+        record = {"method": "gcp-interactive", "scale_source": f"{len(x)} interactive ground-control points",
+                  "evidence_level": "measured" if len(x) >= 3 else "provisional", "scale_k": a, "offset_m": b,
+                  "fit_r2": result["r2"], "rmse_m": result["rmse_m"], "loo_rmse_m": result["loo_rmse_m"],
+                  "points": pts, "base": vm.get("calibration", {})}
+        hv = a * hb + b
+        for m, path in ((vm, folder / "viewer" / "meta.json"), (top, folder / "meta.json")):
+            if not m:
+                continue
+            m = dict(m)
+            m["units"] = "metre"; m["dsm_file"] = "dsm.tif"
+            m["calibration"] = {**(m.get("calibration") or {}), **record}
+            m.setdefault("evidence_bundle", {})["calibration_method"] = "gcp-interactive"
+            if path.parent.name == "viewer":
+                m["h_min"], m["h_max"] = float(hv.min()), float(hv.max())
+                m.pop("display_height_m", None)
+            path.write_text(json.dumps(m, indent=2, default=float), encoding="utf-8")
+        for stale in (folder / "exports").glob("*") if (folder / "exports").is_dir() else ():
+            stale.unlink(missing_ok=True)
+        result["applied"] = True
+        return result
+
 
 @app.post("/api/scenes/{job_id}/rescale")
 def rescale(job_id: str, body: RescaleBody):
@@ -713,25 +998,12 @@ def rescale(job_id: str, body: RescaleBody):
         # independent reference when it is still available, or remove stale
         # scores rather than displaying the previous surface's accuracy.
         validation = None
-        reference_path = None
-        manifest = folder / "job.json"
-        if manifest.is_file():
-            names = json.loads(manifest.read_text(encoding="utf-8")).get("input_names", {})
-            ref_name = names.get("reference")
-            if ref_name and (folder / "inputs" / Path(ref_name).name).is_file():
-                reference_path = folder / "inputs" / Path(ref_name).name
-        if reference_path is None:
-            fingerprint = vm.get("evidence_bundle", {}).get("reference_sha256")
-            if fingerprint and (folder / "inputs").is_dir():
-                for candidate in (folder / "inputs").iterdir():
-                    if candidate.is_file() and _file_hash16(candidate) == fingerprint:
-                        reference_path = candidate
-                        break
+        image_path = _find_original(folder, vm, "image")
+        reference_path = _find_original(folder, vm, "reference", near=image_path.parent if image_path else None)
         if reference_path:
             from depthwizard.io import match_grid, read_image
             from depthwizard.metrics import evaluate, reference_on_grid, building_level
-            image_path = folder / "inputs" / Path(vm["input"]).name
-            if image_path.is_file():
+            if image_path is not None and image_path.is_file():
                 image = match_grid(read_image(image_path), dsm.shape)
                 reference_grid = reference_on_grid(reference_path, image)
                 validation = evaluate(dsm, reference_grid, "metre", rgb=image.rgb, gsd=float(vm["gsd_m"]))
