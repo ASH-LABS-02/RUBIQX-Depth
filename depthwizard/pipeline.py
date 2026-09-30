@@ -23,8 +23,10 @@ def _clean_numpy(d):
         return {k: _clean_numpy(v) for k, v in d.items()}
     if isinstance(d, list):
         return [_clean_numpy(v) for v in d]
-    if isinstance(d, (np.integer, np.floating)):
+    if isinstance(d, (np.integer, np.floating, np.bool_)):
         return d.item()
+    if isinstance(d, np.ndarray):
+        return d.tolist()
     return d
 
 def _file_sha256(path: str | Path | None) -> str | None:
@@ -381,6 +383,6 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         baseline=getattr(cal, "extras", {}).get("dem") if units == "metre" else None,
         uncertainty=unc_view, susceptibility=susc)
     dio.save_preview(out / "preview.png", view_h, gsd=gsd)
-    (out / "meta.json").write_text(json.dumps(_clean_numpy(meta), separators=(',', ':')))
+    (out / "meta.json").write_text(json.dumps(_clean_numpy(meta), separators=(',', ':'), default=float))
     log(f"done in {meta['timing_s']['total']} s -> {out}")
     return meta

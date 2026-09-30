@@ -94,3 +94,15 @@ def test_find_original_for_demo_scene(monkeypatch, tmp_path):
     assert img.name == "rgb.tif"
     ref = srv._find_original(folder, meta, "reference", near=img.parent)
     assert ref is not None and ref.name.startswith("lidar")
+
+
+def test_find_original_for_legacy_scene_without_hashes(monkeypatch, tmp_path):
+    """Old scenes have no evidence bundle: match the image by name + size + georeference."""
+    srv, c = _client(monkeypatch, tmp_path, scenes=("dc-capitol-hill",))
+    folder = tmp_path / "dc-capitol-hill"
+    meta = {**json.loads((folder / "viewer" / "meta.json").read_text()), **json.loads((folder / "meta.json").read_text())}
+    img = srv._find_original(folder, meta, "image")
+    if img is None:
+        pytest.skip("sample imagery not bundled")
+    assert img.parent.name == "capitol_hill_east"          # not Glover Park's rgb.tif
+    assert srv._find_original(folder, meta, "dem", near=img.parent).name == "dtm_2018_32m.tif"

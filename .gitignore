@@ -26,3 +26,8 @@ data/jobs/*
 !data/jobs/quesenbank-*
 !data/jobs/gamus-*
 
+
+# generated caches
+data/jobs/*/viewer/normal.png
+data/jobs/*/gcp_backup/
+data/jobs/*/status.json

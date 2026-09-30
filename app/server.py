@@ -34,6 +34,17 @@ JOBS.mkdir(parents=True, exist_ok=True)
 TRAINING_ROOT = Path(os.environ.get("DEPTHWIZARD_TRAINING_ROOT", "D:/DepthWizard"))
 
 app = FastAPI(title="DepthWizard")
+
+
+@app.middleware("http")
+async def _revalidate_scene_files(request, call_next):
+    """Scene files change in place (rescale, GCP apply, change detection). Let the
+    browser cache them but always revalidate (cheap 304s), so it never shows stale
+    heights or buildings after an edit."""
+    response = await call_next(request)
+    if request.url.path.startswith("/jobs/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 _status: dict[str, dict] = {}
 _comparison_status: dict[str, dict] = {}
 _lock = threading.Lock()   # one model inference at a time (GPU memory)
@@ -504,6 +515,52 @@ def _hash16_cached(path: Path) -> str:
     return value
 
 
+_LEGACY_HINTS = {"dem": ("dem_30m", "dtm_2018_32m", "_32m", "_30m", "cop30", "srtm", "dem", "dtm"),
+                 "reference": ("lidar", "reference", "ref_dsm", "dsm_2024")}
+
+
+def _find_legacy_original(meta: dict, kind: str, wanted: str | None, near: Path | None) -> Path | None:
+    """Scenes made before the evidence bundle existed carry no file hashes.
+    The image is matched by name plus identical size and georeference; DEM and
+    reference are then taken from the same sample folder by filename."""
+    if kind == "image":
+        if not wanted:
+            return None
+        src_w, src_h = meta.get("src_w"), meta.get("src_h")
+        tr = meta.get("transform")
+        for cand in sorted((ROOT / "samples").rglob(Path(wanted).name)):
+            try:
+                if cand.suffix.lower() in (".tif", ".tiff"):
+                    with rasterio.open(cand) as src:
+                        if src_w and (src.width, src.height) != (src_w, src_h):
+                            continue
+                        if tr and not np.allclose(list(src.transform)[:6], tr[:6], rtol=0, atol=1e-6):
+                            continue
+                else:
+                    with Image.open(cand) as im:
+                        if src_w and im.size != (src_w, src_h):
+                            continue
+                return cand
+            except Exception:  # noqa: BLE001
+                continue
+        return None
+    if near is None or kind not in _LEGACY_HINTS:
+        return None
+    files = [f for f in sorted(near.iterdir()) if f.is_file() and f.suffix.lower() in (".tif", ".tiff")]
+    image_name = str(meta.get("input") or "")
+    stem_hint = Path(image_name).stem.lower().split("_rgb")[0] if "_rgb" in image_name.lower() else ""
+    if stem_hint and any(f.name.lower().startswith(stem_hint) for f in files):
+        files = [f for f in files if f.name.lower().startswith(stem_hint)]   # e.g. forest_south_* only
+    for hint in _LEGACY_HINTS[kind]:
+        for f in files:
+            name = f.name.lower()
+            if hint in name and "rgb" not in name:
+                if kind == "dem" and any(k in name for k in ("lidar", "reference", "1m")):
+                    continue
+                return f
+    return None
+
+
 def _find_original(folder: Path, meta: dict, kind: str, near: Path | None = None) -> Path | None:
     """Locate an original input (image, dem, gcp, reference) for a scene.
 
@@ -527,7 +584,7 @@ def _find_original(folder: Path, meta: dict, kind: str, near: Path | None = None
     if recorded and Path(recorded).is_file() and (not fingerprint or _hash16_cached(Path(recorded)) == fingerprint):
         return Path(recorded)
     if not fingerprint:
-        return None
+        return _find_legacy_original(meta, kind, wanted, near)
     suffixes = {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".csv"}
     search = [inputs] + ([near] if near else []) + [ROOT / "samples", ROOT / "data" / "inputs"]
     seen = set()
