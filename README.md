@@ -5,9 +5,9 @@ Smart India Hackathon 2026 · Problem Statement 26175 (ISRO / SAC) · Team RUBIQ
 
 ![DepthWizard: 3D city from a single satellite image](docs/images/present.jpg)
 
-| Reference-held-out DC LiDAR check (2 scenes) | Model fine-tuned on aerial LiDAR | Runs offline |
+| Absolute height, 30 held-out GAMUS tiles | Reference-held-out DC LiDAR check (2 scenes) | Runs offline |
 |---|---|---|
-| **5.07 m RMSE / 3.74 m MAE** vs **9.04 m / 6.92 m** for the input DTM alone | correlation **0.41 → 0.79** on 30 held-out tiles (reference-aligned shape) | one laptop, no cloud, open formats |
+| **3.46 m RMSE / 2.18 m MAE, r 0.79** – single image, **no per-tile fitting** (shape-aligned: 3.00 m; pretrained shape-aligned: 4.76 m, r 0.41) | **5.07 m RMSE / 3.74 m MAE** vs **9.04 m / 6.92 m** for the input DTM alone | one laptop, no cloud, open formats; [live demo](http://16.170.173.94/) |
 
 The two DC scenes use a 2018 DTM for calibration and a 2024 LiDAR DSM only for
 scoring. They are a small, related-domain evaluation because the sites are near
@@ -267,6 +267,12 @@ The app opens into **Terrain Mission Control**: a full-bleed 3D scene, a compact
   pyinstaller --onedir --add-data "web:web" --add-data "data:data" --collect-all transformers run.py
   ```
 
+## Repository notes
+
+- `data/jobs/` and `samples/*/evaluation/` contain processed demo scenes (GeoTIFFs and viewer `.bin` files) on purpose: the gallery, the live demo and the validation panel open instantly without a GPU, and every reported number can be checked against the stored outputs. New jobs you create are git-ignored.
+- Model and dataset locations are settings, not hard-coded paths: put the checkpoint in `models/da2-gamus-full` or set `DEPTHWIZARD_CHECKPOINT`; set `DEPTHWIZARD_GAMUS_ROOT` for the GAMUS evaluation and `DEPTHWIZARD_TRAINING_ROOT` for training outputs.
+- `pytest -q tests` runs 28 tests covering calibration, anchors, rescaling, the job queue, disaster tools, uncertainty calibration and the GAMUS scoring modes.
+
 ## Test data
 
 `scripts/make_synthetic_scene.py` generates a fully known scene. It contains:
@@ -280,9 +286,13 @@ This lets every mode and metric be checked without any downloads. It is a plumbi
 
 Two real GAMUS RGB/AGL test pairs are ready in [samples/gamus/](samples/gamus/README.md), with provenance, upload instructions, and a measured pretrained baseline. Two georeferenced forest crops with RGB, a 30 m DEM, and a reference DSM are ready in [samples/quesenbank/](samples/quesenbank/README.md). Those crops exercise the absolute DSM route, but broader independent LiDAR evaluation is still needed for an accuracy claim.
 
-On those two Quesenbank crops, the fine-tuned model with the nonnegative DEM-fusion calibration has a mean absolute DSM RMSE of **6.70 m** and MAE of **3.60 m**, versus **7.79 m** and **4.93 m** for the prior fusion method. Both methods use a 30 m DEM downsampled from the same survey's high-resolution DEM, so this is a cross-landscape pipeline check, not independent LiDAR validation. The 30 GAMUS held-out test tiles have mean affine-aligned RMSE **3.00 m** versus **4.76 m** for the pretrained Small backbone; that alignment uses each test tile's AGL reference and measures relative shape only.
+On those two Quesenbank crops, the fine-tuned model with the nonnegative DEM-fusion calibration has a mean absolute DSM RMSE of **6.70 m** and MAE of **3.60 m**, versus **7.79 m** and **4.93 m** for the prior fusion method. Both methods use a 30 m DEM downsampled from the same survey's high-resolution DEM, so this is a cross-landscape pipeline check, not independent LiDAR validation. The 30 GAMUS held-out test tiles have mean affine-aligned RMSE **3.00 m** versus **4.76 m** for the pretrained Small backbone; that alignment uses each test tile's AGL reference and measures relative shape only. Scored with **no alignment at all** – the fine-tuned model's own metric output – the same tiles give **3.46 m RMSE, 2.18 m MAE, r 0.79**, with tall objects about 18 % too low on average (details and per-city numbers in [docs/BENCHMARKS.md](docs/BENCHMARKS.md), raw results in `docs/eval/gamus30/`).
 
 ## Known limitations
+
+- **Evaluation breadth.** Absolute accuracy is measured on 30 GAMUS tiles from three US cities and two DC LiDAR scenes near the training region. There is no Indian, Cartosat, hilly or dense-forest validation yet; that is the top priority, followed by more non-urban LiDAR sites.
+- **Building heights.** Tall objects are under-estimated (about 30 % low on DC/NYC GAMUS tiles; median 4.3 m vs 9.4 m on Glover Park buildings when only the learned scale is available). One supplied height or a few GCPs correct most of this.
+- **Uncertainty.** `uncertainty.tif` is a calibrated 1-sigma error fitted on only two scenes (held-out 1σ coverage 52–88 %); treat it as provisional. The viewer's confidence layer is a relative reliability index, not a probability.
 
 - Monocular height is weakest on:
   - Uniform flat roofs, where there is little texture.

@@ -121,9 +121,18 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     unc_units = None
     if std_rel is not None:
         unc_units = std_rel * (cal.scale_k if units == "metre" and cal.scale_k else 1.0)
-        dio.write_dsm(out / "uncertainty.tif", unc_units, img,
-                      units=units if units == "metre" else "relative",
-                      description="1-sigma spread of the rotation ensemble")
+        if units == "metre":
+            # exported error bar: calibrated 1-sigma in metres (see uncertainty.py);
+            # the raw spread stays available and still drives the relative
+            # reliability (confidence) layer in the viewer
+            from .uncertainty import calibrated_sigma
+            dio.write_dsm(out / "ensemble_spread.tif", unc_units, img, units="metre",
+                          description="1-sigma spread of the rotation ensemble (relative reliability, not an error bar)")
+            dio.write_dsm(out / "uncertainty.tif", calibrated_sigma(unc_units), img, units="metre",
+                          description="calibrated 1-sigma height error (provisional; see uncertainty.py)")
+        else:
+            dio.write_dsm(out / "uncertainty.tif", unc_units, img, units="relative",
+                          description="1-sigma spread of the rotation ensemble")
 
     meta = {
         "input": Path(image_path).name,
@@ -262,7 +271,11 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
             dio.write_dsm(out / "dsm.tif", dsm, img, units="metre", description=f"DepthWizard height-anchor ({backbone})", vertical_datum=datum)
             dio.write_dsm(out / "ndsm.tif", cal.ndsm, img, units="metre", description=f"DepthWizard above-ground heights nDSM ({backbone})", vertical_datum=datum)
             if unc_units is not None:
-                dio.write_dsm(out / "uncertainty.tif", unc_units, img, units="metre", description="1-sigma spread of the rotation ensemble")
+                from .uncertainty import calibrated_sigma
+                dio.write_dsm(out / "ensemble_spread.tif", unc_units, img, units="metre",
+                              description="1-sigma spread of the rotation ensemble (relative reliability, not an error bar)")
+                dio.write_dsm(out / "uncertainty.tif", calibrated_sigma(unc_units), img, units="metre",
+                              description="calibrated 1-sigma height error (provisional; see uncertainty.py)")
             
             for b in buildings["buildings"]:
                 from .roof_fit import rescale_roof_fit
@@ -373,8 +386,13 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         confidence_map = np.exp(-unc_view / scale).astype(np.float32)
     else:
         confidence_map = np.clip(1.0 - unc_norm, 0.0, 1.0).astype(np.float32)
-    meta["confidence_definition"] = ("exp(-sigma / 2 m), sigma = rotation-ensemble spread"
+    meta["confidence_definition"] = ("exp(-spread / 2 m), spread = rotation-ensemble spread; "
+                                     "a relative reliability index, not a probability"
                                      if units == "metre" else "relative ensemble agreement")
+    if units == "metre" and unc_units is not None:
+        from .uncertainty import PROVENANCE
+        meta["uncertainty_calibration"] = dict(PROVENANCE, file="uncertainty.tif",
+                                               raw_spread_file="ensemble_spread.tif")
 
     meta["timing_s"]["total"] = round(time.time() - t0, 2)
     dio.export_viewer_assets(

@@ -98,7 +98,7 @@ Competitor columns summarise what their public material shows (see
 | Large scenes | ✅ tiled inference; automatic downsampling above 64 MP (`DEPTHWIZARD_MAX_MP`); viewer downsamples |
 | REST API + docs | ✅ FastAPI `/docs`, product, CityJSON, PLY, change endpoints |
 | Exports | ✅ GeoTIFF (DSM/DTM/nDSM/σ), GLB, OBJ, PLY, CityJSON, one-click export-all ZIP |
-| Tests / CI | ✅ 12 pytest tests, GitHub Actions workflow |
+| Tests / CI | ✅ 28 pytest tests, GitHub Actions workflow |
 | Model card / reproducibility | ✅ `docs/MODEL_CARD.md`, `docs/BENCHMARKS.md` |
 | Security | 🟡 local-only processing; no auth (single-user app) |
 

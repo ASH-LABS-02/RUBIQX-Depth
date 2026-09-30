@@ -833,7 +833,7 @@ class GcpBody(BaseModel):
     reset: bool = False
 
 
-_GCP_BACKUP = ("dsm.tif", "rdsm.tif", "dtm.tif", "ndsm.tif", "uncertainty.tif", "meta.json",
+_GCP_BACKUP = ("dsm.tif", "rdsm.tif", "dtm.tif", "ndsm.tif", "uncertainty.tif", "ensemble_spread.tif", "meta.json",
                "viewer/meta.json", "viewer/height.bin", "viewer/dtm.bin", "viewer/buildings.json", "viewer/unc.bin")
 
 
@@ -918,9 +918,14 @@ def gcp_fit(job_id: str, body: GcpBody):
         _rewrite_tif(target, new)
         with rasterio.open(target, "r+") as dst:
             dst.update_tags(UNITS="metre", DESCRIPTION="DepthWizard DSM calibrated with interactive GCPs")
-        for name, fn in (("dtm.tif", lambda z: a * z + b), ("ndsm.tif", lambda z: a * z), ("uncertainty.tif", lambda z: abs(a) * z)):
+        for name, fn in (("dtm.tif", lambda z: a * z + b), ("ndsm.tif", lambda z: a * z), ("uncertainty.tif", lambda z: abs(a) * z),
+                         ("ensemble_spread.tif", lambda z: abs(a) * z)):
             if (backup / name).is_file():
                 _rewrite_tif(folder / name, fn(read_raster(backup / name)[0]))
+        if (backup / "ensemble_spread.tif").is_file():
+            # exported sigma = calibrated error model applied to the rescaled spread
+            from depthwizard.uncertainty import calibrated_sigma
+            _rewrite_tif(folder / "uncertainty.tif", calibrated_sigma(read_raster(folder / "ensemble_spread.tif")[0]))
         # viewer layers (height.bin is in display units)
         scale_in = _view_scale(vm)
         hb = np.fromfile(backup / "viewer" / "height.bin", dtype="<f4") / scale_in
@@ -1012,7 +1017,7 @@ def rescale(job_id: str, body: RescaleBody):
             shutil.copy2(folder / "dsm.tif", folder / "dsm_raw.tif")
             _rewrite_tif(folder / "dsm_raw.tif", current_dsm - (old_scale - 1.0) * raw_ndsm)
         # 1. snapshot originals once – every rescale starts from these
-        for n in ("ndsm", "dsm", "uncertainty"):
+        for n in ("ndsm", "dsm", "uncertainty", "ensemble_spread"):
             src, raw = folder / f"{n}.tif", folder / f"{n}_raw.tif"
             if src.exists() and not raw.exists():
                 shutil.copy2(src, raw)
@@ -1042,7 +1047,14 @@ def rescale(job_id: str, body: RescaleBody):
         _rewrite_tif(folder / "ndsm.tif", ndsm)
         _rewrite_tif(folder / "dsm.tif", dsm)
         unc = None
-        if (folder / "uncertainty_raw.tif").exists():
+        if (folder / "ensemble_spread_raw.tif").exists():
+            # scenes with a calibrated error bar: rescale the raw spread, keep it
+            # for the viewer's reliability layer, and derive the exported sigma
+            from depthwizard.uncertainty import calibrated_sigma
+            unc = read_raster(folder / "ensemble_spread_raw.tif")[0] * s
+            _rewrite_tif(folder / "ensemble_spread.tif", unc)
+            _rewrite_tif(folder / "uncertainty.tif", calibrated_sigma(unc))
+        elif (folder / "uncertainty_raw.tif").exists():
             unc = read_raster(folder / "uncertainty_raw.tif")[0] * s
             _rewrite_tif(folder / "uncertainty.tif", unc)
 
@@ -1176,7 +1188,7 @@ def rescale(job_id: str, body: RescaleBody):
                 stale.unlink(missing_ok=True)
 
         if body.reset:   # restore raws exactly, then drop them
-            for n in ("ndsm", "dsm", "uncertainty"):
+            for n in ("ndsm", "dsm", "uncertainty", "ensemble_spread"):
                 raw = folder / f"{n}_raw.tif"
                 if raw.exists():
                     shutil.move(raw, folder / f"{n}.tif")

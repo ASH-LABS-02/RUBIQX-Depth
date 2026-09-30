@@ -17,7 +17,28 @@ absolute accuracy). Test tiles were never used for training or validation.
 | Depth Anything V2 Small (pretrained) | 4.76 m | 3.71 m | 0.41 |
 | **DepthWizard GAMUS fine-tune** | **3.00 m** | **1.90 m** | **0.79** |
 
-All 30 tiles improved. Source: `D:\DepthWizard\evaluation\gamus-30-test`.
+All 30 tiles improved. Results: `docs/eval/gamus30/` (rows marked `[aligned]`).
+
+### 1b. Absolute height – same 30 tiles, **no fitting to the reference**
+
+The fine-tuned checkpoint's own metric output (learned pixel-footprint scale
+C = 0.674, fitted on GAMUS *validation* tiles, never on these test tiles)
+scored directly against the LiDAR AGL. Nothing is fitted per tile, so this is
+the honest single-image number. 0.33 m/px, TTA 1.
+
+| Tiles | RMSE | MAE | r | Mean bias | Median est/ref height, objects > 3 m |
+|---|---:|---:|---:|---:|---:|
+| DC (10) | 4.88 m | 3.20 m | 0.84 | −1.52 m | 0.71 |
+| NYC (10) | 3.52 m | 2.31 m | 0.66 | −0.92 m | 0.70 |
+| PHL (10) | 1.99 m | 1.01 m | 0.88 | −0.03 m | 0.98 |
+| **All 30** | **3.46 m** | **2.18 m** | **0.79** | **−0.82 m** | **0.82** |
+
+Absolute RMSE is only 0.46 m worse than the shape-aligned score, so the learned
+scale transfers to unseen tiles. The remaining error is mostly a height
+*under*-estimate of tall objects (about 30 % low in DC and NYC), the same
+building bias seen in §3. The pretrained backbone cannot be scored this way
+because it has no metric output. All tiles are US cities (DC, New York,
+Philadelphia); this is not evidence for Indian scenes.
 
 ## 2. Absolute DSM – reference-held-out DC LiDAR evaluation
 
@@ -115,10 +136,25 @@ scene-wide bias.
 
 Finding: σ **ranks** reliability well (error grows steadily with σ), but its
 absolute size is 9–16× too small, because the ensemble only captures
-orientation disagreement, not calibration or domain error. Treat the
-uncertainty and confidence layers as a *relative* map of where to check, not
-as calibrated metres. Next step: fit a σ scale on GAMUS validation tiles (not
-on these test scenes) and add a calibration-scale term.
+orientation disagreement, not calibration or domain error.
+
+### 5b. Calibrated error bar (now used for `uncertainty.tif`)
+
+Metric scenes now export a calibrated 1-sigma error,
+`sigma = sqrt(4.0² + (5.5 × spread)²)` metres (`depthwizard/uncertainty.py`);
+the raw spread is kept as `ensemble_spread.tif` and still drives the viewer's
+relative reliability layer. Leave-one-scene-out check on raw (not
+bias-removed) errors:
+
+| Fitted on | Tested on | Within 1σ, raw spread | Within 1σ, calibrated (ideal 68 %) | Within 2σ, calibrated (ideal 95 %) |
+|---|---|---:|---:|---:|
+| Glover Park | Capitol Hill East | 9 % | 88 % | 99 % |
+| Capitol Hill East | Glover Park | 5 % | 52 % | 79 % |
+
+The shipped constants are fitted on both scenes. Two scenes is a small
+calibration set, so the error bar is labelled provisional; it is fitted to the
+DEM + learned-scale route and is conservative for GCP- or anchor-calibrated
+scenes. Refit with `scripts/uncertainty_coverage.py` as reference scenes are added.
 
 ## Reproduce
 
@@ -126,9 +162,11 @@ on these test scenes) and add a calibration-scale term.
 python -m depthwizard samples/dc_lidar/glover_park/rgb.tif \
   --dem samples/dc_lidar/glover_park/dtm_2018_32m.tif \
   --ref samples/dc_lidar/glover_park/lidar_dsm_2024.tif \
-  --model D:/DepthWizard/checkpoints/da2-gamus-full --scene urban -o out/glover
-python scripts/evaluate_gamus_h5.py --root D:/DepthWizard/GAMUS \
-  --models small D:/DepthWizard/checkpoints/da2-gamus-full --out out/gamus30
+  --model models/da2-gamus-full --scene urban -o out/glover
+# GAMUS test split: <root>/images/test/*.h5 and <root>/heights/test/*.h5
+export DEPTHWIZARD_GAMUS_ROOT=/path/to/GAMUS
+python scripts/evaluate_gamus_h5.py --models small models/da2-gamus-full \
+  --mode both --out out/gamus30          # aligned (shape) and absolute (no fitting)
 python scripts/uncertainty_coverage.py samples/dc_lidar/evaluation/001_rgb \
   samples/dc_lidar/glover_park/rgb.tif samples/dc_lidar/glover_park/lidar_dsm_2024.tif
 pytest -q tests

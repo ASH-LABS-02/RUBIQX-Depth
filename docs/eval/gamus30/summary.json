@@ -1,0 +1,66 @@
+{
+  "da2-gamus-full[aligned]/DC": {
+    "tiles": 10,
+    "mean_rmse_m": 4.222264391894132,
+    "mean_mae_m": 2.8714060372225085,
+    "mean_r": 0.8399835025718583,
+    "mean_bias_m": 4.920045486933058e-15,
+    "median_ratio_tall": 0.9820639751158191
+  },
+  "da2-gamus-full[aligned]/all": {
+    "tiles": 30,
+    "mean_rmse_m": 2.995167011972352,
+    "mean_mae_m": 1.8973775981840224,
+    "mean_r": 0.792661124287589,
+    "mean_bias_m": 3.391567263008422e-15,
+    "median_ratio_tall": 0.8975495638169882
+  },
+  "da2-gamus-full[absolute]/DC": {
+    "tiles": 10,
+    "mean_rmse_m": 4.880791212781104,
+    "mean_mae_m": 3.2029940790314955,
+    "mean_r": 0.8424699276048271,
+    "mean_bias_m": -1.5233662098481109,
+    "median_ratio_tall": 0.7108696580584671
+  },
+  "da2-gamus-full[absolute]/all": {
+    "tiles": 30,
+    "mean_rmse_m": 3.4634887754723493,
+    "mean_mae_m": 2.175404171501443,
+    "mean_r": 0.7939656838865639,
+    "mean_bias_m": -0.8240039718342059,
+    "median_ratio_tall": 0.8223147181919687
+  },
+  "da2-gamus-full[aligned]/NYC": {
+    "tiles": 10,
+    "mean_rmse_m": 2.9498511675279304,
+    "mean_mae_m": 1.88328500927296,
+    "mean_r": 0.6642848387218774,
+    "mean_bias_m": 3.680221275295659e-15,
+    "median_ratio_tall": 0.843685042557745
+  },
+  "da2-gamus-full[absolute]/NYC": {
+    "tiles": 10,
+    "mean_rmse_m": 3.5201382793206717,
+    "mean_mae_m": 2.309514780127363,
+    "mean_r": 0.6636960996960501,
+    "mean_bias_m": -0.9208982362346039,
+    "median_ratio_tall": 0.6974480492278824
+  },
+  "da2-gamus-full[aligned]/PHL": {
+    "tiles": 10,
+    "mean_rmse_m": 1.8133854764949935,
+    "mean_mae_m": 0.9374417480565983,
+    "mean_r": 0.873715031569031,
+    "mean_bias_m": 1.5744350267965502e-15,
+    "median_ratio_tall": 0.9397543295439857
+  },
+  "da2-gamus-full[absolute]/PHL": {
+    "tiles": 10,
+    "mean_rmse_m": 1.9895368343152693,
+    "mean_mae_m": 1.0137036553454728,
+    "mean_r": 0.8757310243588148,
+    "mean_bias_m": -0.02774746941990301,
+    "median_ratio_tall": 0.9798568193891004
+  }
+}

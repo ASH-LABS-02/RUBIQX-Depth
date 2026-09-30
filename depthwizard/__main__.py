@@ -53,7 +53,11 @@ def main(argv=None):
     if model is None:
         import os
         from pathlib import Path
-        for path in ("D:/DepthWizard/checkpoints/da2-gamus-full", "models/da2-gamus-full"):
+        training_root = os.environ.get("DEPTHWIZARD_TRAINING_ROOT", "D:/DepthWizard")
+        candidates = [os.environ.get("DEPTHWIZARD_CHECKPOINT"),
+                      "models/da2-gamus-full",   # bundled location (Docker / repo)
+                      f"{training_root}/checkpoints/da2-gamus-full"]
+        for path in (c for c in candidates if c):
             if Path(path).exists():
                 model = path
                 print(f"using GAMUS checkpoint from {path}")
