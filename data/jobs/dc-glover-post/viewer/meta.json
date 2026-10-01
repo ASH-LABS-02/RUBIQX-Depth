@@ -1,6 +1,10 @@
 {
   "input": "rgb_post_simulated.tif",
-  "backbone": "/home/claude/da2-gamus-full",
+  "input_paths": {
+    "image": "C:\\Users\\AR\\Desktop\\depthwizard\\samples\\dc_lidar\\glover_park\\rgb_post_simulated.tif",
+    "dem": "C:\\Users\\AR\\Desktop\\depthwizard\\samples\\dc_lidar\\glover_park\\dtm_2018_32m.tif"
+  },
+  "backbone": "D:\\DepthWizard\\checkpoints\\da2-gamus-full",
   "georeferenced": true,
   "crs": "EPSG:26985",
   "transform": [
@@ -15,17 +19,17 @@
   "vertical_datum": "same as input DEM",
   "calibration": {
     "method": "dem+learned-scale",
-    "scale_k": 12.739947211351023,
+    "scale_k": 19.94924506836105,
     "n_gcp": 0,
     "dem_coverage": 1.0,
     "scale_source": "learned pixel-footprint scale",
     "evidence_level": "approximate",
     "dem_kind": "terrain",
-    "dem_hp_r": -0.08038757895250061,
+    "dem_hp_r": -0.10503257600356714,
     "dem_resolution_m": 32.0,
     "reference_consistent": false,
-    "consistency_rmse_m": 0.16748807339850005,
-    "learned_scale_k": 12.739947211351023,
+    "consistency_rmse_m": 0.1674880735918291,
+    "learned_scale_k": 19.94924506836105,
     "structure_model": "agl-lower-tail",
     "vertical_datum": "same as input DEM",
     "match_dem_30m": false,
@@ -36,25 +40,82 @@
   "assumed_gsd_m": 1.0,
   "dsm_file": "dsm.tif",
   "tta": 4,
+  "water_fraction": 0.0,
   "agl_model": true,
-  "learned_scale_m_per_unit": 12.739947211351023,
+  "learned_scale_m_per_unit": 19.94924506836105,
   "timing_s": {
-    "depth": 15.75,
-    "total": 20.69
+    "depth": 7.09,
+    "total": 20.76
   },
-  "buildings_count": 115,
-  "total_footprint_m2": 26134.4,
+  "sun_input": {
+    "elevation_deg": null,
+    "azimuth_deg": null
+  },
+  "buildings_count": 147,
+  "total_footprint_m2": 31443.8,
+  "auto_anchors": {
+    "anchors": [],
+    "diagnostics": {
+      "sun_metadata": {
+        "elevation_deg": null,
+        "azimuth_deg": null,
+        "elevation_tag": null,
+        "azimuth_tag": null
+      },
+      "shadow": {
+        "source": "RGB shadow geometry",
+        "candidates": 147,
+        "accepted": 0,
+        "rejected": {},
+        "sun_elevation_deg": null,
+        "sun_azimuth_deg": null,
+        "notes": "single-image shadow length needs known solar elevation",
+        "skipped": "known solar elevation between 8 and 82 degrees is required"
+      },
+      "osm": {
+        "source": "OpenStreetMap",
+        "accepted": 0,
+        "height_tags": 0,
+        "levels_estimates": 0,
+        "rejected": {},
+        "attribution": "\u00a9 OpenStreetMap contributors",
+        "license": "ODbL",
+        "endpoint": "https://overpass-api.de/api/interpreter",
+        "bbox_south_west_north_east": [
+          38.9107431,
+          -77.0668779,
+          38.9153586,
+          -77.0609703
+        ],
+        "bbox_km2": 0.262,
+        "skipped": "OSM Overpass unavailable: HTTP Error 504: Gateway Timeout"
+      },
+      "selected_count": 0,
+      "warning": "automatic anchors are external/physics estimates, not independent validation",
+      "application_reason": "fewer than three consistent high-confidence anchors"
+    },
+    "applied": false,
+    "proposed_scale": 1.0,
+    "proposed_stats": {
+      "n_used": 0,
+      "rejected": [],
+      "ratios": [],
+      "cv": 0.0,
+      "loo_rmse": null,
+      "warning": null
+    }
+  },
   "evidence_bundle": {
     "image_sha256": "c70304e0e66ad3da",
     "dem_sha256": "6692b21db3b2856b",
     "gcp_sha256": null,
     "reference_sha256": null,
-    "model_identifier": "/home/claude/da2-gamus-full",
+    "model_identifier": "D:\\DepthWizard\\checkpoints\\da2-gamus-full",
     "rotation_passes": 4,
     "calibration_method": "dem+learned-scale",
     "scale_source": "learned pixel-footprint scale",
     "evidence_level": "approximate",
-    "scale_k": 12.739947211351023,
+    "scale_k": 19.94924506836105,
     "vertical_datum": "same as input DEM",
     "software_version": "DepthWizard 2.2 (SIH26175)"
   },
@@ -69,7 +130,7 @@
     ],
     [
       -77.06687359573182,
-      38.910743125617024
+      38.91074312561702
     ],
     [
       -77.06097027325946,
@@ -85,7 +146,7 @@
         "very_high": 0.0
       },
       "mean_slope_deg": 4.5523338375167395,
-      "max_slope_deg": 13.127996450058095,
+      "max_slope_deg": 13.12799645005784,
       "weights": {
         "slope": 0.5,
         "concavity": 0.15,
@@ -95,12 +156,20 @@
     },
     "solar": {
       "latitude_deg": 38.913050874165606,
-      "buildings": 115,
-      "total_pv_mwh_yr": 5775.0,
+      "buildings": 147,
+      "total_pv_mwh_yr": 6039.9,
       "assumptions": "GHI 1,900 kWh/m\u00b2/yr, 18 % modules, 70 % usable roof"
     }
   },
-  "confidence_definition": "exp(-sigma / 2 m), sigma = rotation-ensemble spread",
+  "confidence_definition": "exp(-spread / 2 m), spread = rotation-ensemble spread; a relative reliability index, not a probability",
+  "uncertainty_calibration": {
+    "model": "sqrt(4.0^2 + (5.5 * ensemble_spread)^2)",
+    "fitted_on": "2 DC LiDAR scenes (Glover Park, Capitol Hill East), DEM + learned-scale route",
+    "held_out_1sigma_coverage": "52-88 % (ideal 68 %); raw ensemble spread 5-9 %",
+    "status": "provisional - small calibration set",
+    "file": "uncertainty.tif",
+    "raw_spread_file": "ensemble_spread.tif"
+  },
   "grid_w": 512,
   "grid_h": 512,
   "src_w": 1024,
@@ -114,35 +183,9 @@
   "layers": {
     "base": true,
     "unc": true,
-    "susc": true,
-    "change": true
+    "susc": true
   },
   "validation_plot": null,
-  "h_min": 30.435075759887695,
-  "h_max": 73.61530303955078,
-  "change_against": "dc-glover-park",
-  "change_stats": {
-    "mean_change_m": -0.28311794996261597,
-    "volume_loss_m3": 67571.609375,
-    "volume_gain_m3": 2783.79443359375,
-    "area_lowered_ha": 0.8471,
-    "area_raised_ha": 0.0,
-    "buildings_checked": 131,
-    "buildings_height_loss": 12,
-    "building_ids_height_loss": [
-      8,
-      64,
-      68,
-      79,
-      83,
-      87,
-      89,
-      112,
-      117,
-      122,
-      125,
-      130
-    ],
-    "rule": "median roof drop > max(1.5 m, min(drop_m, 40 % of pre-event height))"
-  }
+  "h_min": 29.57244873046875,
+  "h_max": 79.30036926269531
 }
