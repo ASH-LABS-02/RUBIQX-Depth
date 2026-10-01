@@ -11,7 +11,7 @@ export function createDiorama(scene) {
     for(let x=0;x<64;x++){const noise=((x*37+y*113+x*y*17)%101)/100;ctx.fillStyle=noise>.55?'rgba(225,213,184,.09)':'rgba(0,0,0,.10)';ctx.fillRect(x,y,1,1);}
   }
   const texture=new THREE.CanvasTexture(soil);texture.colorSpace=THREE.SRGBColorSpace;texture.wrapS=THREE.RepeatWrapping;
-  const walls=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.MeshStandardMaterial({map:texture,roughness:1,side:THREE.DoubleSide}));
+  const walls=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.MeshStandardMaterial({map:texture,emissiveMap:texture,emissive:0xffffff,emissiveIntensity:.35,roughness:1,side:THREE.DoubleSide}));
   walls.castShadow=true;walls.receiveShadow=true;walls.name='Decorative soil cross-section';
   const rim=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x75d2da,transparent:true,opacity:.48}));
   const base=new THREE.Mesh(new THREE.PlaneGeometry(1,1),new THREE.MeshStandardMaterial({color:0x22272e,roughness:1,side:THREE.DoubleSide}));base.rotation.x=-Math.PI/2;base.receiveShadow=true;
@@ -25,7 +25,7 @@ export function createDiorama(scene) {
       vec2 d=abs(fract(q-.5)-.5)/max(fwidth(q),vec2(.0001));
       float line=1.-min(min(d.x,d.y),1.);
       float fade=1.-smoothstep(uExtent*1.4,uExtent*5.,length(vGround.xz));
-      diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.16,.26,.31),line*.23*fade);
+      diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.16,.26,.31),line*.055*fade);
       diffuseColor.a*=fade;`);
   };
   const ground=new THREE.Mesh(new THREE.PlaneGeometry(1,1),groundMaterial);ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;

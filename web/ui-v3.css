@@ -61,6 +61,12 @@
 #app.presentation #toolbar,#app.presentation #mode-rail,#app.presentation #app-header,#app.presentation #scene-hero,#app.presentation #minimap-shell{display:none!important}#app.presentation #north-arrow{position:static;width:32px;height:36px}#app.presentation #scale-bar-container{left:24px!important;right:auto;bottom:24px!important;gap:16px}
 #app.presentation #pres-title{top:24px;left:24px;padding:16px 24px;font-size:24px}#app.presentation #pres-metrics{padding:16px 24px}
 .v3-solid-glass{--glass:rgba(10,16,28,.9);--glass-blur:0px}
+#toolbar #view-pill button::before{display:none!important}
+#layer-dock #shade-mode button{border-radius:50%!important}#layer-dock-actions{overflow:visible;flex:none}#layer-dock #shade-mode button{justify-content:flex-start}#scene-hero::before{display:none}
+#minimap-shell #minimap{width:150px!important;height:150px!important;box-shadow:none;border:0;background:transparent}
+#metrics .card .v{font:24px var(--mono);color:var(--ink-1)}#metrics .card .k{font-size:12px}#metrics .card{padding:8px 0}.validation-baseline strong{font-size:15px}.validation-baseline span{font-size:13px}
+@media(max-width:1000px){#minimap-shell #minimap{width:110px!important;height:110px!important}}
+@media(max-width:700px){#layer-dock-actions{overflow:visible}#arrival h1{font-size:40px}#arrival p{font-size:18px}}
 @media(min-width:1700px){#hero-stats .hero-stat b{font-size:32px}#scene-hero{max-width:550px}}
 @media(max-width:1500px){#scene-hero,#app.drawer-collapsed #scene-hero{bottom:152px;max-width:calc(100% - 560px)}#layer-dock,#app.drawer-collapsed #layer-dock{max-width:calc(100% - 384px)}}
 @media(max-width:1000px){#app-header{gap:8px;max-width:calc(100% - 32px);padding:0 8px}.brand b{font-size:15px!important}#library-toggle.scene-picker{max-width:200px}#scene-badge.scene-badge{max-width:160px}#inspector{right:80px;width:320px}#scene-hero,#app.drawer-collapsed #scene-hero{left:88px;max-width:calc(100% - 112px);bottom:136px}#hero-stats{gap:16px}#hero-stats .hero-stat b{font-size:24px}#minimap-shell{width:128px;height:128px}#minimap{width:110px;height:110px}#north-arrow{bottom:96px}#layer-dock,#app.drawer-collapsed #layer-dock{left:88px;transform:none;max-width:calc(100% - 240px)}#layer-legend,#app.drawer-collapsed #layer-legend{left:88px;transform:none;max-width:calc(100% - 240px)}#shade-mode{gap:4px}}

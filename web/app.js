@@ -94,6 +94,7 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.autoUpdate = false;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;       // no clipped roofs, richer shadows
 renderer.toneMappingExposure = 1.08;
 const SUN_I = 2.6, HEMI_I = 0.95;                          // balanced for ACES tone mapping
@@ -360,6 +361,7 @@ function applyHeights() {
   // skirt: walls from each edge down to a floor below the lowest point
   const floor = -Math.max(S.extent * 0.06, (S.hmax - S.hmin) * S.exag * 0.18);
   diorama.update(S,pos,floor);
+  renderer.shadowMap.needsUpdate=true;
   if (S.marker) placeMarker(S.marker.userData.x, S.marker.userData.z);
   if (S.profilePts.length === 2) drawProfileLine();
   if (S.water) S.water.position.y = worldY(+$('#flood-level').value);
@@ -698,6 +700,7 @@ function setSun(deg, elevDeg) {
   const cy = worldY((S.hmin + S.hmax) / 2) || 0;
   sun.position.set(Math.sin(a) * Math.cos(el) * R, cy + Math.sin(el) * R, -Math.cos(a) * Math.cos(el) * R);
   sun.target.position.set(0, cy, 0);
+  renderer.shadowMap.needsUpdate=true;
   const sc = sun.shadow.camera, half = Math.hypot(S.W, S.H) * 0.5 * 1.02;   // tight fit around the scene
   sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half; sc.near = R * 0.2; sc.far = R * 2.2;
   sc.updateProjectionMatrix();
@@ -894,7 +897,7 @@ function resetView() {
   camera.up.set(0, 1, 0);
   const cy = worldY((S.hmin + S.hmax) / 2);
   orbit.target.set(0, cy, 0);
-  camera.position.set(S.extent*.34, cy + S.extent * .92, S.extent * 1.05);
+  camera.position.set(S.extent*.14, cy + S.extent * 1.05, S.extent * 1.45);
   orbit.minDistance = S.extent * 0.01; orbit.maxDistance = S.extent * 4;
   orbit.update();
 }
@@ -1926,7 +1929,8 @@ function applyQuality(q) {
     sun.shadow.map?.dispose(); sun.shadow.map = null;
   }
   renderer.shadowMap.enabled = q !== 'performance';
-  renderer.setPixelRatio(q === 'performance' ? 1 : Math.min(devicePixelRatio, 2));
+  renderer.setPixelRatio(q === 'performance' ? 1 : Math.min(devicePixelRatio, q==='balanced'?1.5:2));
+  renderer.shadowMap.needsUpdate=true;
   resize();
   if (S.mesh) setSun(+$('#sun').value);
   updateCinematicScene();
@@ -2138,6 +2142,7 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
   if (S.mesh) {
     if (S.riseStart && S.buildingGroup) {
+      renderer.shadowMap.needsUpdate=true;
       const t = Math.min(1, (performance.now() - S.riseStart) / S.riseDuration);
       const ease = 1 - (1 - t) ** 3;
       for (const b of S.buildingGroup.children) b.scale.y = Math.max(0.001, ease);
