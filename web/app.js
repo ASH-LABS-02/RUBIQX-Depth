@@ -2178,6 +2178,7 @@ renderer.setAnimationLoop(() => {
     const arrow=$('#north-arrow'), ax=(end.x-start.x)*canvas.clientWidth, ay=-(end.y-start.y)*canvas.clientHeight;
     if(Math.hypot(ax,ay)>1e-5)arrow.style.transform=`rotate(${Math.atan2(ax,-ay)*180/Math.PI}deg)`;
     arrow.title=S.meta.georeferenced?'North in the input CRS (grid north)':'Image up · not geographic north';
+    arrow.querySelector('span').textContent=S.meta.georeferenced?'N':'UP';
     const a=new THREE.Vector3(),b=new THREE.Vector3();
     const ray=new THREE.Raycaster(), plane=new THREE.Plane(new THREE.Vector3(0,1,0),-centre.y);
     ray.setFromCamera(new THREE.Vector2(-60/canvas.clientWidth,0),camera);const ha=ray.ray.intersectPlane(plane,a);
@@ -3018,6 +3019,7 @@ function initMissionLayout() {
     const button=$('#'+id); compare.append(button);
     button.addEventListener('click',()=>{
       $('#compare-popover').classList.add('hidden');
+      $('#app').classList.add('drawer-collapsed');
       if (id !== 'map-toggle' && $('#stage').classList.contains('map-open')) $('#map-toggle').click();
       if (id !== 'compare-toggle' && !$('#comparison').classList.contains('hidden')) setComparison(false);
       if (!['swipe-toggle','model-swipe-toggle'].includes(id) && S.swipeActive) setSwipe(false);
