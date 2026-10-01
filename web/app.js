@@ -10,17 +10,42 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-v3';
+import { createMissionUi } from './ui-v2.js?v=20261001-v1';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
 const FLOOR_AREA_PER_PERSON_M2 = 30;
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
+let missionUi = null, sceneGeneration = 0, sceneAbort = null, loadingSceneId = null;
+
+async function apiFetch(url, options = {}) {
+  try {
+    const response = await fetch(url, options);
+    if (!response.ok) {
+      let detail = '';
+      try { const body = await response.clone().json(); detail = typeof body.detail === 'string' ? body.detail : ''; } catch {}
+      const error = new Error(detail || `Request failed (${response.status}).`);
+      error.status = response.status;
+      throw error;
+    }
+    return response;
+  } catch (error) {
+    if (error.name === 'AbortError') throw error;
+    // A connection retry never repeats a mutation that may already have succeeded.
+    const retry = () => apiFetch(options.method && options.method !== 'GET' ? 'api/scenes' : url,
+      options.method && options.method !== 'GET' ? {silent:true} : {...options, silent:true}).then(() => {
+      toast('Connection restored. Retry the action to update this view.');
+    }).catch(() => {});
+    if (!options.silent) toast(missionUi?.humanError(error.message) || error.message, 'error', 9000, retry);
+    throw error;
+  }
+}
 
 let _sceneListCache = null;
 let _sceneListFetchTime = 0;
 async function fetchSceneList(force = false) {
   if (!force && _sceneListCache && Date.now() - _sceneListFetchTime < 30000) return _sceneListCache;
-  _sceneListCache = await (await fetch('api/scenes')).json();
+  _sceneListCache = await (await apiFetch('api/scenes')).json();
   _sceneListFetchTime = Date.now();
   return _sceneListCache;
 }
@@ -71,8 +96,13 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;       // no clipped roofs, r
 renderer.toneMappingExposure = 1.0;
 const SUN_I = 2.6, HEMI_I = 0.95;                          // balanced for ACES tone mapping
 const scene = new THREE.Scene();
-const SKY = new THREE.Color(0x0d1117);
-scene.background = SKY.clone();
+const SKY = new THREE.Color(0x253746);
+const skyCanvas = document.createElement('canvas'); skyCanvas.width = 2; skyCanvas.height = 256;
+const skyContext = skyCanvas.getContext('2d'), skyGradient = skyContext.createLinearGradient(0, 0, 0, 256);
+skyGradient.addColorStop(0, '#142332'); skyGradient.addColorStop(.65, '#30495e'); skyGradient.addColorStop(1, '#152332');
+skyContext.fillStyle = skyGradient; skyContext.fillRect(0, 0, 2, 256);
+const skyBackdrop = new THREE.CanvasTexture(skyCanvas); skyBackdrop.colorSpace = THREE.SRGBColorSpace;
+scene.background = skyBackdrop;
 scene.fog = new THREE.Fog(SKY.clone(), 1e6, 2e6);
 const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 1e5);
 const hemi = new THREE.HemisphereLight(0xdfe9ff, 0x3a3226, HEMI_I);
@@ -109,8 +139,10 @@ function ensurePost() {
 }
 function updateCinematicScene() {
   const on = S.quality === 'cinematic' && !!S.mesh;
-  if (on) ensurePost();
+  if (S.quality !== 'performance' && S.mesh) ensurePost();
   if (!post.sky) return;
+  post.smaa.enabled = on;
+  post.gtao.updateGtaoMaterial({samples:on?16:8,radius:Math.max(1,S.extent*.008),thickness:Math.max(1,S.extent*.004)});
   post.sky.visible = on; post.ground.visible = on;
   if (on) {
     post.sky.scale.setScalar(S.extent * 20);
@@ -123,7 +155,7 @@ function updateCinematicScene() {
     post.gtao.updateGtaoMaterial({ radius: Math.max(1, S.extent * 0.008), distanceExponent: 1.5, thickness: Math.max(1, S.extent * 0.004), scale: 1 });
     post.gtao.blendIntensity = 1.0;
   } else {
-    scene.background = SKY.clone(); scene.fog.color.copy(SKY);
+    scene.background = skyBackdrop; scene.fog.color.copy(SKY);
   }
   requestRender();
 }
@@ -412,6 +444,9 @@ function applyShading() {
       lo = -e; hi = e; legend = { name: 'change', lo, hi, unit: 'm (after − before) · red = lowered' };
     } else if (S.mode === 'viewshed' && S.viewshed) {
       vals = S.viewshed; lo = 0; hi = 1; legend = { name: 'viewshed', lo: 0, hi: 1, unit: 'visible from observer (yellow)' };
+    } else if (S.mode === 'demdiff' && S.demBase) {
+      for (let i=0;i<n;i++)vals[i]=S.h[i]-S.demBase[i];
+      name='error';lo=-20;hi=20;legend={name,lo,hi,unit:'m · DSM − input DEM · display grid'};
     } else if (S.mode === 'error' && S.ref) {
       for (let i = 0; i < n; i++) vals[i] = S.h[i] - S.ref[i];
       // A fixed, interpretable metric range keeps outlier pixels from washing
@@ -684,26 +719,34 @@ function setSun(deg, elevDeg) {
 
 // ------------------------------------------------------------------ loading scenes
 async function loadScene(id) {
+  const generation = ++sceneGeneration;
+  sceneAbort?.abort(); sceneAbort = new AbortController();
+  const signal = sceneAbort.signal; loadingSceneId = id;
+  const current = () => generation === sceneGeneration;
   S.heightLimit = null; S.lastWetIds = null;
   const hlInfo = document.getElementById('height-limit-info');
   if (hlInfo) hlInfo.textContent = 'Highlights LoD1 buildings taller than a planning limit (metric scenes).';
   busy(true, 'Loading terrain & 3D buildings…');
   try {
     const base = `jobs/${id}/viewer/`;
-    let meta = await (await fetch(base + 'meta.json?' + Date.now())).json();
-    const hBuf = await (await fetch(base + 'height.bin?' + Date.now())).arrayBuffer();
+    let meta = await (await apiFetch(base + 'meta.json?' + Date.now(), {signal})).json();
+    const hBuf = await (await apiFetch(base + 'height.bin?' + Date.now(), {signal})).arrayBuffer();
     let ref = meta.has_reference && meta.units === 'metre'
-      ? new Float32Array(await (await fetch(base + 'ref.bin?' + Date.now())).arrayBuffer()) : null;
+      ? new Float32Array(await (await apiFetch(base + 'ref.bin?' + Date.now(), {signal})).arrayBuffer()) : null;
 
     const fetchLayer = async (name, type = 'bin') => {
       try {
-        const res = await fetch(base + name);
+        const res = await apiFetch(base + name, {signal, silent:true});
         if (!res.ok) return null;
         return type === 'json' ? await res.json() : new Float32Array(await res.arrayBuffer());
-      } catch { return null; }
+      } catch (error) {
+        if (error.name === 'AbortError') throw error;
+        if(error.status!==404)toast(`Could not load ${name}: ${error.message}`,'error',9000,()=>loadScene(id));
+        return null;
+      }
     };
 
-    const [dtm, confidence, buildings, susc, change, demBase] = await Promise.all([
+    let [dtm, confidence, buildings, susc, change, demBase] = await Promise.all([
       meta.has_dtm !== false ? fetchLayer('dtm.bin') : Promise.resolve(null),
       meta.has_confidence !== false ? fetchLayer('confidence.bin') : Promise.resolve(null),
       meta.buildings_count !== 0 ? fetchLayer('buildings.json', 'json') : Promise.resolve(null),
@@ -716,26 +759,27 @@ async function loadScene(id) {
     let hArr = new Float32Array(hBuf);
     if ($('#mesh-detail').value === '1024' && Math.max(meta.src_w || 0, meta.src_h || 0) > meta.grid_w) {
       try {
-        const r = await fetch(`api/scenes/${id}/grid/height.bin?size=1024`);
+        const r = await apiFetch(`api/scenes/${id}/grid/height.bin?size=1024`, {signal, silent:true});
         if (r.ok) {
           const nw = +r.headers.get('X-Grid-W'), nh = +r.headers.get('X-Grid-H');
           const up = (a) => a ? upsampleGrid(a, meta.grid_w, meta.grid_h, nw, nh) : a;
           let dtmHi = null;
-          if (dtm) { const rd = await fetch(`api/scenes/${id}/grid/dtm.bin?size=1024`); dtmHi = rd.ok ? new Float32Array(await rd.arrayBuffer()) : up(dtm); }
+          if (dtm) { const rd = await apiFetch(`api/scenes/${id}/grid/dtm.bin?size=1024`, {signal, silent:true}); dtmHi = new Float32Array(await rd.arrayBuffer()); }
           hArr = new Float32Array(await r.arrayBuffer());
           ref = up(ref); confidence = up(confidence); susc = up(susc); change = up(change); demBase = up(demBase); dtm = dtmHi;
           meta = { ...meta, grid_w: nw, grid_h: nh };
         }
-      } catch (err) { console.warn('high-detail mesh unavailable', err); }
+      } catch (err) { if (err.name === 'AbortError') throw err; toast('High mesh detail unavailable; using the standard grid.'); }
     }
     let normalTex = null;
     try {
       normalTex = await new THREE.TextureLoader().loadAsync(`api/scenes/${id}/normal.png?` + Date.now());
       normalTex.colorSpace = THREE.NoColorSpace; normalTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     } catch { normalTex = null; }
+    const tex = await new THREE.TextureLoader().loadAsync(base + 'texture.jpg?' + Date.now());
+    if (!current()) { normalTex?.dispose(); tex.dispose(); return; }
     if (S.normalTex) S.normalTex.dispose();
     S.normalTex = normalTex;
-    const tex = await new THREE.TextureLoader().loadAsync(base + 'texture.jpg?' + Date.now());
     tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     if (S.tex) S.tex.dispose();
     if (S.water) { scene.remove(S.water); S.water.geometry.dispose(); S.water.material.dispose(); S.water = null; }
@@ -748,7 +792,7 @@ async function loadScene(id) {
     Object.assign(S, { demBase, modelBaseline: null, susc, change, viewshed: null, floodMask: null,
       floodSeed: null, floodSource: S.floodSource || 'edge', missionAction: null });
     Object.assign(S, { id, meta, gw: meta.grid_w, gh: meta.grid_h, W: meta.ground_w_m, H: meta.ground_h_m,
-      h: hArr, dtm, confidence, buildings, ref, tex, texImg: tex.image, units: meta.units === 'metre' ? 'm' : 'relative',
+      h: hArr, dtm, confidence, buildings, ref, tex, texImg: tex.image, units: meta.units === 'metre' ? 'm' : 'relative units',
       viewGeometry: 'surface' });
     S.hmin = Math.min(...[pct(S.h, 0), ref ? pct(ref, 0) : Infinity]);
     S.hmax = Math.max(pct(S.h, 1), ref ? pct(ref, 1) : -Infinity);
@@ -758,10 +802,10 @@ async function loadScene(id) {
     $('#smooth-v').textContent = `${S.smoothingM.toFixed(2)} m`;
     updateRenderHeight(false);
     S.floodActive = false;
+    $('#flood-level').min = String(S.hmin); $('#flood-level').max = String(S.hmax);
     $('#flood-level').value = String(S.hmin + (S.hmax - S.hmin) * 0.25);
     const relief = S.hmax - S.hmin;
-    S.exag = Math.min(10, Math.max(1, +(0.06 * S.extent / Math.max(relief, 1e-3)).toFixed(1)));
-    if (meta.scene === 'urban' && relief < 0.15 * S.extent) S.exag = Math.max(2.2, S.exag);
+    S.exag = meta.units === 'metre' ? 1 : Math.min(10, Math.max(1, +(0.06 * S.extent / Math.max(relief, 1e-3)).toFixed(1)));
     $('#exag').value = S.exag; $('#exag-v').textContent = S.exag.toFixed(1) + '×';
     camera.near = S.extent / 5000; camera.far = S.extent * 30; camera.updateProjectionMatrix();
     scene.fog.near = S.extent * 1.5; scene.fog.far = S.extent * 6;
@@ -775,7 +819,7 @@ async function loadScene(id) {
     const c0 = meta.calibration || {};
     $('#time-of-day').value = '12'; $('#time-v').textContent = '12:00';
     sun.intensity = SUN_I; hemi.intensity = HEMI_I; sun.color.setHex(0xfff6ea);
-    if (S.quality !== 'cinematic') { scene.background = SKY.clone(); scene.fog.color.copy(SKY); }
+    if (S.quality !== 'cinematic') { scene.background = skyBackdrop; scene.fog.color.copy(SKY); }
     const sunInput = meta.sun_input || {};
     const imageElevation = Number.isFinite(sunInput.elevation_deg) ? sunInput.elevation_deg : c0.sun_elevation_deg;
     const imageAzimuth = Number.isFinite(sunInput.azimuth_deg) ? sunInput.azimuth_deg : c0.sun_azimuth_deg;
@@ -787,12 +831,13 @@ async function loadScene(id) {
     $('#btn-landslide').disabled = !susc; $('#btn-change').disabled = !change;
     if ((S.mode === 'landslide' && !susc) || (S.mode === 'change' && !change) || S.mode === 'viewshed') setMode('optical');
     renderChangePanel();
-    $('#swipe-toggle').title = demBase ? 'Swipe: input 30 m DEM (left) vs DepthWizard DSM (right) · S' : 'Swipe needs a georeferenced scene with an input DEM';
+    $('#swipe-toggle').title = demBase ? 'Swipe: actual input DEM (left) vs DepthWizard DSM (right) · S' : 'Swipe needs a georeferenced scene with an input DEM';
     $('#btn-error').disabled = !ref;
     $('#btn-hazard').disabled = meta.units !== 'metre';
     $('#btn-hazard').title = meta.units === 'metre' ? 'Slope hazard: 0–30° safe, 30–45° warning, >45° high risk · 6' : 'Slope hazard needs a metric scene (degrees are meaningless in relative units)';
     if (S.mode === 'hazard' && meta.units !== 'metre') setMode('optical');
     if (!ref && S.mode === 'error') setMode('optical');
+    if (!demBase && S.mode === 'demdiff') setMode('optical');
     $('#contour-unit').textContent = meta.units === 'metre' ? 'm' : 'rel';
     $('#contour-int').value = meta.units === 'metre' ? '5' : '0.1';
     S.topoManualStep = null;
@@ -832,7 +877,7 @@ async function loadScene(id) {
     drawComparison();
     updateSceneSummary();
     renderLayerPreviews();
-    setWorkspace(meta.units === 'metre' ? 'disaster' : 'explore');
+    setWorkspace('explore');
     updateMapAvailability();
     updateMissionAvailability();
     currentAnchors = (meta.height_anchor?.anchors || []).map((a) => {
@@ -843,10 +888,11 @@ async function loadScene(id) {
     renderAnchorPanel();
     updateAutoAnchorPanel();
     updateCinematicScene();
+    missionUi?.sceneLoaded();
     location.hash = id;
   } catch (e) {
-    console.error(e); toast('Could not load scene: ' + e.message, 'error', 8000);
-  } finally { busy(false); }
+    if (current() && e.name !== 'AbortError') toast('Could not load scene: ' + e.message, 'error', 8000, () => loadScene(id));
+  } finally { if (current()) { loadingSceneId = null; busy(false); } }
 }
 
 function resetView() {
@@ -866,9 +912,16 @@ function topDownView() {
   const cy = worldY((S.hmin + S.hmax) / 2);
   orbit.target.set(0, cy, 0);
   camera.position.set(0, cy + S.extent * 1.5, S.extent * 0.0001);
-  camera.up.set(0, 0, -1);
+  camera.up.copy(sceneNorth());
   camera.lookAt(orbit.target);
   orbit.update();
+}
+
+function sceneNorth() {
+  // Geographic north in the affine image frame; relative scenes use image up.
+  const t=S.meta?.transform,det=t?t[0]*t[4]-t[1]*t[3]:0;
+  if(!det)return new THREE.Vector3(0,0,-1);
+  return new THREE.Vector3(-t[1]/det*S.W/S.meta.src_w,0,t[0]/det*S.H/S.meta.src_h).normalize();
 }
 
 // ------------------------------------------------------------------ LoD1 3D city buildings
@@ -1153,7 +1206,7 @@ async function renderChangePanel() {
   $('#change-run').onclick = async () => {
     const before = $('#change-before').value; if (!before) return;
     $('#change-info').textContent = 'Comparing…';
-    const res = await fetch(`api/scenes/${encodeURIComponent(before)}/change/${encodeURIComponent(S.id)}`);
+    const res = await apiFetch(`api/scenes/${encodeURIComponent(before)}/change/${encodeURIComponent(S.id)}`);
     const js = await res.json();
     if (!res.ok) { $('#change-info').textContent = js.detail || 'Comparison failed'; return; }
     await loadScene(S.id); setMode('change');
@@ -1277,6 +1330,7 @@ function setNav(mode) {
   if (S.nav === 'fly') fly.unlock();
   if (mode !== 'orbit') camera.up.set(0, 1, 0);
   S.nav = mode;
+  missionUi?.navigationChanged(mode);
   orbit.enabled = mode === 'orbit';
   $('#fly-hint').classList.toggle('hidden', mode !== 'fly');
   $$('#nav-mode button').forEach((b) => b.classList.toggle('active', b.dataset.nav === mode));
@@ -1312,7 +1366,12 @@ function clampCamera() {
   camera.position.y = Math.min(camera.position.y, S.extent * 3);
 }
 function updateTour(dt) {
-  S.tourT += dt * 0.08;
+  S.tourT += dt * (S.presentation ? 0.025 : 0.08);
+  if (S.presentation) {
+    const cy = worldY((S.hmin + S.hmax) / 2), radius = S.extent * 0.85;
+    camera.position.set(Math.sin(S.tourT) * radius, cy + S.extent * 0.65, Math.cos(S.tourT) * radius);
+    camera.lookAt(0, cy, 0); return;
+  }
   const r = S.extent * (0.32 + 0.08 * Math.sin(S.tourT * 2.3));
   const x = Math.sin(S.tourT) * r, z = Math.cos(S.tourT) * r;
   const top = worldY(S.hmax);
@@ -1378,7 +1437,7 @@ function placeHoverHud(hud, pointerX, pointerY) {
   const width = hud.offsetWidth || 250, height = hud.offsetHeight || 170, pad = 10;
   const clamp = (n, max) => Math.max(pad, Math.min(n, Math.max(pad, max - pad)));
   const obstacles = ['#mode-rail', '#scene-hero', '#layer-dock', '#toolbar', '#layer-legend',
-    '#model-compare-note', '#swipe-label-left', '#swipe-label-right', '#inspector']
+    '#model-compare-note', '#swipe-label-left', '#swipe-label-right', '#inspector', '#welcome-card', '#minimap', '#scale-bar-container', '#exaggeration-note']
     .map((selector) => $(selector)?.getBoundingClientRect())
     .filter((r) => r && r.width && r.height)
     .map((r) => ({ left: r.left - stageRect.left - pad, top: r.top - stageRect.top - pad,
@@ -1540,9 +1599,9 @@ function hoverUpdate(e) {
     const pEl = $('#hud-pixel'); if (pEl) pEl.textContent = `${px}, ${py}`;
     const dEl = $('#hud-dsm'); if (dEl) dEl.textContent = `${fmt(reportedHeight(h), 1)} ${S.units}`;
     const tEl = $('#hud-dtm'); if (tEl) tEl.textContent = dtmVal !== null ? `${fmt(reportedHeight(dtmVal), 1)} ${S.units}` : '–';
-    const nEl = $('#hud-ndsm'); if (nEl) nEl.textContent = ndsmVal !== null ? `${fmt(ndsmVal, 1)} m` : '–';
+    const nEl = $('#hud-ndsm'); if (nEl) nEl.textContent = ndsmVal !== null ? `${fmt(ndsmVal, 1)} ${S.units}` : '–';
     const sEl = $('#hud-slope'); if (sEl) sEl.textContent = `${fmt(sa.slope, 1)}°`;
-    const cfEl = $('#hud-conf'); if (cfEl) cfEl.textContent = confVal !== null ? `${Math.round(confVal * 100)}%` : '95%';
+    const cfEl = $('#hud-conf'); if (cfEl) cfEl.textContent = confVal !== null ? `${Math.round(confVal * 100)}% reliability` : '—';
     // floating HUD next to the cursor
     const hud = $('#hover-hud');
     if (S.hoverHud !== false && S.nav === 'orbit' && !S.presentation) {
@@ -1558,9 +1617,9 @@ function hoverUpdate(e) {
         [ll ? 'Lat, lon' : (mc ? 'E, N' : 'x, y'), ll ? `${ll[1].toFixed(5)}, ${ll[0].toFixed(5)}` : mc ? `${mc.E.toFixed(1)}, ${mc.N.toFixed(1)}` : `${(x + S.W / 2).toFixed(1)}, ${(z + S.H / 2).toFixed(1)} m`],
         ['Surface', `${fmt(reportedHeight(h), metric ? 1 : 3)} ${S.units}`],
       ];
-      if (dtmVal !== null) rows.push(['Ground', `${fmt(reportedHeight(dtmVal), 1)} ${S.units}`], ['Above ground', `${fmt(ndsmVal, 1)} m`]);
+      if (dtmVal !== null) rows.push(['Ground', `${fmt(reportedHeight(dtmVal), 1)} ${S.units}`], ['Above ground', `${fmt(ndsmVal, 1)} ${S.units}`]);
       if (metric) rows.push(['Slope', `${fmt(sa.slope, 1)}°`]);
-      if (confVal !== null) rows.push(['Confidence', `${Math.round(confVal * 100)}%`]);
+      if (confVal !== null) rows.push(['Reliability', `${Math.round(confVal * 100)}% · uncalibrated`]);
       if (bldg) rows.push(['Building', `#${bldg.id} · ${fmt(bldg.height_m, 1)} ${metric ? 'm' : ''}${bldg.storeys ? ` · ${bldg.storeys} fl` : ''}`]);
       hud.innerHTML = rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
       const sr = $('#stage').getBoundingClientRect();
@@ -1591,10 +1650,20 @@ canvas.addEventListener('dblclick', (e) => {
 const mm = $('#minimap'), mctx = mm.getContext('2d');
 function drawMinimap() {
   if (!S.texImg) return;
-  const w = mm.width, h = mm.height, s = Math.min(w / S.W, h / S.H);
+  const w = mm.width, h = mm.height, pad=22,s = Math.min((w-2*pad) / S.W, (h-2*pad) / S.H);
   const dw = S.W * s, dh = S.H * s, ox = (w - dw) / 2, oy = (h - dh) / 2;
-  mctx.fillStyle = '#000'; mctx.fillRect(0, 0, w, h);
+  mctx.fillStyle = '#101923'; mctx.fillRect(0, 0, w, h);
   mctx.drawImage(S.texImg, ox, oy, dw, dh);
+  mctx.strokeStyle='rgba(183,201,216,.45)';mctx.lineWidth=.5;mctx.font='8px monospace';mctx.fillStyle='#edf4fa';
+  for(const v of [0,.5,1]){
+    const gx=ox+v*dw,gy=oy+v*dh;
+    mctx.beginPath();mctx.moveTo(gx,oy);mctx.lineTo(gx,oy+dh);mctx.moveTo(ox,gy);mctx.lineTo(ox+dw,gy);mctx.stroke();
+    const ll=lonLatAt(S.meta.corners_lonlat,v,1),lat=lonLatAt(S.meta.corners_lonlat,0,v);
+    mctx.textAlign='center';mctx.fillText(ll?`${ll[0].toFixed(3)}°`:`${Math.round(v*S.meta.src_w)} px`,gx,oy+dh+12);
+    mctx.save();mctx.translate(ox-7,gy);mctx.rotate(-Math.PI/2);mctx.fillText(ll?`${lat[1].toFixed(3)}°`:`${Math.round(v*S.meta.src_h)} px`,0,0);mctx.restore();
+  }
+  mctx.textAlign='left';mctx.fillText(S.meta.corners_lonlat?'SCENE FOOTPRINT':'LOCAL IMAGE FRAME',ox,12);
+  mctx.save();mctx.beginPath();mctx.rect(ox,oy,dw,dh);mctx.clip();
   const px = ox + (camera.position.x / S.W + 0.5) * dw, py = oy + (camera.position.z / S.H + 0.5) * dh;
   const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
   const ang = Math.atan2(dir.z, dir.x);
@@ -1606,6 +1675,7 @@ function drawMinimap() {
     mctx.fillStyle = '#38bdf8';
     mctx.fillRect(ox + (S.marker.userData.x / S.W + 0.5) * dw - 3, oy + (S.marker.userData.z / S.H + 0.5) * dh - 3, 6, 6);
   }
+  mctx.restore();
   mm.dataset.ox = ox; mm.dataset.oy = oy; mm.dataset.dw = dw; mm.dataset.dh = dh;
 }
 mm.addEventListener('click', (e) => {
@@ -1613,8 +1683,9 @@ mm.addEventListener('click', (e) => {
   const r = mm.getBoundingClientRect(), k = mm.width / r.width;
   const x = (((e.clientX - r.left) * k - mm.dataset.ox) / mm.dataset.dw - 0.5) * S.W;
   const z = (((e.clientY - r.top) * k - mm.dataset.oy) / mm.dataset.dh - 0.5) * S.H;
+  if(Math.abs(x)>S.W/2||Math.abs(z)>S.H/2)return;
   const delta = new THREE.Vector3(x, terrainY(x, z), z).sub(S.nav === 'orbit' ? orbit.target : camera.position);
-  if (S.nav === 'orbit') { delta.y = 0; orbit.target.add(delta); camera.position.add(delta); orbit.update(); }
+  if (S.nav === 'orbit') { delta.y = 0; S.cameraFlight={started:performance.now(),duration:850,fromCamera:camera.position.clone(),toCamera:camera.position.clone().add(delta),fromTarget:orbit.target.clone(),toTarget:orbit.target.clone().add(delta)};requestRender(); }
   else { camera.position.x = x; camera.position.z = z; clampCamera(); }
 });
 
@@ -1723,7 +1794,11 @@ function renderMetrics() {
       ? '<p class="note">GCP calibration is provisional: more distributed surveyed points and an independent reference are needed.</p>'
       : cal.evidence_level === 'provisional'
         ? '<p class="note">Automatic building-height cues are provisional. They are calibration inputs, not independent validation; compare against held-out LiDAR or surveyed heights before claiming accuracy.</p>' : '';
-  if (!m) { el.innerHTML = warn + calWarning + '<p class="muted">No reference supplied for this scene. Upload a reference DSM / LiDAR raster with the image to compute RMSE, MAE and correlation.</p>' + calHtml; return; }
+  if (!m) {
+    el.innerHTML = warn + calWarning + '<h3>Validate against an independent reference</h3><p class="note">Upload a LiDAR / DSM GeoTIFF to score this scene. Reprocess the optical image with the reference selected under Advanced; calibration and validation are separate inputs.</p><button id="add-validation-reference" type="button" class="primary">Add reference with imagery</button>' + calHtml;
+    $('#add-validation-reference').onclick = () => {showTab('upload');$('#import-advanced').open = true;form.reference.focus();};
+    addDemComparison(el);return;
+  }
   const main = m.absolute || m.affine_aligned;
   const aligned = !m.absolute;
   const cards = [[aligned ? 'Aligned RMSE' : 'RMSE', fmt(main.rmse), 'm'], [aligned ? 'Aligned MAE' : 'MAE', fmt(main.mae), 'm'], ['Pearson r', fmt(main.r, 3), '']];
@@ -1733,8 +1808,9 @@ function renderMetrics() {
   const deltaPct = b && main?.rmse && b.rmse ? 100 * (b.rmse - main.rmse) / b.rmse : null;
   const baselineHtml = deltaPct === null ? '' : `<div class="validation-baseline ${deltaPct < 0 ? 'regressed' : ''}"><strong>${deltaPct >= 0 ? '↓' : '↑'} ${fmt(Math.abs(deltaPct), 1)}% RMSE ${deltaPct >= 0 ? 'improvement' : 'increase'}</strong><span>Estimated DSM ${fmt(main.rmse)} m vs input DEM ${fmt(b.rmse)} m</span></div>`;
   const cls = (k, key, lowerBetter = true) => (!b || k !== 'absolute') ? '' : ((lowerBetter ? m[k][key] < b[key] : m[k][key] > b[key]) ? 'better' : 'worse');
+  const meanings={absolute:'DSM compared directly with the supplied reference; no reference-fitted scale.',baseline_dem:'Input DEM compared with the same reference and valid-pixel mask.',aggregated_30m:'DSM and reference averaged to 30 m before comparison.',structure_ndsm:'Above-ground height compared after subtracting terrain.',buildings:'Roof height scored within mapped building footprints.',affine_aligned:'Scale and offset fitted to the reference; shape diagnostics, not blind accuracy.'};
   const table = `<table class="t"><tr><th></th><th>RMSE</th><th>MAE</th><th>NMAD</th><th>r</th></tr>` +
-    rowDefs.filter(([k]) => m[k]).map(([k, label]) => `<tr><td>${label}</td><td class="${cls(k, 'rmse')}">${fmt(m[k].rmse)}</td><td class="${cls(k, 'mae')}">${fmt(m[k].mae)}</td><td>${fmt(m[k].nmad)}</td><td class="${cls(k, 'r', false)}">${fmt(m[k].r, 3)}</td></tr>`).join('') + '</table>';
+    rowDefs.filter(([k]) => m[k]).map(([k, label]) => `<tr title="${escapeHtml(meanings[k])}"><td tabindex="0" title="${escapeHtml(meanings[k])}">${label}</td><td class="${cls(k, 'rmse')}">${fmt(m[k].rmse)}</td><td class="${cls(k, 'mae')}">${fmt(m[k].mae)}</td><td>${fmt(m[k].nmad)}</td><td class="${cls(k, 'r', false)}">${fmt(m[k].r, 3)}</td></tr>`).join('') + '</table>';
   const land = m.by_landscape || {};
   const landTable = Object.keys(land).length ? `<h3>Stability across landscapes</h3><table class="t"><tr><th>Class</th><th>Tiles</th><th>RMSE</th><th>MAE</th><th>r</th></tr>` +
     Object.entries(land).map(([k, v]) => `<tr><td>${k}</td><td>${v.tiles}</td><td>${fmt(v.rmse)}</td><td>${fmt(v.mae)}</td><td>${fmt(v.r, 3)}</td></tr>`).join('') + '</table>' : '';
@@ -1744,22 +1820,32 @@ function renderMetrics() {
     Object.entries(heights).map(([k, v]) => `<tr><td>${k}</td><td>${v.estimate.n.toLocaleString()}</td><td>${fmt(v.estimate.rmse)} m</td>${hasBandBaseline ? `<td>${fmt(v.baseline_dem?.rmse)} m</td>` : ''}</tr>`).join('') + '</table>' : '';
   const edgeHtml = m.edge_gradient_rmse !== undefined ? `<h3>Edge detail</h3><div class="kv"><b>Gradient RMSE</b><span>${fmt(m.edge_gradient_rmse, 3)} m/m</span><b>DEM baseline</b><span>${fmt(m.baseline_edge_gradient_rmse, 3)} m/m</span></div>` : '';
   const acc = `<div class="kv"><b>|error| ≤ 1 m</b><span>${fmt(main.within_1m * 100, 1)} %</span><b>|error| ≤ 2 m</b><span>${fmt(main.within_2m * 100, 1)} %</span><b>|error| ≤ 5 m</b><span>${fmt(main.within_5m * 100, 1)} %</span><b>Bias</b><span>${fmt(main.bias)} m</span></div>`;
-  el.innerHTML = warn + calWarning + (aligned ? '<p class="note">Relative heights are fitted to this reference for shape diagnostics. These values are not operational metric accuracy.</p>' : '') + `<div class="cards">${cards.map(([l, v, u]) => `<div class="card"><div class="v">${v}<small> ${u}</small></div><div class="l">${l}</div></div>`).join('')}</div>` + baselineHtml +
+  el.innerHTML = warn + (aligned ? '<p class="note">Relative heights are fitted to this reference for shape diagnostics. These values are not operational metric accuracy.</p>' : '') + `<div class="cards">${cards.map(([l, v, u]) => `<div class="card"><div class="v">${v}<small> ${u}</small></div><div class="l">${l}</div></div>`).join('')}</div>` + baselineHtml +
     (S.meta.validation_plot ? `<h3>Estimated vs reference</h3><div class="charts">${scatterSvg(S.meta.validation_plot, S.meta.units === 'metre' ? 'm' : 'rel')}${histSvg(S.meta.validation_plot)}</div>` : '') +
-    `<details class="validation-details"><summary>Detailed accuracy breakdown</summary>` + table +
+    `<details class="validation-details"><summary>Detailed accuracy breakdown</summary>` + calWarning + table +
     (m.buildings ? `<p class="note">Per-building: ${m.buildings.n} footprints · median roof ${fmt(m.buildings.est_median, 1)} m estimated vs ${fmt(m.buildings.ref_median, 1)} m reference.</p>` : '') +
     landTable + heightTable + edgeHtml + acc + calHtml + `</details>` +
     `<p class="note">The Truth layer colours signed error against the supplied reference; Profile compares a selected cross-section.</p>`;
+  addDemComparison(el);
+}
+
+function addDemComparison(el) {
+  if (!S.demBase || S.meta?.units !== 'metre') return;
+  const action = document.createElement('button');action.type='button';action.className='dem-comparison-action';
+  const isCopernicus = /copernicus|cop30|glo.?30/i.test(JSON.stringify(S.meta.calibration || {}));
+  action.textContent=isCopernicus?'Compare with Copernicus':'Compare with input DEM';
+  action.title='Display-grid DSM minus the actual input DEM. Calibration consistency, not independent validation.';
+  action.onclick=()=>{if(S.swipeActive)setSwipe(false);setMode('demdiff');toast('DSM − input DEM on the display grid. This checks calibration consistency; it is not independent accuracy.');};
+  el.append(action);
 }
 
 // ------------------------------------------------------------------ UI wiring
-function busy(on, text) { $('#busy').classList.toggle('hidden', !on); if (text) $('#busy-text').textContent = text; }
+function busy(on, text) { $('#busy').classList.toggle('hidden', !on); $('#stage').classList.toggle('scene-loading', on); $('#stage').setAttribute('aria-busy', String(on)); if (text) $('#busy-text').textContent = text; }
 function showTab(t) {
   if (t === 'upload') {
     $('#help').classList.add('hidden');
     $('#upload-modal').classList.remove('hidden');
     $('#upload-close').focus();
-    showImportStep(1);
     refreshLocalModel();
     return;
   }
@@ -1770,7 +1856,7 @@ function showTab(t) {
 async function refreshLocalModel() {
   const note = $('#local-model-status');
   try {
-    const res = await fetch('api/local-model');
+    const res = await apiFetch('api/local-model', {silent:true});
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const info = await res.json();
     const select = $('#upload-form').model;
@@ -1780,10 +1866,10 @@ async function refreshLocalModel() {
       const option = new Option('GAMUS fine-tuned · local prototype', info.path);
       option.dataset.localModel = 'true';
       select.add(option);
-      if (prior === info.path) select.value = prior;
+      if (prior === info.path || !select.dataset.userSelected) select.value = info.path;
     }
     note.textContent = info.stage
-      ? `${info.stage}${info.epochs_done ? ` · ${info.epochs_done}/10 epochs complete` : ''}${info.ready ? ' · checkpoint available' : ''}`
+      ? `${info.stage}${info.epochs_done ? ` · ${info.epochs_done} epochs complete` : ''}${info.ready ? ' · checkpoint available' : ''}`
       : info.ready ? 'Local GAMUS checkpoint available.' : 'Use a pretrained backbone or enter a local checkpoint path.';
   } catch {
     note.textContent = 'Use a pretrained backbone or enter a local checkpoint path.';
@@ -1826,12 +1912,13 @@ $('#exposure').oninput = (e) => { renderer.toneMappingExposure = +e.target.value
 $('#quality').onchange = (e) => applyQuality(e.target.value);
 function applyQuality(q) {
   S.quality = q;
+  S.aoEnabled = true;
   const size = q === 'cinematic' ? 4096 : q === 'performance' ? 1024 : 2048;
   if (sun.shadow.mapSize.x !== size) {
     sun.shadow.mapSize.set(size, size);
     sun.shadow.map?.dispose(); sun.shadow.map = null;
   }
-  renderer.shadowMap.enabled = q !== 'performance' || true;
+  renderer.shadowMap.enabled = q !== 'performance';
   renderer.setPixelRatio(q === 'performance' ? 1 : Math.min(devicePixelRatio, 2));
   resize();
   if (S.mesh) setSun(+$('#sun').value);
@@ -1841,8 +1928,9 @@ function applyQuality(q) {
 { let q = 'balanced'; try { q = localStorage.getItem('dw-quality') || q; } catch {} $('#quality').value = q; S.quality = q; setTimeout(() => applyQuality(q), 0); }
 
 // small non-blocking notifications instead of alert()
-function toast(msg, kind = 'info', ms = 5000) {
+function toast(msg, kind = 'info', ms = 5000, retry = null) {
   const t = document.createElement('div'); t.className = `toast ${kind}`; t.textContent = msg;
+  if (retry) { const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Retry'; button.onclick = () => { t.remove(); Promise.resolve(retry()).catch(() => {}); }; t.append(button); }
   $('#toast-host').appendChild(t); setTimeout(() => t.remove(), ms);
 }
 window.toast = toast;
@@ -1968,13 +2056,14 @@ async function refreshScenes(selectId, forceFetch = true) {
     d.querySelector('.scene-select').onclick = () => { $('#app').classList.remove('library-open'); loadScene(s.id); };
     d.querySelector('.x').onclick = async (e) => {
       e.stopPropagation(); if (!confirm(`Delete ${s.name}?`)) return;
-      await fetch(`api/scenes/${s.id}`, { method: 'DELETE' }); refreshScenes();
+      await apiFetch(`api/scenes/${s.id}`, { method: 'DELETE' }); refreshScenes();
     };
     el.appendChild(d);
   }
   $('#scene-count').textContent = list.length;
-  const want = selectId || location.hash.slice(1) || list[0]?.id;
-  if (want && list.some((s) => s.id === want) && want !== S.id) loadScene(want);
+  const want = selectId || decodeURIComponent(location.hash.slice(1)) || (list.some(s => s.id === 'dc-glover-park') ? 'dc-glover-park' : list[0]?.id);
+  missionUi?.scenesReady(list);
+  if (want && list.some((s) => s.id === want) && want !== S.id) await loadScene(want);
   else $$('#scene-list .item').forEach((x) => {
     const active = x.dataset.id === S.id;
     x.classList.toggle('active', active);
@@ -1990,27 +2079,33 @@ form.image.onchange = () => { $('#drop-text').innerHTML = `<b>${escapeHtml(form.
 drop.addEventListener('drop', (e) => { e.preventDefault(); form.image.files = e.dataTransfer.files; form.image.onchange(); });
 form.onsubmit = async (e) => {
   e.preventDefault();
+  if(form.dataset.detecting==='true'||form.dataset.invalidInput==='true')return;
   const fd = new FormData(form);
   const customModel = String(fd.get('custom_model') || '').trim();
   if (customModel) fd.set('model', customModel);
   fd.delete('custom_model');
+  // Uploaded evidence wins over an unnecessary network download. Relative
+  // images retain the unchanged API contract but don't request a DEM.
+  if(form.dem.files.length || form.dataset.inputPath==='relative')fd.delete('fetch_dem');
   for (const k of ['dem', 'reference', 'gcp']) if (!form[k].files.length) fd.delete(k);
   const log = $('#job-log'); log.classList.remove('hidden'); log.textContent = 'Uploading…\n';
   const btn = form.querySelector('button[type=submit]'); btn.disabled = true;
+  missionUi?.jobStart();
   try {
-    const res = await fetch('api/process', { method: 'POST', body: fd });
+    const res = await apiFetch('api/process', { method: 'POST', body: fd });
     if (!res.ok) throw new Error(await res.text());
     const { id } = await res.json();
     for (;;) {
       await new Promise((r) => setTimeout(r, 800));
-      const st = await (await fetch(`api/jobs/${id}`)).json();
+      const st = await (await apiFetch(`api/jobs/${id}`)).json();
+      missionUi?.jobUpdate(st);
       const waitNote = st.state === 'queued' ? (st.position ? `Queued – ${st.position} job${st.position > 1 ? 's' : ''} ahead of this one…` : 'Queued – starting next…') : '';
       log.textContent = (waitNote ? waitNote + '\n' : '') + st.log.join('\n') + (st.state === 'running' ? '\n…' : '');
       log.scrollTop = log.scrollHeight;
       if (st.state === 'done') { await refreshScenes(id); showTab('analyse'); break; }
       if (st.state === 'error') { log.textContent += '\n✕ ' + st.error; break; }
     }
-  } catch (err) { log.textContent += '\n✕ ' + err.message; }
+  } catch (err) { log.textContent += '\n✕ ' + err.message;missionUi?.jobUpdate({state:'error',error:err.message}); }
   finally { btn.disabled = false; }
 };
 
@@ -2029,6 +2124,7 @@ let idleSkip = 0;
 renderer.setAnimationLoop(() => {
   const busyAnim = S.nav !== 'orbit' || S.riseStart || S.cameraFlight || S.floodAnimating || S.missionOverlay
     || swipeDragging || S.recording || S.floodMesh || S.waterAnim;
+  missionUi?.tick(busyAnim || performance.now()-lastActivity<1500);
   if (!busyAnim && performance.now() - lastActivity > 1500 && (idleSkip++ % 15) !== 0) { clock.getDelta(); return; }
   const dt = Math.min(clock.getDelta(), 0.1);
   if (S.mesh) {
@@ -2039,7 +2135,7 @@ renderer.setAnimationLoop(() => {
       if (t >= 1) S.riseStart = 0;
     }
     if (S.cameraFlight) {
-      const f = S.cameraFlight, t = Math.min(1, (performance.now() - f.started) / 850), e = t * t * (3 - 2 * t);
+      const f = S.cameraFlight, t = Math.min(1, (performance.now() - f.started) / (f.duration || 850)), e = t * t * (3 - 2 * t);
       camera.position.lerpVectors(f.fromCamera, f.toCamera, e);
       orbit.target.lerpVectors(f.fromTarget, f.toTarget, e);
       orbit.update();
@@ -2060,31 +2156,26 @@ renderer.setAnimationLoop(() => {
       }
     }
 
-    // Rotate north arrow according to camera azimuth
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    const camAngle = Math.atan2(dir.x, -dir.z) * (180 / Math.PI);
-    const arrow = $('#north-arrow');
-    if (arrow) arrow.style.transform = `rotate(${-camAngle}deg)`;
+    // Screen projection keeps the compass and centre-plane ground scale in
+    // sync with zoom, camera tilt and displayed exaggeration.
+    const centre = orbit.target.clone(), north = sceneNorth();
+    const start=centre.clone().project(camera), end=centre.clone().addScaledVector(north,S.extent*.1).project(camera);
+    const arrow=$('#north-arrow'), ax=(end.x-start.x)*canvas.clientWidth, ay=-(end.y-start.y)*canvas.clientHeight;
+    if(Math.hypot(ax,ay)>1e-5)arrow.style.transform=`rotate(${Math.atan2(ax,-ay)*180/Math.PI}deg)`;
+    arrow.title=S.meta.georeferenced?'North in the input CRS (grid north)':'Image up · not geographic north';
+    const a=new THREE.Vector3(),b=new THREE.Vector3();
+    const ray=new THREE.Raycaster(), plane=new THREE.Plane(new THREE.Vector3(0,1,0),-centre.y);
+    ray.setFromCamera(new THREE.Vector2(-60/canvas.clientWidth,0),camera);const ha=ray.ray.intersectPlane(plane,a);
+    ray.setFromCamera(new THREE.Vector2(60/canvas.clientWidth,0),camera);const hb=ray.ray.intersectPlane(plane,b);
+    const line=$('#scale-bar-line'),text=$('#scale-bar-text');
+    if(ha&&hb&&a.distanceTo(b)>0){
+      const pixelScene=!S.meta.georeferenced, factor=pixelScene?S.meta.src_w/S.W:1;
+      const perPixel=a.distanceTo(b)*factor/60, nice=niceStep(perPixel*60);
+      line.style.width=`${nice/perPixel}px`;
+      text.textContent=pixelScene?`${fmt(nice,0)} px`:nice>=1000?`${fmt(nice/1000,1)} km`:`${fmt(nice,0)} m`;
+      text.title='Ground-plane scale at the screen centre; oblique terrain varies with perspective.';
+    }else{text.textContent='Scale unavailable';line.style.width='0';}
 
-    // Scale bar dynamic calculation
-    const scaleBarLine = $('#scale-bar-line');
-    const scaleBarText = $('#scale-bar-text');
-    if (scaleBarLine && scaleBarText) {
-      const dist = camera.position.distanceTo(orbit.target || new THREE.Vector3());
-      const fovRad = (camera.fov * Math.PI) / 180;
-      const visibleHeightAtDist = 2 * Math.tan(fovRad / 2) * dist;
-      const mPerPixel = visibleHeightAtDist / canvas.clientHeight;
-      const targetPixels = 60;
-      const targetMeters = targetPixels * mPerPixel;
-      const pow10 = Math.pow(10, Math.floor(Math.log10(Math.max(1, targetMeters))));
-      const d = targetMeters / pow10;
-      const nice = d < 1.5 ? 1 : d < 3.5 ? 2 : d < 7.5 ? 5 : 10;
-      const barMeters = nice * pow10;
-      const barPx = Math.max(20, Math.min(150, barMeters / mPerPixel));
-      scaleBarLine.style.width = `${barPx}px`;
-      scaleBarText.textContent = barMeters >= 1000 ? `${(barMeters / 1000).toFixed(1)} km` : `${Math.round(barMeters)} m`;
-    }
   }
   if (S.swipeActive && S.baseMesh && S.mesh) {
     const w = canvas.clientWidth, h = canvas.clientHeight, split = Math.round(w * S.swipeX);
@@ -2095,7 +2186,7 @@ renderer.setAnimationLoop(() => {
     S.baseMesh.visible = false; S.mesh.visible = true; if (hideCity) S.buildingGroup.visible = true;
     renderer.setScissor(split, 0, w - split, h); renderer.render(scene, camera);
     renderer.setScissorTest(false);
-  } else if (S.quality === 'cinematic' && post.composer && !S.recording) post.composer.render(dt);
+  } else if (S.quality !== 'performance' && S.aoEnabled !== false && post.composer && !S.recording) post.composer.render(dt);
   else renderer.render(scene, camera);
   if (S.floodMesh) waterUniforms.uTime.value = performance.now() / 1000;
   frames++; fpsT += dt;
@@ -2103,8 +2194,6 @@ renderer.setAnimationLoop(() => {
 });
 
 refreshScenes().catch(() => { $('#scene-list').innerHTML = '<p class="worse">Server not reachable – start with <code>python run.py</code>.</p>'; });
-{ let seen = false; try { seen = !!localStorage.getItem('dw-gallery-seen'); localStorage.setItem('dw-gallery-seen', '1'); } catch {}
-  if (!seen && !location.hash) setTimeout(() => openGallery(), 400); }
 // ------------------------------------------------------------------ Anchors
 let currentAnchors = [];
 
@@ -2176,7 +2265,7 @@ $('#anchor-apply-btn').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Applying...';
   try {
-    const res = await fetch(`/api/scenes/${S.id}/rescale`, {
+    const res = await apiFetch(`/api/scenes/${S.id}/rescale`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ anchors: currentAnchors.map(a => ({building_id: a.building_id, height_m: a.known})) })
@@ -2196,7 +2285,7 @@ $('#anchor-reset-btn').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Resetting...';
   try {
-    const res = await fetch(`/api/scenes/${S.id}/rescale`, {
+    const res = await apiFetch(`/api/scenes/${S.id}/rescale`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reset: true })
@@ -2246,7 +2335,7 @@ $('#auto-anchor-scan').onclick = async () => {
   const btn = $('#auto-anchor-scan'); btn.disabled = true;
   $('#auto-anchor-status').textContent = 'Scanning shadows and OSM height tags…';
   try {
-    const r = await fetch(`/api/scenes/${S.id}/auto-anchors`, { method: 'POST' });
+    const r = await apiFetch(`/api/scenes/${S.id}/auto-anchors`, { method: 'POST' });
     if (!r.ok) throw new Error(await r.text());
     S.meta.auto_anchors = await r.json();
     updateAutoAnchorPanel();
@@ -2263,7 +2352,7 @@ $('#auto-anchor-apply').onclick = async () => {
   }
   const btn = $('#auto-anchor-apply'); btn.disabled = true;
   try {
-    const r = await fetch(`/api/scenes/${S.id}/rescale`, { method: 'POST',
+    const r = await apiFetch(`/api/scenes/${S.id}/rescale`, { method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ automatic: true, anchors: selected.map((a) => ({ building_id: a.building_id, height_m: a.height_m,
         source: a.source, confidence: a.confidence })) }) });
@@ -2320,26 +2409,19 @@ function drawMap() {
   }
   S.mapView = m;
   mapCtx.fillStyle = '#102b3b'; mapCtx.fillRect(0, 0, m.w, m.h);
-  const x0 = Math.floor(m.center[0] - m.w / 512) - 1, x1 = Math.ceil(m.center[0] + m.w / 512) + 1;
-  const y0 = Math.floor(m.center[1] - m.h / 512) - 1, y1 = Math.ceil(m.center[1] + m.h / 512) + 1;
-  let loaded = 0, pending = 0, failed = 0;
-  for (let tx = x0; tx <= x1; tx++) for (let ty = y0; ty <= y1; ty++) {
-    if (ty < 0 || ty >= 2 ** m.zoom) continue;
-    const tileX = (tx + 2 ** m.zoom) % (2 ** m.zoom), key = `${m.zoom}/${tileX}/${ty}`;
-    let tile = S.mapTiles.get(key);
-    if (!tile && S.mapTiles.size < 96) {
-      tile = new Image(); tile.referrerPolicy = 'strict-origin-when-cross-origin';
-      tile.onload = drawMap; tile.onerror = () => { tile.dataset.failed = '1'; drawMap(); };
-      tile.src = `https://tile.openstreetmap.org/${key}.png`;
-      S.mapTiles.set(key, tile);
-    }
-    if (tile?.complete && tile.naturalWidth) {
-      mapCtx.drawImage(tile, Math.round((tx - m.center[0]) * 256 + m.w / 2),
-        Math.round((ty - m.center[1]) * 256 + m.h / 2), 256, 256);
-      loaded++;
-    } else if (tile?.dataset.failed) failed++;
-    else pending++;
+  // Offline geospatial inset uses the uploaded optical raster, never network
+  // tiles. Keep the existing Mercator footprint and click-to-fly projection.
+  const pts=S.meta.corners_lonlat.map(ll=>mapPixel(...ll,m));
+  const [tl,tr,bl]=pts;
+  if(S.texImg){
+    mapCtx.save();mapCtx.beginPath();[0,1,3,2].forEach((i,k)=>k?mapCtx.lineTo(...pts[i]):mapCtx.moveTo(...pts[i]));mapCtx.closePath();mapCtx.clip();
+    const tw=S.texImg.width,th=S.texImg.height;
+    mapCtx.setTransform((tr[0]-tl[0])/tw,(tr[1]-tl[1])/tw,(bl[0]-tl[0])/th,(bl[1]-tl[1])/th,tl[0],tl[1]);
+    mapCtx.drawImage(S.texImg,0,0);mapCtx.restore();
   }
+  mapCtx.strokeStyle='rgba(183,201,216,.2)';mapCtx.lineWidth=1;
+  for(let gx=32;gx<m.w;gx+=64){mapCtx.beginPath();mapCtx.moveTo(gx,0);mapCtx.lineTo(gx,m.h);mapCtx.stroke();}
+  for(let gy=32;gy<m.h;gy+=64){mapCtx.beginPath();mapCtx.moveTo(0,gy);mapCtx.lineTo(m.w,gy);mapCtx.stroke();}
   const order = [0, 1, 3, 2];
   mapCtx.beginPath();
   order.forEach((i, k) => {
@@ -2355,7 +2437,7 @@ function drawMap() {
     mapCtx.beginPath(); mapCtx.arc(px, py, 6, 0, Math.PI * 2);
     mapCtx.fillStyle = '#f8b54d'; mapCtx.fill(); mapCtx.strokeStyle = '#08202d'; mapCtx.lineWidth = 2; mapCtx.stroke();
   }
-  $('#map-status').textContent = loaded ? `OpenStreetMap · z${m.zoom} · scene outline in cyan` : pending ? 'Loading OpenStreetMap tiles…' : failed ? 'Basemap unavailable; scene outline remains available' : 'Basemap unavailable';
+  $('#map-status').textContent = `Offline optical map · EPSG:3857 display · source ${S.meta.crs || 'unknown'} · click within cyan footprint`; 
 }
 function updateMapAvailability() {
   const available = Boolean(S.meta?.corners_lonlat?.length === 4);
@@ -2400,19 +2482,19 @@ async function openModelComparison() {
   const button = $('#model-swipe-toggle');
   button.disabled = true; button.textContent = 'Preparing models…';
   try {
-    let status = await (await fetch(`/api/scenes/${sceneId}/model-comparison`)).json();
+    let status = await (await apiFetch(`/api/scenes/${sceneId}/model-comparison`)).json();
     if (status.state === 'idle') {
-      const r = await fetch(`/api/scenes/${sceneId}/model-comparison`, { method: 'POST' });
+      const r = await apiFetch(`/api/scenes/${sceneId}/model-comparison`, { method: 'POST' });
       if (!r.ok) throw new Error(await r.text());
       status = await r.json();
     }
     while (status.state === 'queued' || status.state === 'running') {
       await new Promise((resolve) => setTimeout(resolve, 1800));
-      status = await (await fetch(`/api/scenes/${sceneId}/model-comparison`)).json();
+      status = await (await apiFetch(`/api/scenes/${sceneId}/model-comparison`)).json();
       if (S.id !== sceneId) return;
     }
     if (status.state !== 'done') throw new Error(status.error || 'Pretrained inference did not finish.');
-    const bin = await (await fetch(`jobs/${sceneId}/viewer/pretrained_height.bin?${Date.now()}`)).arrayBuffer();
+    const bin = await (await apiFetch(`jobs/${sceneId}/viewer/pretrained_height.bin?${Date.now()}`)).arrayBuffer();
     if (S.id !== sceneId) return;
     const heights = new Float32Array(bin);
     if (heights.length !== S.h.length) throw new Error('The model grids are not aligned.');
@@ -2532,7 +2614,7 @@ async function missionRequest(action, point) {
     body.flood_seed_u = (S.floodSeed % S.gw) / Math.max(1, S.gw - 1);
     body.flood_seed_v = Math.floor(S.floodSeed / S.gw) / Math.max(1, S.gh - 1);
   }
-  const res = await fetch(`/api/scenes/${S.id}/mission`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  const res = await apiFetch(`/api/scenes/${S.id}/mission`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body) });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -2652,7 +2734,7 @@ function fitGcp() {
     $('#gcp-apply').disabled = true;
     if (pts.length < 2) { out.textContent = pts.length ? 'Add at least one more pin with a known height.' : ''; return; }
     try {
-      const r = await fetch(`api/scenes/${S.id}/gcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ points: pts }) });
+      const r = await apiFetch(`api/scenes/${S.id}/gcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ points: pts }) });
       const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
       out.classList.remove('muted');
       out.innerHTML = `<b>Fit</b><span>height = ${fmt(j.a, 3)} × surface + ${fmt(j.b, 2)}</span><b>R²</b><span>${fmt(j.r2, 3)}</span>
@@ -2669,7 +2751,7 @@ $('#gcp-apply').onclick = async () => {
   const pts = S.gcpPins.filter((p) => Number.isFinite(p.known)).map((p) => ({ u: p.u, v: p.v, height_m: p.known }));
   busy(true, 'Applying ground-control fit…');
   try {
-    const r = await fetch(`api/scenes/${S.id}/gcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ points: pts, apply: true }) });
+    const r = await apiFetch(`api/scenes/${S.id}/gcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ points: pts, apply: true }) });
     const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
     toast(`Calibrated with ${j.n} pins · RMSE ${fmt(j.rmse_m, 2)} m${j.relative_input ? ' · scene is now metric' : ''}`, 'ok');
     setGcpMode(false); S.gcpPins = []; renderGcpTable(); await reloadViewer();
@@ -2677,7 +2759,7 @@ $('#gcp-apply').onclick = async () => {
   finally { busy(false); }
 };
 $('#gcp-reset').onclick = async () => {
-  const r = await fetch(`api/scenes/${S.id}/gcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reset: true }) });
+  const r = await apiFetch(`api/scenes/${S.id}/gcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reset: true }) });
   const j = await r.json();
   S.gcpPins = []; renderGcpTable(); $('#gcp-stats').textContent = '';
   if (S.gcpGroup) { scene.remove(S.gcpGroup); S.gcpGroup = null; }
@@ -2734,8 +2816,11 @@ window.togglePresentation = (on = !$('#app').classList.contains('presentation'))
   $('#app').classList.toggle('presentation', on);
   const t = $('#pres-title');
   if (on && S.meta) {
-    t.innerHTML = `${escapeHtml(S.meta.input || 'Scene')}<small>${S.meta.units === 'metre' ? 'Metric 3D surface model' : 'Relative 3D surface model'} · ${escapeHtml(S.meta.calibration?.method || '')} · DepthWizard</small>`;
-    t.classList.remove('hidden'); setNav('tour');
+    t.innerHTML = `${escapeHtml($('#hero-title').textContent || S.meta.input || 'Scene')}<small>${S.meta.calibration?.method==='input-dem'?'Input DEM (not estimated)':S.meta.units === 'metre' ? 'Metric 3D surface model' : 'Relative heights'} · ${escapeHtml(S.meta.calibration?.evidence_level || 'unverified')} evidence · DepthWizard</small>`;
+    let strip=$('#pres-metrics');if(!strip){strip=document.createElement('div');strip.id='pres-metrics';$('#stage').append(strip);}
+    const m=S.meta.metrics?.absolute;strip.innerHTML=m?`<span>${fmt(m.rmse)} m<small>RMSE</small></span><span>${fmt(m.mae)} m<small>MAE</small></span><span>${fmt(m.r,3)}<small>PEARSON R</small></span>`:`<span>${escapeHtml(S.meta.units==='metre'?'No independent reference':'Relative heights')}<small>ACCURACY NOT SCORED</small></span>`;
+    if(S.swipeActive)setSwipe(false);$('#welcome-card').classList.add('hidden');$('#evidence-popover').classList.add('hidden');
+    t.classList.remove('hidden'); setNav(matchMedia('(prefers-reduced-motion: reduce)').matches?'orbit':'tour');
   } else { t.classList.add('hidden'); setNav('orbit'); }
   requestAnimationFrame(resize); requestRender();
 };
@@ -2755,7 +2840,6 @@ const WORKSPACES = {
 };
 function setWorkspace(mode) {
   if (!WORKSPACES[mode]) return;
-  if (mode === 'validate' && S.meta && !S.ref) { toast('This scene has no independent reference DSM.', 'info'); return; }
   S.workspace = mode; $('#app').dataset.workspace = mode;
   $$('#mode-rail [data-workspace]').forEach((b) => {
     b.classList.toggle('active', b.dataset.workspace === mode);
@@ -2770,12 +2854,12 @@ function setWorkspace(mode) {
   if (mode === 'validate' && S.ref) setMode('error');
   updateMissionHud();
 }
-function setAnimatedStat(el, value, suffix = '') {
+function setAnimatedStat(el, value, suffix = '', precision = null) {
   if (!el || !Number.isFinite(value)) { if (el) el.textContent = '—'; return; }
   const target = Number(value), previous = Number(el.dataset.value);
   if (el.dataset.value && Math.abs(previous - target) < .0001 && el.dataset.suffix === suffix) return;
   el.dataset.value = String(target); el.dataset.suffix = suffix;
-  const decimal = Math.abs(target) < 100 && !Number.isInteger(target) ? 1 : 0;
+  const decimal = precision ?? (Math.abs(target) < 100 && !Number.isInteger(target) ? 1 : 0);
   const display = (n) => `${n.toLocaleString(undefined, { maximumFractionDigits: decimal, minimumFractionDigits: decimal })}${suffix}`;
   if (matchMedia('(prefers-reduced-motion: reduce)').matches || !Number.isFinite(previous)) { el.textContent = display(target); return; }
   const start = performance.now(), initial = previous;
@@ -2810,10 +2894,10 @@ function updateMissionHud() {
       box.append(number, caption); return box;
     }));
   }
-  values.forEach(([, val, suffix], i) => setAnimatedStat($('#hero-stats').children[i]?.querySelector('b'), val, suffix));
+  values.forEach(([label, val, suffix], i) => setAnimatedStat($('#hero-stats').children[i]?.querySelector('b'), val, suffix, ['Pearson r','r²'].includes(label)?3:null));
   const level = S.meta.calibration?.evidence_level || (S.meta.units === 'relative' ? 'relative' : 'unverified');
   $('#hero-caption').textContent = `${S.meta.units === 'metre' ? 'Metric DSM' : 'Relative surface'} · ${level} evidence · ${S.meta.crs || 'local coordinates'}`;
-  $$('#mode-rail [data-workspace="validate"]').forEach((b) => b.disabled = !S.ref);
+  $$('#mode-rail [data-workspace="validate"]').forEach((b) => b.disabled = false);
 }
 function renderBuildingList() {
   let list = $('#building-list');
@@ -2836,7 +2920,7 @@ function renderLayerPreviews() {
   if (!S.meta || !S.h) return;
   for (const button of $$('#layer-dock button[data-mode]')) {
     const mode = button.dataset.mode;
-    const unavailable = (mode === 'error' && !S.ref) || (mode === 'landslide' && !S.susc) ||
+    const unavailable = (mode === 'confidence' && !S.confidence) || (mode === 'error' && !S.ref) || (mode === 'landslide' && !S.susc) ||
       (mode === 'change' && !S.change) || (mode === 'ndsm' && !S.dtm) ||
       (mode === 'hazard' && S.meta.units !== 'metre');
     button.classList.toggle('layer-unavailable', unavailable);
@@ -2869,72 +2953,7 @@ function renderLayerPreviews() {
     ctx.putImageData(frame, 0, 0);
   }
 }
-let importStep = 1, importPreviewUrl = null;
-function refreshImportPreview() {
-  const input = $('#upload-form')?.image, file = input?.files?.[0];
-  const note = $('#import-detection'), img = $('#import-preview');
-  if (!note || !img) return;
-  if (importPreviewUrl) { URL.revokeObjectURL(importPreviewUrl); importPreviewUrl = null; }
-  img.classList.add('hidden');
-  if (!file) { note.textContent = 'Choose a PNG, JPG or TIFF optical image. A single-band elevation TIFF opens as an input DEM.'; return; }
-  const ext = file.name.split('.').pop()?.toLowerCase();
-  if (['png','jpg','jpeg'].includes(ext)) {
-    note.textContent = 'RGB image → relative surface. Add surveyed points later to calibrate metres.';
-    importPreviewUrl = URL.createObjectURL(file); img.src = importPreviewUrl; img.classList.remove('hidden');
-  } else note.textContent = 'TIFF input → spatial bands and georeferencing are checked during processing. Georeferenced RGB can produce a metric DSM with scale evidence.';
-}
-function showImportStep(n) {
-  importStep = Math.max(1, Math.min(3, n));
-  $$('#upload-form [data-import-step]').forEach((el) => el.classList.toggle('hidden', Number(el.dataset.importStep) !== importStep));
-  $$('#import-steps span').forEach((el, i) => el.classList.toggle('active', i + 1 === importStep));
-  const back = $('#import-back'), next = $('#import-next');
-  if (back) back.classList.toggle('hidden', importStep === 1);
-  if (next) next.classList.toggle('hidden', importStep === 3);
-  if (importStep === 3 && $('#import-summary')) {
-    const f = $('#upload-form');
-    $('#import-summary').textContent = `${f.image.files[0]?.name || 'No image selected'} · ${f.dem.files[0] ? 'uploaded DEM' : f.fetch_dem.checked ? `${f.dem_source.value} DEM download` : 'no DEM selected'} · ${f.reference.files[0] ? 'reference for validation' : 'no reference'}`;
-  }
-}
-function initImportFlow() {
-  const formEl = $('#upload-form'), parts = [...formEl.children], dropEl = $('#drop');
-  const details = parts.filter((el) => el.tagName === 'DETAILS');
-  const run = formEl.querySelector('button[type="submit"]');
-  const steps = document.createElement('div'); steps.id = 'import-steps';
-  steps.innerHTML = '<span class="active">1 Image</span><span>2 Evidence</span><span>3 Run</span>';
-  const first = document.createElement('div'); first.dataset.importStep='1'; first.className='import-step';
-  first.innerHTML = '<h3>Choose the optical input</h3><p>Drag a file into the area below, or browse your device.</p><img id="import-preview" class="hidden" alt="Selected image preview"><p id="import-detection" class="note"></p>';
-  first.insertBefore(dropEl, first.querySelector('#import-preview'));
-  const second = document.createElement('div'); second.dataset.importStep='2'; second.className='import-step hidden';
-  second.innerHTML = '<h3>Add scale evidence</h3><p>A DEM or ground-control points enable metre-scale elevation. A separate reference is used only for validation.</p>';
-  details.forEach((part, i) => { if (i === 2) part.open = false; second.append(part); });
-  const third = document.createElement('div'); third.dataset.importStep='3'; third.className='import-step hidden';
-  third.innerHTML = '<h3>Run reconstruction</h3><p id="import-summary" class="note"></p><div id="import-stage-list" aria-label="Processing stages"><span>Reading</span><span>Height AI</span><span>Calibration</span><span>Buildings</span><span>Analytics</span><span>Viewer</span></div><div id="import-progress"><i></i></div>';
-  third.append(run);
-  const nav = document.createElement('div'); nav.id='import-nav';
-  nav.innerHTML='<button id="import-back" type="button" class="hidden">Back</button><button id="import-next" type="button" class="primary">Continue →</button>';
-  formEl.replaceChildren(steps, first, second, third, nav);
-  $('#import-back').onclick=()=>showImportStep(importStep-1);
-  $('#import-next').onclick=()=>{
-    if (importStep === 1 && !formEl.image.files.length) { formEl.image.click(); return; }
-    showImportStep(importStep+1);
-  };
-  refreshImportPreview();
-  const progress=document.createElement('div'); progress.id='job-progress'; progress.className='hidden'; progress.innerHTML='<i></i>';
-  $('#app-header').append(progress);
-  const updateProgress=()=>{
-    const log=$('#job-log'), raw=log.textContent.toLowerCase();
-    const stages=['reading image','relative height','scale calibration','extracting lod1','analytics:','done in'];
-    let reached=-1; stages.forEach((term,i)=>{if(raw.includes(term))reached=i;});
-    const hasJob=!log.classList.contains('hidden') && raw.trim().length>0;
-    progress.classList.toggle('hidden',!hasJob || reached===5 || raw.includes('✕'));
-    const fraction=reached<0?.05:(reached+1)/stages.length;
-    progress.querySelector('i').style.width=`${Math.round(fraction*100)}%`;
-    $('#import-progress i').style.width=`${Math.round(fraction*100)}%`;
-    $$('#import-stage-list span').forEach((el,i)=>el.classList.toggle('complete',i<=reached));
-  };
-  new MutationObserver(updateProgress).observe($('#job-log'),{childList:true,characterData:true,subtree:true,attributes:true,attributeFilter:['class']});
-  showImportStep(1);
-}
+function refreshImportPreview() { return missionUi?.inspectInput(); }
 function openCommandPalette() {
   $('#command-palette').classList.remove('hidden'); $('#command-input').value = '';
   renderCommandResults(''); $('#command-input').focus();
@@ -3043,9 +3062,17 @@ function initMissionLayout() {
       if(!$('#gallery').classList.contains('hidden')) closeGallery();
     }
   });
-  initImportFlow();
   setWorkspace('explore');
 }
 initMissionLayout();
+missionUi = createMissionUi({ getState: () => S, camera, orbit, requestRender, setWorkspace, loadScene, resetView, setNav, setMode, toast });
+// Catch rejected async UI actions at their event boundary. Network errors already
+// have a retry toast; synchronous exceptions remain visible for debugging.
+for (const el of $$('button,a,input,select,.brand')) {
+  for(const event of ['onclick','onchange','oninput']){
+    const handler=el[event];if(!handler)continue;
+    el[event]=function(...args){const result=handler.apply(this,args);if(result?.catch)result.catch(error=>toast(missionUi.humanError(error.message),'error',9000,()=>el.click()));return result;};
+  }
+}
 // shareable links: #scene-id opens that scene (also when the hash changes)
-addEventListener('hashchange', () => { const id = decodeURIComponent(location.hash.slice(1)); if (id && id !== S.id) loadScene(id); });
+addEventListener('hashchange', () => { const id = decodeURIComponent(location.hash.slice(1)); if (id && id !== S.id && id !== loadingSceneId) loadScene(id); });
