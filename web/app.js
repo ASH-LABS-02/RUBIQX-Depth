@@ -1127,7 +1127,7 @@ function selectBuilding(mesh) {
     <b>Building #${b.id}</b><span>${fmt(b.height_m,3)} relative units</span>
     <b>Roof elevation</b><span>${fmt(b.roof_elevation_m,3)} relative units</span>
     <b>Ground elevation</b><span>${fmt(b.ground_elevation_m,3)} relative units</span>
-    <b>Confidence (uncalibrated)</b><span>${Number.isFinite(b.confidence)?`${Math.round(b.confidence*100)}%`:'Unavailable'} · model ensemble agreement</span>
+    <b>Reliability index</b><span>${Number.isFinite(b.confidence)?`${Math.round(b.confidence*100)}%`:'Unavailable'} · model ensemble agreement</span>
     <b>Storeys / volume</b><span>Require metric height calibration</span>
     <b>Footprint area</b><span>Requires a georeferenced image</span>
   ` : `
@@ -1629,7 +1629,7 @@ function hoverUpdate(e) {
       ];
       if (dtmVal !== null) rows.push(['Ground', `${fmt(reportedHeight(dtmVal), 1)} ${S.units}`], ['Above ground', `${fmt(ndsmVal, 1)} ${S.units}`]);
       if (metric) rows.push(['Slope', `${fmt(sa.slope, 1)}°`]);
-      if (confVal !== null) rows.push(['Reliability', `${Math.round(confVal * 100)}% · uncalibrated`]);
+      if (confVal !== null) rows.push(['Reliability index', `${Math.round(confVal * 100)}%`]);
       if (bldg) rows.push(['Building', `#${bldg.id} · ${fmt(bldg.height_m, 1)} ${metric ? 'm' : ''}${bldg.storeys ? ` · ${bldg.storeys} fl` : ''}`]);
       hud.innerHTML = rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
       const sr = $('#stage').getBoundingClientRect();
@@ -1873,9 +1873,9 @@ async function refreshLocalModel() {
     const prior = select.value;
     select.querySelector('option[data-local-model]')?.remove();
     if (info.ready) {
-      const option = new Option('GAMUS fine-tuned · local prototype', info.path);
+      const option = new Option('DepthWizard GAMUS v2 · metric heights (recommended)', info.path);
       option.dataset.localModel = 'true';
-      select.add(option);
+      select.add(option, 0);
       if (prior === info.path || !select.dataset.userSelected) select.value = info.path;
     }
     note.textContent = info.stage
