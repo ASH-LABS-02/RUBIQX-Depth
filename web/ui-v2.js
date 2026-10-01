@@ -205,7 +205,7 @@ export function createMissionUi(ctx) {
   const presets=document.createElement('div');presets.id='exag-presets';
   for(const value of [1,1.5,2,3]){const b=document.createElement('button');b.type='button';b.textContent=`${value}×`;b.onclick=()=>{const slider=$('#exag');slider.value=value;slider.dispatchEvent(new Event('input',{bubbles:true}));};presets.append(b);}
   $('#exag-popover').append(presets);
-  function exaggerationChanged(){const s=getState();exaggeration.textContent=`×${s.exag.toFixed(1)} exaggerated`;exaggeration.classList.toggle('hidden',s.exag===1);$('#exag-trigger').textContent=`${s.exag.toFixed(1)}×`;}
+  function exaggerationChanged(){const s=getState();exaggeration.textContent=`×${s.exag.toFixed(1)} exaggerated`;exaggeration.classList.toggle('hidden',s.exag===1);const trigger=$('#exag-trigger');if(trigger.dataset.v3)trigger.dataset.value=`${s.exag.toFixed(1)}×`;else trigger.textContent=`${s.exag.toFixed(1)}×`;}
   $('#exag').addEventListener('input',exaggerationChanged);
 
   function sceneLoaded(){

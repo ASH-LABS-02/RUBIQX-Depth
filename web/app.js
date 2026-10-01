@@ -10,13 +10,15 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-v3';
-import { createMissionUi } from './ui-v2.js?v=20261001-v1';
+import { createMissionUi } from './ui-v2.js?v=20261001-bold';
+import { createDiorama } from './diorama.js?v=20261001-bold';
+import { createBoldUi } from './ui-v3.js?v=20261001-bold';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
 const FLOOR_AREA_PER_PERSON_M2 = 30;
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
-let missionUi = null, sceneGeneration = 0, sceneAbort = null, loadingSceneId = null;
+let missionUi = null, boldUi = null, sceneGeneration = 0, sceneAbort = null, loadingSceneId = null;
 
 async function apiFetch(url, options = {}) {
   try {
@@ -93,13 +95,13 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;       // no clipped roofs, richer shadows
-renderer.toneMappingExposure = 1.0;
+renderer.toneMappingExposure = 1.08;
 const SUN_I = 2.6, HEMI_I = 0.95;                          // balanced for ACES tone mapping
 const scene = new THREE.Scene();
-const SKY = new THREE.Color(0x253746);
+const SKY = new THREE.Color(0x243e46);
 const skyCanvas = document.createElement('canvas'); skyCanvas.width = 2; skyCanvas.height = 256;
 const skyContext = skyCanvas.getContext('2d'), skyGradient = skyContext.createLinearGradient(0, 0, 0, 256);
-skyGradient.addColorStop(0, '#142332'); skyGradient.addColorStop(.65, '#30495e'); skyGradient.addColorStop(1, '#152332');
+skyGradient.addColorStop(0, '#070b14'); skyGradient.addColorStop(.60, '#172c36'); skyGradient.addColorStop(1, '#243e46');
 skyContext.fillStyle = skyGradient; skyContext.fillRect(0, 0, 2, 256);
 const skyBackdrop = new THREE.CanvasTexture(skyCanvas); skyBackdrop.colorSpace = THREE.SRGBColorSpace;
 scene.background = skyBackdrop;
@@ -112,6 +114,7 @@ sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.02;
 scene.add(hemi, sun, sun.target);
+const diorama = createDiorama(scene);
 
 // ---- render on demand: full frame rate while something moves, a trickle when idle
 let lastActivity = performance.now();
@@ -143,15 +146,13 @@ function updateCinematicScene() {
   if (!post.sky) return;
   post.smaa.enabled = on;
   post.gtao.updateGtaoMaterial({samples:on?16:8,radius:Math.max(1,S.extent*.008),thickness:Math.max(1,S.extent*.004)});
-  post.sky.visible = on; post.ground.visible = on;
+  post.sky.visible = false; post.ground.visible = false;
   if (on) {
     post.sky.scale.setScalar(S.extent * 20);
     const u = post.sky.material.uniforms;
     u.turbidity.value = 6; u.rayleigh.value = 1.6; u.mieCoefficient.value = 0.004; u.mieDirectionalG.value = 0.82;
     u.sunPosition.value.copy(sun.position).normalize();
-    post.ground.scale.setScalar(S.extent * 8);
-    post.ground.position.y = -Math.max(S.extent * 0.02, (S.hmax - S.hmin) * S.exag * 0.15) - 0.05;
-    scene.fog.color.set(0xa9bccb); scene.background = null;
+    scene.fog.color.copy(SKY); scene.background = skyBackdrop;
     post.gtao.updateGtaoMaterial({ radius: Math.max(1, S.extent * 0.008), distanceExponent: 1.5, thickness: Math.max(1, S.extent * 0.004), scale: 1 });
     post.gtao.blendIntensity = 1.0;
   } else {
@@ -309,7 +310,7 @@ function curvatureAt(r, c) {                // Laplacian approximation, 1/m
 }
 
 function buildTerrain() {
-  for (const o of [S.mesh, S.skirt]) if (o) { scene.remove(o); o.geometry.dispose(); o.material.dispose(); }
+  if (S.mesh) {scene.remove(S.mesh);S.mesh.geometry.dispose();S.mesh.material.dispose();}
   const geo = new THREE.PlaneGeometry(S.W, S.H, S.gw - 1, S.gh - 1);
   geo.rotateX(-Math.PI / 2);
   geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(S.gw * S.gh * 3).fill(1), 3));
@@ -344,8 +345,7 @@ function buildTerrain() {
   S.mesh = new THREE.Mesh(geo, mat);
   S.mesh.receiveShadow = true; S.mesh.castShadow = true;
   scene.add(S.mesh);
-  S.skirt = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 1, side: THREE.DoubleSide }));
-  scene.add(S.skirt);
+  S.skirt = diorama.walls;
   applyHeights();
   applyShading();
 }
@@ -358,18 +358,8 @@ function applyHeights() {
   S.mesh.geometry.computeBoundingSphere(); S.mesh.geometry.computeBoundingBox();
   uniforms.uExag.value = S.exag;
   // skirt: walls from each edge down to a floor below the lowest point
-  const floor = -Math.max(S.extent * 0.02, (S.hmax - S.hmin) * S.exag * 0.15);
-  const v = [];
-  const edge = (pts) => { for (let k = 0; k < pts.length - 1; k++) {
-    const [a, b] = [pts[k], pts[k + 1]];
-    v.push(a[0], a[1], a[2], b[0], b[1], b[2], a[0], floor, a[2], b[0], b[1], b[2], b[0], floor, b[2], a[0], floor, a[2]); } };
-  const P = (r, c) => { const i = r * S.gw + c; return [pos.getX(i), pos.getY(i), pos.getZ(i)]; };
-  const top = [], bot = [], lef = [], rig = [];
-  for (let c = 0; c < S.gw; c++) { top.push(P(0, c)); bot.push(P(S.gh - 1, c)); }
-  for (let r = 0; r < S.gh; r++) { lef.push(P(r, 0)); rig.push(P(r, S.gw - 1)); }
-  [top, bot, lef, rig].forEach(edge);
-  const g = S.skirt.geometry;
-  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3)); g.computeVertexNormals();
+  const floor = -Math.max(S.extent * 0.06, (S.hmax - S.hmin) * S.exag * 0.18);
+  diorama.update(S,pos,floor);
   if (S.marker) placeMarker(S.marker.userData.x, S.marker.userData.z);
   if (S.profilePts.length === 2) drawProfileLine();
   if (S.water) S.water.position.y = worldY(+$('#flood-level').value);
@@ -704,7 +694,7 @@ $('#rainfall-play').onclick = () => {
 
 function setSun(deg, elevDeg) {
   // azimuth clockwise from north (scene north = -Z); elevation from image metadata when known
-  const el = Math.max(5, elevDeg ?? S.sunEl ?? 45) * Math.PI / 180, a = deg * Math.PI / 180, R = S.extent * 1.5;
+  const el = Math.max(5, elevDeg ?? S.sunEl ?? 35) * Math.PI / 180, a = deg * Math.PI / 180, R = S.extent * 1.5;
   const cy = worldY((S.hmin + S.hmax) / 2) || 0;
   sun.position.set(Math.sin(a) * Math.cos(el) * R, cy + Math.sin(el) * R, -Math.cos(a) * Math.cos(el) * R);
   sun.target.position.set(0, cy, 0);
@@ -824,7 +814,7 @@ async function loadScene(id) {
     const sunInput = meta.sun_input || {};
     const imageElevation = Number.isFinite(sunInput.elevation_deg) ? sunInput.elevation_deg : c0.sun_elevation_deg;
     const imageAzimuth = Number.isFinite(sunInput.azimuth_deg) ? sunInput.azimuth_deg : c0.sun_azimuth_deg;
-    S.sunEl = Number.isFinite(imageElevation) ? imageElevation : 45;
+    S.sunEl = Number.isFinite(imageElevation) ? imageElevation : 35;
     if (Number.isFinite(imageAzimuth)) { $('#sun').value = Math.round(imageAzimuth); $('#sun-v').textContent = `${Math.round(imageAzimuth)}° (image)`; }
     setSun(+$('#sun').value);
     resetView();
@@ -892,6 +882,7 @@ async function loadScene(id) {
     updateAutoAnchorPanel();
     updateCinematicScene();
     missionUi?.sceneLoaded();
+    boldUi?.sceneLoaded();
     location.hash = id;
   } catch (e) {
     if (current() && e.name !== 'AbortError') toast('Could not load scene: ' + e.message, 'error', 8000, () => loadScene(id));
@@ -902,9 +893,8 @@ function resetView() {
   setNav('orbit');
   camera.up.set(0, 1, 0);
   const cy = worldY((S.hmin + S.hmax) / 2);
-  const shift = innerWidth > 860 ? S.extent * 0.10 : 0;
-  orbit.target.set(shift, cy, 0);
-  camera.position.set(shift, cy + S.extent * 0.73, S.extent * 0.73);
+  orbit.target.set(0, cy, 0);
+  camera.position.set(S.extent*.34, cy + S.extent * .92, S.extent * 1.05);
   orbit.minDistance = S.extent * 0.01; orbit.maxDistance = S.extent * 4;
   orbit.update();
 }
@@ -2142,8 +2132,9 @@ let idleSkip = 0;
 renderer.setAnimationLoop(() => {
   const busyAnim = S.nav !== 'orbit' || S.riseStart || S.cameraFlight || S.floodAnimating || S.missionOverlay
     || swipeDragging || S.recording || S.floodMesh || S.waterAnim;
+  const idleRotation=boldUi?.tick(busyAnim || performance.now()-lastActivity<1500);
   missionUi?.tick(busyAnim || performance.now()-lastActivity<1500);
-  if (!busyAnim && performance.now() - lastActivity > 1500 && (idleSkip++ % 15) !== 0) { clock.getDelta(); return; }
+  if (!busyAnim && !idleRotation && performance.now() - lastActivity > 1500 && (idleSkip++ % 15) !== 0) { clock.getDelta(); return; }
   const dt = Math.min(clock.getDelta(), 0.1);
   if (S.mesh) {
     if (S.riseStart && S.buildingGroup) {
@@ -2159,7 +2150,7 @@ renderer.setAnimationLoop(() => {
       orbit.update();
       if (t >= 1) S.cameraFlight = null;
     }
-    if (S.nav === 'orbit') { orbit.update(); clampCamera(); }
+    if (S.nav === 'orbit') { orbit.update(dt); clampCamera(); }
     else if (S.nav === 'fly') updateFly(dt);
     else if (S.nav === 'tour') updateTour(dt);
     const agl = camera.position.y - (Math.abs(camera.position.x) < S.W / 2 && Math.abs(camera.position.z) < S.H / 2 ? terrainY(camera.position.x, camera.position.z) : 0);
@@ -2909,7 +2900,7 @@ function updateMissionHud() {
   else if (mode === 'calibrate') values = [['RMSE vs reference', metrics?.rmse, metrics ? ' m' : ''], ['r²', metrics?.r !== undefined ? metrics.r ** 2 : undefined, ''], ['Pins', pinCount, '']];
   else if (mode === 'validate') values = [['RMSE', metrics?.rmse, metrics ? ' m' : ''], ['MAE', metrics?.mae, metrics ? ' m' : ''], ['Pearson r', metrics?.r, '']];
   else if (mode === 'buildings') values = [['Candidates', list.length, ''], ['Tallest', list.length ? tallest : undefined, ` ${S.units}`], ['Fitted roofs', list.filter((b) => b.roof_fit).length, '']];
-  else values = [[S.meta.georeferenced?'Scene area':'Image pixels', S.meta.georeferenced?S.W*S.H/1e6:S.meta.src_w*S.meta.src_h, S.meta.georeferenced?' km²':' px'], ['Candidates', list.length, ''], ['Tallest', list.length ? tallest : undefined, ` ${S.units}`]];
+  else values = [['RMSE',S.meta.metrics?.absolute?.rmse,S.meta.units==='metre'?' m':''],['Buildings',list.length,''],['Tallest',list.length?tallest:undefined,` ${S.units}`],[S.meta.georeferenced?'Scene area':'Image pixels', S.meta.georeferenced?S.W*S.H/1e6:S.meta.src_w*S.meta.src_h, S.meta.georeferenced?' km²':' px']];
   const signature = values.map(([label]) => label).join('|');
   if ($('#hero-stats').dataset.signature !== signature) {
     $('#hero-stats').dataset.signature = signature;
@@ -2945,13 +2936,14 @@ function renderLayerPreviews() {
   if (!S.meta || !S.h) return;
   for (const button of $$('#layer-dock button[data-mode]')) {
     const mode = button.dataset.mode;
+    if(!button.querySelector('.layer-label')){const text=button.textContent.trim();button.childNodes.forEach(n=>{if(n.nodeType===Node.TEXT_NODE)n.remove();});const label=document.createElement('span');label.className='layer-label';label.textContent=text;button.append(label);button.setAttribute('aria-label',text);}
     const unavailable = (mode === 'confidence' && !S.confidence) || (mode === 'error' && !S.ref) || (mode === 'landslide' && !S.susc) ||
       (mode === 'change' && !S.change) || (mode === 'ndsm' && !S.dtm) ||
       (mode === 'hazard' && S.meta.units !== 'metre');
     button.classList.toggle('layer-unavailable', unavailable);
     if (unavailable) continue;
     let thumb = button.querySelector('canvas.layer-thumb');
-    if (!thumb) { thumb = document.createElement('canvas'); thumb.className = 'layer-thumb'; thumb.width = 60; thumb.height = 32; button.prepend(thumb); }
+    if (!thumb) { thumb = document.createElement('canvas'); thumb.className = 'layer-thumb'; thumb.width = 64; thumb.height = 64; button.prepend(thumb); }
     const ctx = thumb.getContext('2d');
     if (mode === 'optical' && S.texImg) { ctx.drawImage(S.texImg, 0, 0, thumb.width, thumb.height); continue; }
     const frame = ctx.createImageData(thumb.width, thumb.height), lo = pct(S.h, .02), hi = pct(S.h, .98);
@@ -3092,6 +3084,7 @@ function initMissionLayout() {
 }
 initMissionLayout();
 missionUi = createMissionUi({ getState: () => S, camera, orbit, requestRender, setWorkspace, loadScene, resetView, setNav, setMode, toast });
+boldUi = createBoldUi({getState:()=>S,orbit,canvas,requestRender});
 // Catch rejected async UI actions at their event boundary. Network errors already
 // have a retry toast; synchronous exceptions remain visible for debugging.
 for (const el of $$('button,a,input,select,.brand')) {
