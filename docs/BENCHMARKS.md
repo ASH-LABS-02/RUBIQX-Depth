@@ -1,7 +1,9 @@
 # DepthWizard benchmarks
 
-The DC two-scene result below was rerun with the GAMUS fine-tuned checkpoint
-(`da2-gamus-full`, 10 epochs, RTX 4060) using the checked-in
+Current model: v2 (Depth Anything V2 Base, metric loss, 30 epochs on the full
+GAMUS train split; see `docs/MODEL_CARD.md`). Sections 1b and 2a report v2;
+older sections are kept for comparison. The v1 DC result was produced with the
+GAMUS fine-tuned checkpoint (`da2-gamus-full` v1, 10 epochs, RTX 4060) using the checked-in
 `samples/dc_lidar/manifest.csv` and `samples/dc_lidar/evaluation/` outputs.
 "Reference held out" means the 2024 LiDAR DSM was used for scoring only, not
 to construct the calibration input or height anchors. Other rows are labelled
@@ -105,6 +107,27 @@ adds error at object edges.
 
 ## 2. Absolute DSM – reference-held-out DC LiDAR evaluation
 
+### 2a. Current model (v2, Base, metric loss)
+
+Same inputs and scoring as below (2023 image, 2018 DTM at 32 m, 2024 LiDAR DSM
+for scoring only), rerun with the v2 checkpoint, TTA 4, scene prior *urban*.
+Raw metrics: `docs/eval/dc-v2/`.
+
+| Scene | DEM only RMSE / MAE | v1 RMSE / MAE | **v2 RMSE / MAE** | v2 r | v2 bias | per-building RMSE / r (v1 → v2) |
+|---|---:|---:|---:|---:|---:|---|
+| DC Glover Park | 10.09 / 7.42 | 6.21 / 4.51 | **4.35 / 3.12** | 0.91 | −2.20 m | 5.72 / 0.40 → **3.83 / 0.56** |
+| DC Capitol Hill East | 8.00 / 6.41 | 3.93 / 2.97 | **2.86 / 2.07** | 0.82 | −0.52 m | 5.70 / 0.39 → **2.09 / 0.66** |
+| **Mean** | **9.04 / 6.92** | **5.07 / 3.74** | **3.61 / 2.59** | 0.87 | | |
+
+v2 lowers RMSE by 30 % (Glover Park) and 27 % (Capitol Hill) against v1, and by
+60 % against the input DTM. At 30 m aggregation the error is 2.70 m and 1.16 m.
+The remaining error is concentrated in tall objects: on Glover Park pixels
+above 15 m are 7.6 m too low and the median building is 6.4 m against 9.1 m.
+Both sites are near GAMUS DC training tiles, so this remains a related-domain
+check.
+
+### 2b. Previous model (v1)
+
 Two urban scenes use 2023 optical imagery and a **2018 bare-earth DTM averaged
 to 32 m** for calibration; the **2024 LiDAR DSM** is used only as the reference.
 The mean absolute DSM error is **5.07 m RMSE, 3.74 m MAE, Pearson r = 0.819**
@@ -172,8 +195,10 @@ and building confidence.
 
 | Scene | Buildings | RMSE | r | median est. / LiDAR |
 |---|---:|---:|---:|---:|
-| DC Glover Park (bare-earth DEM, learned scale) | 131 | 5.72 m | 0.40 | 4.3 / 9.4 m |
-| DC Capitol Hill (surface DEM fit) | 97 | 5.70 m | 0.39 | – |
+| DC Glover Park, v2 model (bare-earth DEM, learned scale) | 145 | **3.83 m** | **0.56** | 6.4 / 9.1 m |
+| DC Capitol Hill East, v2 model (bare-earth DEM, learned scale) | 102 | **2.09 m** | **0.66** | 7.9 / 8.6 m |
+| DC Glover Park, v1 (bare-earth DEM, learned scale) | 131 | 5.72 m | 0.40 | 4.3 / 9.4 m |
+| DC Capitol Hill, v1 (surface DEM fit) | 97 | 5.70 m | 0.39 | – |
 
 Buildings are ranked better than chance but heights are biased low when only
 the learned scale is available (aerial 2023 DC orthophoto differs from the

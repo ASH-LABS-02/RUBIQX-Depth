@@ -7,7 +7,7 @@ Smart India Hackathon 2026 · Problem Statement 26175 (ISRO / SAC) · Team RUBIQ
 
 | Absolute height, 30 held-out GAMUS tiles | Reference-held-out DC LiDAR check (2 scenes) | Runs offline |
 |---|---|---|
-| **2.62 m RMSE / 1.48 m MAE, r 0.84** – single image, **no per-tile fitting**, bias −0.07 m (previous model 3.46 m; pretrained shape-aligned: 4.76 m, r 0.41) | **5.07 m RMSE / 3.74 m MAE** vs **9.04 m / 6.92 m** for the input DTM alone | one laptop, no cloud, open formats; [live demo](http://16.170.173.94/) |
+| **2.62 m RMSE / 1.48 m MAE, r 0.84** – single image, **no per-tile fitting**, bias −0.07 m (previous model 3.46 m; pretrained shape-aligned: 4.76 m, r 0.41) | **3.61 m RMSE / 2.59 m MAE, r 0.87** vs **9.04 m / 6.92 m** for the input DTM alone (previous model 5.07 m) | one laptop, no cloud, open formats; [live demo](http://16.170.173.94/) |
 
 The two DC scenes use a 2018 DTM for calibration and a 2024 LiDAR DSM only for
 scoring. They are a small, related-domain evaluation because the sites are near
@@ -25,7 +25,7 @@ Every file below is in this repository, so you can download it, upload it throug
 
 | # | What it tests | Satellite image | Low-resolution DEM | Reference (scoring only) | Settings | What to expect |
 |---|---|---|---|---|---|---|
-| 1 | Urban scene, blind LiDAR check | `samples/dc_lidar/glover_park/rgb.tif` | `samples/dc_lidar/glover_park/dtm_2018_32m.tif` | `samples/dc_lidar/glover_park/lidar_dsm_2024.tif` | GAMUS model, scene prior *urban* | ~6.2 m RMSE vs ~10.1 m for the DEM alone (Validate panel) |
+| 1 | Urban scene, blind LiDAR check | `samples/dc_lidar/glover_park/rgb.tif` | `samples/dc_lidar/glover_park/dtm_2018_32m.tif` | `samples/dc_lidar/glover_park/lidar_dsm_2024.tif` | GAMUS model, scene prior *urban* | ~4.3 m RMSE vs ~10.1 m for the DEM alone (Validate panel; the bundled demo scene was computed with the previous model and shows 6.2 m) |
 | 2 | Surface-DEM calibration path | `samples/dc_lidar/capitol_hill_east/rgb.tif` | `samples/dc_lidar/capitol_hill_east/sim_cop30_surface.tif` | `samples/dc_lidar/capitol_hill_east/lidar_dsm_2024.tif` | GAMUS, *urban* | calibration method `dem-surface-fit`. The surface DEM is **simulated from the reference LiDAR**, so this checks the code path, not independent accuracy |
 | 3 | Change detection (simulated event) | `samples/dc_lidar/glover_park/rgb_post_simulated.tif` | `samples/dc_lidar/glover_park/dtm_2018_32m.tif` | – | GAMUS, *urban*; then **Disaster → Change detection**, pick the Glover Park scene as the before-event scene | height-loss patches where 12 roofs were removed from the image (the post-event image is **simulated**) |
 | 4 | Forest / vegetation | `samples/quesenbank/forest_south_rgb.tif` | `samples/quesenbank/forest_south_dem_30m.tif` | `samples/quesenbank/forest_south_reference_dsm.tif` | GAMUS, scene prior *forest* | canopy DSM with error scored against the UAV reference. Always pair *north* files with *north* and *south* with *south* |
@@ -98,7 +98,7 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 | | |
 |---|---|
-| **Accuracy** | Reference-held-out, related-domain DC LiDAR evaluation: **5.07 m RMSE / 3.74 m MAE**, Pearson **r = 0.819** over two urban scenes, vs **9.04 m / 6.92 m** for the input DTM alone ([benchmarks](docs/BENCHMARKS.md)). The six-scene 5.04 m mixed-evidence aggregate is reported separately, not as independent validation. GAMUS fine-tune (v2, Base): 2.62 m RMSE / 1.48 m MAE, r 0.84 on 30 held-out tiles with no per-tile fitting (pretrained shape-aligned r 0.41). |
+| **Accuracy** | Reference-held-out, related-domain DC LiDAR evaluation with the v2 model: **3.61 m RMSE / 2.59 m MAE**, Pearson **r = 0.87** over two urban scenes (previous model 5.07 m / 3.74 m), vs **9.04 m / 6.92 m** for the input DTM alone ([benchmarks](docs/BENCHMARKS.md)). The six-scene 5.04 m mixed-evidence aggregate is reported separately, not as independent validation. GAMUS fine-tune (v2, Base): 2.62 m RMSE / 1.48 m MAE, r 0.84 on 30 held-out tiles with no per-tile fitting (pretrained shape-aligned r 0.41). |
 | **Calibration** | Detects whether the DEM is a surface model (Copernicus/SRTM) or bare earth; fits building scale from a surface DEM and matches it exactly at 30 m; otherwise uses GCPs, a learned pixel-footprint scale or a scene prior, always labelled. |
 | **Products** | DSM, DTM, nDSM and per-pixel uncertainty GeoTIFFs · CityJSON with LoD1 or supported fitted LoD2 roofs · GLB/OBJ/PLY · HTML report · evidence JSON |
 | **3D** | Textured city on bare ground, fitted roof hypotheses, adjustable sun lighting, geometric DEM-vs-DSM swipe, orbit/fly/tour, one-click flythrough video |
@@ -292,7 +292,7 @@ On those two Quesenbank crops, the fine-tuned model with the nonnegative DEM-fus
 
 - **Evaluation breadth.** Absolute accuracy is measured on 30 GAMUS tiles from three US cities and two DC LiDAR scenes near the training region. There is no Indian, Cartosat, hilly or dense-forest validation yet; that is the top priority, followed by more non-urban LiDAR sites.
 - **Failure cases.** Leaf-off forest, large flat roofs and isolated tall trees are the worst cases on held-out tiles; see the [failure-case figure](docs/images/failure_cases.jpg) and [BENCHMARKS §1c–1d](docs/BENCHMARKS.md), which also lists approaches that did not help.
-- **Building heights.** Tall objects are under-estimated (about 30 % low on DC/NYC GAMUS tiles; median 4.3 m vs 9.4 m on Glover Park buildings when only the learned scale is available). One supplied height or a few GCPs correct most of this.
+- **Building heights.** Tall objects are still under-estimated on real imagery: with the v2 model the median Glover Park roof is 6.4 m against 9.1 m in the LiDAR (previous model 4.3 m against 9.4 m), and pixels above 15 m are about 7.6 m low. One supplied height or a few GCPs correct most of this.
 - **Uncertainty.** `uncertainty.tif` is a calibrated 1-sigma error fitted on only two scenes (held-out 1σ coverage 52–88 %); treat it as provisional. The viewer's confidence layer is a relative reliability index, not a probability.
 
 - Monocular height is weakest on:
