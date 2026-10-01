@@ -1,0 +1,66 @@
+{
+  "da2-base-gamus-v2[aligned]/DC": {
+    "tiles": 10,
+    "mean_rmse_m": 3.415233219159414,
+    "mean_mae_m": 2.1397757642098427,
+    "mean_r": 0.8981064821995774,
+    "mean_bias_m": -4.343032879469112e-12,
+    "median_ratio_tall": 0.9786347406075857
+  },
+  "da2-base-gamus-v2[aligned]/all": {
+    "tiles": 30,
+    "mean_rmse_m": 2.5594849271093727,
+    "mean_mae_m": 1.5092821877732667,
+    "mean_r": 0.8373107122274828,
+    "mean_bias_m": -1.8458530427393507e-12,
+    "median_ratio_tall": 0.9226892490804612
+  },
+  "da2-base-gamus-v2[absolute]/DC": {
+    "tiles": 10,
+    "mean_rmse_m": 3.4515305866251387,
+    "mean_mae_m": 2.0583364940059505,
+    "mean_r": 0.9010472950673882,
+    "mean_bias_m": -0.017620547841184064,
+    "median_ratio_tall": 0.9567547788240546
+  },
+  "da2-base-gamus-v2[absolute]/all": {
+    "tiles": 30,
+    "mean_rmse_m": 2.6235656841211132,
+    "mean_mae_m": 1.4790965606270052,
+    "mean_r": 0.8391595244840218,
+    "mean_bias_m": -0.07261037418565403,
+    "median_ratio_tall": 0.9657652073015083
+  },
+  "da2-base-gamus-v2[aligned]/NYC": {
+    "tiles": 10,
+    "mean_rmse_m": 2.666196817323076,
+    "mean_mae_m": 1.6124628471780098,
+    "mean_r": 0.7118508975480202,
+    "mean_bias_m": -1.4300666553723752e-12,
+    "median_ratio_tall": 0.8871479068266761
+  },
+  "da2-base-gamus-v2[absolute]/NYC": {
+    "tiles": 10,
+    "mean_rmse_m": 2.7645658225795544,
+    "mean_mae_m": 1.6364781702123217,
+    "mean_r": 0.7118185430462912,
+    "mean_bias_m": -0.21470134908656147,
+    "median_ratio_tall": 0.8424141005317864
+  },
+  "da2-base-gamus-v2[aligned]/PHL": {
+    "tiles": 10,
+    "mean_rmse_m": 1.5970247448456258,
+    "mean_mae_m": 0.7756079519319475,
+    "mean_r": 0.9019747569348502,
+    "mean_bias_m": 2.3554040662343565e-13,
+    "median_ratio_tall": 0.96880602522618
+  },
+  "da2-base-gamus-v2[absolute]/PHL": {
+    "tiles": 10,
+    "mean_rmse_m": 1.654600643158649,
+    "mean_mae_m": 0.7424750176627437,
+    "mean_r": 0.9046127353383854,
+    "mean_bias_m": 0.014490774370783447,
+    "median_ratio_tall": 1.001842328525211
+  }
+}

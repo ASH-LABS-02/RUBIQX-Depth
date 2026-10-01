@@ -72,6 +72,19 @@ class DepthBackbone:
         self.model = AutoModelForDepthEstimation.from_pretrained(name, cache_dir=cache).to(self.device).eval()
         self.name = name
         self.agl = is_overhead_agl(name)
+        # Checkpoints trained with a metric loss (finetune_gamus.py --target metric)
+        # record their own pixel-height constant and training resolution; older
+        # checkpoints fall back to the constants fitted for da2-gamus-full.
+        self.pixel_height, self.train_net_gsd = C_PIXEL_HEIGHT, TRAIN_NET_GSD_M
+        cfg_path = Path(str(name)) / "config.json"
+        if cfg_path.exists():
+            try:
+                import json
+                cfg = json.loads(cfg_path.read_text())
+                self.pixel_height = float(cfg.get("depthwizard_pixel_height", C_PIXEL_HEIGHT))
+                self.train_net_gsd = float(cfg.get("depthwizard_train_net_gsd", TRAIN_NET_GSD_M))
+            except Exception:  # noqa: BLE001
+                pass
         self.info: dict = {}
         # speed options: batching is numerically identical; fp16 is opt-in
         # (set DEPTHWIZARD_FP16=1) until it is re-benchmarked on the GPU.
@@ -159,11 +172,11 @@ class DepthBackbone:
         with the learned pixel-footprint scale. No tile affine re-alignment is
         needed because every tile is already in (approximate) metres."""
         h, w = rgb.shape[:2]
-        T = int(np.clip(round(TRAIN_NET_GSD_M * 518 / gsd), 256, 4096))
+        T = int(np.clip(round(self.train_net_gsd * 518 / gsd), 256, 4096))
         if T >= max(h, w):
             raw, std = self._infer(rgb, tta=tta, return_std=True)
             net_gsd = gsd * self._last_factor
-            return C_PIXEL_HEIGHT * net_gsd * raw, C_PIXEL_HEIGHT * net_gsd * std, net_gsd
+            return self.pixel_height * net_gsd * raw, self.pixel_height * net_gsd * std, net_gsd
         overlap = T // 4
         acc = np.zeros((h, w), np.float64)
         vacc = np.zeros((h, w), np.float64)
@@ -176,7 +189,7 @@ class DepthBackbone:
                 y0a, x0a = max(0, y1 - T), max(0, x1 - T)
                 d, dstd = self._infer(rgb[y0a:y1, x0a:x1], tta=tta, return_std=True)
                 net_gsd = gsd * self._last_factor
-                ms = C_PIXEL_HEIGHT * net_gsd
+                ms = self.pixel_height * net_gsd
                 d = d - np.percentile(d, 1.0)      # each tile's ground level to zero
                 wt = ramp[: y1 - y0a, : x1 - x0a]
                 acc[y0a:y1, x0a:x1] += ms * d * wt
@@ -244,7 +257,7 @@ class DepthBackbone:
         net_gsd = gsd_m * self.info["net_factor"]
         if not (LEARNED_SCALE_RANGE[0] <= net_gsd <= LEARNED_SCALE_RANGE[1]):
             return None
-        return C_PIXEL_HEIGHT * net_gsd * self.info["raw_span"]
+        return self.pixel_height * net_gsd * self.info["raw_span"]
 
 
 # ---- model cache: loading weights takes seconds and VRAM churn, so keep up

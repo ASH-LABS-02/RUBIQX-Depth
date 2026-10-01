@@ -7,7 +7,7 @@ Smart India Hackathon 2026 · Problem Statement 26175 (ISRO / SAC) · Team RUBIQ
 
 | Absolute height, 30 held-out GAMUS tiles | Reference-held-out DC LiDAR check (2 scenes) | Runs offline |
 |---|---|---|
-| **3.46 m RMSE / 2.18 m MAE, r 0.79** – single image, **no per-tile fitting** (shape-aligned: 3.00 m; pretrained shape-aligned: 4.76 m, r 0.41) | **5.07 m RMSE / 3.74 m MAE** vs **9.04 m / 6.92 m** for the input DTM alone | one laptop, no cloud, open formats; [live demo](http://16.170.173.94/) |
+| **2.62 m RMSE / 1.48 m MAE, r 0.84** – single image, **no per-tile fitting**, bias −0.07 m (previous model 3.46 m; pretrained shape-aligned: 4.76 m, r 0.41) | **5.07 m RMSE / 3.74 m MAE** vs **9.04 m / 6.92 m** for the input DTM alone | one laptop, no cloud, open formats; [live demo](http://16.170.173.94/) |
 
 The two DC scenes use a 2018 DTM for calibration and a 2024 LiDAR DSM only for
 scoring. They are a small, related-domain evaluation because the sites are near
@@ -98,7 +98,7 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 | | |
 |---|---|
-| **Accuracy** | Reference-held-out, related-domain DC LiDAR evaluation: **5.07 m RMSE / 3.74 m MAE**, Pearson **r = 0.819** over two urban scenes, vs **9.04 m / 6.92 m** for the input DTM alone ([benchmarks](docs/BENCHMARKS.md)). The six-scene 5.04 m mixed-evidence aggregate is reported separately, not as independent validation. GAMUS fine-tune: correlation 0.41 → 0.79 on 30 held-out tiles after per-tile reference alignment. |
+| **Accuracy** | Reference-held-out, related-domain DC LiDAR evaluation: **5.07 m RMSE / 3.74 m MAE**, Pearson **r = 0.819** over two urban scenes, vs **9.04 m / 6.92 m** for the input DTM alone ([benchmarks](docs/BENCHMARKS.md)). The six-scene 5.04 m mixed-evidence aggregate is reported separately, not as independent validation. GAMUS fine-tune (v2, Base): 2.62 m RMSE / 1.48 m MAE, r 0.84 on 30 held-out tiles with no per-tile fitting (pretrained shape-aligned r 0.41). |
 | **Calibration** | Detects whether the DEM is a surface model (Copernicus/SRTM) or bare earth; fits building scale from a surface DEM and matches it exactly at 30 m; otherwise uses GCPs, a learned pixel-footprint scale or a scene prior, always labelled. |
 | **Products** | DSM, DTM, nDSM and per-pixel uncertainty GeoTIFFs · CityJSON with LoD1 or supported fitted LoD2 roofs · GLB/OBJ/PLY · HTML report · evidence JSON |
 | **3D** | Textured city on bare ground, fitted roof hypotheses, adjustable sun lighting, geometric DEM-vs-DSM swipe, orbit/fly/tour, one-click flythrough video |
@@ -286,7 +286,7 @@ This lets every mode and metric be checked without any downloads. It is a plumbi
 
 Two real GAMUS RGB/AGL test pairs are ready in [samples/gamus/](samples/gamus/README.md), with provenance, upload instructions, and a measured pretrained baseline. Two georeferenced forest crops with RGB, a 30 m DEM, and a reference DSM are ready in [samples/quesenbank/](samples/quesenbank/README.md). Those crops exercise the absolute DSM route, but broader independent LiDAR evaluation is still needed for an accuracy claim.
 
-On those two Quesenbank crops, the fine-tuned model with the nonnegative DEM-fusion calibration has a mean absolute DSM RMSE of **6.70 m** and MAE of **3.60 m**, versus **7.79 m** and **4.93 m** for the prior fusion method. Both methods use a 30 m DEM downsampled from the same survey's high-resolution DEM, so this is a cross-landscape pipeline check, not independent LiDAR validation. The 30 GAMUS held-out test tiles have mean affine-aligned RMSE **3.00 m** versus **4.76 m** for the pretrained Small backbone; that alignment uses each test tile's AGL reference and measures relative shape only. Scored with **no alignment at all** – the fine-tuned model's own metric output – the same tiles give **3.46 m RMSE, 2.18 m MAE, r 0.79**, with tall objects about 18 % too low on average (details and per-city numbers in [docs/BENCHMARKS.md](docs/BENCHMARKS.md), raw results in `docs/eval/gamus30/`).
+On those two Quesenbank crops, the fine-tuned model with the nonnegative DEM-fusion calibration has a mean absolute DSM RMSE of **6.70 m** and MAE of **3.60 m**, versus **7.79 m** and **4.93 m** for the prior fusion method. Both methods use a 30 m DEM downsampled from the same survey's high-resolution DEM, so this is a cross-landscape pipeline check, not independent LiDAR validation. The 30 GAMUS held-out test tiles have mean affine-aligned RMSE **3.00 m** versus **4.76 m** for the pretrained Small backbone; that alignment uses each test tile's AGL reference and measures relative shape only. Scored with **no alignment at all** – the model's own metric output – the current v2 model (Depth Anything V2 Base, metric loss, 30 epochs) gives **2.62 m RMSE, 1.48 m MAE, r 0.84, bias −0.07 m**, with tall objects at 0.97 of true height; the previous model scored 3.46 m / 2.18 m with tall objects 18 % low (details and per-city numbers in [docs/BENCHMARKS.md](docs/BENCHMARKS.md), raw results in `docs/eval/gamus30-v2/`).
 
 ## Known limitations
 

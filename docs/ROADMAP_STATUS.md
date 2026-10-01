@@ -16,7 +16,7 @@ Competitor columns summarise what their public material shows (see
 ## 2. Model
 | Item | Status | Notes |
 |---|---|---|
-| Overhead fine-tuned backbone | ✅ | DA-V2-S on GAMUS; r 0.41 → 0.79 on 30 held-out tiles |
+| Overhead fine-tuned backbone | ✅ | DA-V2-Base on GAMUS (v2): 2.62 m RMSE, r 0.84 on 30 held-out tiles, no per-tile fitting |
 | Multi-task / EO foundation model | ⬜ | |
 | Metric height output | 🟡 | learned pixel-footprint scale (±40 %), resolution-matched tiling |
 | Diffusion refinement | ⬜ | |

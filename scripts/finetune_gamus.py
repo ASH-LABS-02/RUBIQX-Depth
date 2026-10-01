@@ -13,6 +13,19 @@ Height files: HDF5/PNG/TIFF; set --height-scale if needed. Non-finite and
 GeoTIFF nodata pixels are masked. Exact -5 values in GAMUS HDF5 are voids.
 
 GPU strongly recommended; use batch 1 and gradient accumulation 4 on 8 GB VRAM.
+
+v2 options (all off by default, so the original recipe is unchanged):
+  --model base                 Depth Anything V2 Base instead of Small
+  --target metric              add a metric loss so the network learns real
+                               heights (metres = 1.0 x network-pixel size x
+                               output); no fitted 0.674 constant needed
+  --net-gsd 0.65               train at the same ground resolution the app
+                               runs at (GAMUS 0.33 m tiles are resampled)
+  --scale-jitter 0.15          +-15 % random resolution around --net-gsd
+  --tall-weight 0.5            up-weight tall pixels in the metric loss
+  --sat-aug                    satellite-style blur, haze and noise
+  --select absolute            keep the checkpoint with the best *absolute*
+                               (unfitted) validation error
 """
 import argparse
 import glob
@@ -30,6 +43,10 @@ import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
+MODEL_ALIASES = {"small": "depth-anything/Depth-Anything-V2-Small-hf",
+                 "base": "depth-anything/Depth-Anything-V2-Base-hf",
+                 "large": "depth-anything/Depth-Anything-V2-Large-hf"}
+LEGACY_PIXEL_HEIGHT = 0.674   # fitted constant for SSI-only checkpoints (depth.py)
 MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
@@ -61,7 +78,7 @@ def read_rgb(path):
 
 class Pairs(Dataset):
     def __init__(self, rgb_glob, h_glob, size=518, scale=1.0, train=True,
-                 limit=0, seed=42):
+                 limit=0, seed=42, gsd=0.33, net_gsd=0.0, scale_jitter=0.0, sat_aug=False):
         rgbs = {Path(p).stem: p for p in glob.glob(rgb_glob)}
         hs = {Path(p).stem: p for p in glob.glob(h_glob)}
         # GAMUS uses both xxx_RGB/xxx_AGL and xxx_IMG/xxx_AGL.
@@ -73,6 +90,7 @@ class Pairs(Dataset):
         if limit and len(self.items) > limit:
             self.items = sorted(random.Random(seed).sample(self.items, limit))
         self.size, self.scale, self.train = size, scale, train
+        self.gsd, self.net_gsd, self.jitter, self.sat_aug = gsd, net_gsd, scale_jitter, sat_aug
 
     def __len__(self):
         return len(self.items)
@@ -85,23 +103,69 @@ class Pairs(Dataset):
             h = np.asarray(Image.fromarray(h).resize(rgb.shape[1::-1], Image.NEAREST))
         s = self.size
         H, W = h.shape
-        if min(H, W) < s:  # upscale small tiles
-            f = s / min(H, W)
-            rgb = np.asarray(Image.fromarray(rgb).resize((int(W * f) + 1, int(H * f) + 1), Image.BICUBIC))
-            h = np.asarray(Image.fromarray(h).resize((int(W * f) + 1, int(H * f) + 1), Image.NEAREST))
-            H, W = h.shape
-        y = random.randint(0, H - s) if self.train else (H - s) // 2
-        x = random.randint(0, W - s) if self.train else (W - s) // 2
-        rgb, h = rgb[y:y + s, x:x + s], h[y:y + s, x:x + s]
+        if self.net_gsd:
+            # resolution-matched: crop the ground footprint the app feeds the
+            # network and resample it to s pixels (net GSD ~ --net-gsd)
+            f = random.uniform(1 - self.jitter, 1 + self.jitter) if self.train else 1.0
+            c = int(np.clip(round(s * self.net_gsd / self.gsd * f), s // 2, min(H, W)))
+            y = random.randint(0, H - c) if self.train else (H - c) // 2
+            x = random.randint(0, W - c) if self.train else (W - c) // 2
+            rgb = np.asarray(Image.fromarray(np.ascontiguousarray(rgb[y:y + c, x:x + c])).resize((s, s), Image.LANCZOS))
+            h = _resize_heights(h[y:y + c, x:x + c], s)
+            eff_gsd = self.gsd * c / s
+        else:
+            if min(H, W) < s:  # upscale small tiles
+                f = s / min(H, W)
+                rgb = np.asarray(Image.fromarray(rgb).resize((int(W * f) + 1, int(H * f) + 1), Image.BICUBIC))
+                h = np.asarray(Image.fromarray(h).resize((int(W * f) + 1, int(H * f) + 1), Image.NEAREST))
+                H, W = h.shape
+            y = random.randint(0, H - s) if self.train else (H - s) // 2
+            x = random.randint(0, W - s) if self.train else (W - s) // 2
+            rgb, h = rgb[y:y + s, x:x + s], h[y:y + s, x:x + s]
+            eff_gsd = self.gsd
         if self.train:  # nadir imagery is rotation invariant
             k = random.randint(0, 3)
             rgb, h = np.rot90(rgb, k), np.rot90(h, k)
             if random.random() < 0.5:
                 rgb, h = rgb[:, ::-1], h[:, ::-1]
+            if self.sat_aug:
+                rgb = _satellite_aug(np.ascontiguousarray(rgb))
         t = torch.from_numpy(np.ascontiguousarray(rgb)).permute(2, 0, 1).float() / 255
         if self.train:
             t = (t * random.uniform(0.8, 1.2) + random.uniform(-0.08, 0.08)).clamp(0, 1)
-        return (t - MEAN) / STD, torch.from_numpy(np.ascontiguousarray(h))
+        return (t - MEAN) / STD, torch.from_numpy(np.ascontiguousarray(h)), torch.tensor(eff_gsd, dtype=torch.float32)
+
+
+def _resize_heights(h, size):
+    """Area-average resampling that ignores voids (NaN)."""
+    valid = np.isfinite(h).astype(np.float32)
+    filled = np.where(valid > 0, h, 0).astype(np.float32)
+    num = np.asarray(Image.fromarray(filled * valid).resize((size, size), Image.BOX))
+    den = np.asarray(Image.fromarray(valid).resize((size, size), Image.BOX))
+    out = num / np.maximum(den, 1e-6)
+    out[den < 0.5] = np.nan
+    return out.astype(np.float32)
+
+
+def _satellite_aug(rgb):
+    """Make aerial tiles look more like satellite imagery: softer optics,
+    atmospheric haze and sensor noise. Geometry (and so the height target)
+    is unchanged."""
+    from PIL import ImageFilter
+    img = Image.fromarray(rgb)
+    if random.random() < 0.5:                       # coarser optics / resampling
+        f = random.uniform(1.2, 2.0)
+        w, hh = img.size
+        img = img.resize((max(8, int(w / f)), max(8, int(hh / f))), Image.BILINEAR).resize((w, hh), Image.BICUBIC)
+    if random.random() < 0.3:
+        img = img.filter(ImageFilter.GaussianBlur(random.uniform(0.3, 1.0)))
+    a = np.asarray(img).astype(np.float32)
+    if random.random() < 0.3:                       # haze
+        k = random.uniform(0.05, 0.25)
+        a = a * (1 - k) + k * random.uniform(170, 230)
+    if random.random() < 0.3:                       # sensor noise
+        a = a + np.random.normal(0, random.uniform(1, 4), a.shape)
+    return np.clip(a, 0, 255).astype(np.uint8)
 
 
 def _fit(p, g):
@@ -133,27 +197,44 @@ def ssi_loss(pred, gt):
     return loss / len(pred)
 
 
+def metric_loss(pred, gt, gsd, pixel_height=1.0, tall_weight=0.0):
+    """Absolute height error in metres (no fitting), optionally up-weighting
+    tall pixels, where single-image models tend to under-estimate."""
+    loss, used = 0, 0
+    for p, g, s in zip(pred, gt, gsd):
+        m = torch.isfinite(g)
+        if m.sum() < 100:
+            continue
+        gm = g[m]
+        w = 1 + tall_weight * (gm / 10).clamp(0, 3)
+        loss = loss + (w * (p[m] * pixel_height * s - gm).abs()).sum() / w.sum()
+        used += 1
+    return loss / max(used, 1)
+
+
 @torch.no_grad()
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, pixel_height=LEGACY_PIXEL_HEIGHT):
+    """Per-tile mean RMSE, both affine-aligned (shape) and absolute (no fitting)."""
     model.eval()
-    rm, n, skipped = 0.0, 0, 0
-    for x, h in loader:
-        x, h = x.to(device), h.to(device)
+    aff, ab, n, skipped = 0.0, 0.0, 0, 0
+    for x, h, g in loader:
+        x, h, g = x.to(device), h.to(device), g.to(device)
         p = model(pixel_values=x).predicted_depth
         p = F.interpolate(p[:, None], size=h.shape[-2:], mode="bilinear", align_corners=False)[:, 0]
-        for pi, hi in zip(p, h):
+        for pi, hi, gi in zip(p, h, g):
             m = torch.isfinite(hi) & torch.isfinite(pi)
             if m.sum() < 100:
                 skipped += 1
                 continue
             a, b = _fit(pi[m], hi[m])
-            rm += torch.sqrt(((pi[m] * a + b - hi[m]) ** 2).mean()).item()
+            aff += torch.sqrt(((pi[m] * a + b - hi[m]) ** 2).mean()).item()
+            ab += torch.sqrt(((pi[m] * pixel_height * gi - hi[m]) ** 2).mean()).item()
             n += 1
     model.train()
     print(f"Validation: {n} usable tiles, {skipped} skipped", flush=True)
     if not n:
         raise RuntimeError("No usable validation tiles")
-    return rm / n
+    return {"affine": aff / n, "absolute": ab / n}
 
 
 def main():
@@ -163,7 +244,18 @@ def main():
     ap.add_argument("--val-rgb")
     ap.add_argument("--val-height")
     ap.add_argument("--height-scale", type=float, default=1.0)
-    ap.add_argument("--model", default="depth-anything/Depth-Anything-V2-Small-hf")
+    ap.add_argument("--model", default="small", help="small | base | large | HF id | local checkpoint")
+    ap.add_argument("--target", choices=("ssi", "metric"), default="ssi",
+                    help="ssi: shape only (original); metric: also learn real heights")
+    ap.add_argument("--metric-weight", type=float, default=1.0)
+    ap.add_argument("--tall-weight", type=float, default=0.0)
+    ap.add_argument("--gsd", type=float, default=0.33, help="dataset ground sampling distance (m/px)")
+    ap.add_argument("--net-gsd", type=float, default=0.0,
+                    help="train at this network-pixel size (0 = native crops, original recipe)")
+    ap.add_argument("--scale-jitter", type=float, default=0.0)
+    ap.add_argument("--sat-aug", action="store_true")
+    ap.add_argument("--select", choices=("affine", "absolute"), default="affine",
+                    help="validation score that picks the saved checkpoint")
     ap.add_argument("--out", default="checkpoints/da2-gamus")
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch", type=int, default=4)
@@ -180,6 +272,8 @@ def main():
     ap.add_argument("--resume", action="store_true", help="resume from OUT/last.pt")
     ap.add_argument("--require-cuda", action="store_true", help="fail if a CUDA GPU is unavailable")
     a = ap.parse_args()
+    a.model = MODEL_ALIASES.get(a.model, a.model)
+    pixel_height = 1.0 if a.target == "metric" else LEGACY_PIXEL_HEIGHT
 
     from transformers import AutoImageProcessor, AutoModelForDepthEstimation
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -200,14 +294,19 @@ def main():
     opt = torch.optim.AdamW([{"params": enc, "lr": a.lr}, {"params": dec, "lr": a.lr * 10}], weight_decay=0.01)
 
     train_data = Pairs(a.rgb, a.height, a.size, a.height_scale,
-                       limit=a.max_train_samples, seed=a.seed)
+                       limit=a.max_train_samples, seed=a.seed, gsd=a.gsd, net_gsd=a.net_gsd,
+                       scale_jitter=a.scale_jitter, sat_aug=a.sat_aug)
     train = DataLoader(train_data, batch_size=a.batch,
                        shuffle=True, num_workers=0 if os.name == "nt" else 4)
     val = DataLoader(Pairs(a.val_rgb, a.val_height, a.size, a.height_scale,
-                           train=False, limit=a.max_val_samples, seed=a.seed),
+                           train=False, limit=a.max_val_samples, seed=a.seed,
+                           gsd=a.gsd, net_gsd=a.net_gsd),
                      batch_size=a.batch) if a.val_rgb else None
     total = a.epochs * math.ceil(len(train) / a.grad_accum)
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=[a.lr, a.lr * 10], total_steps=total, pct_start=0.05)
+    total = max(total, 10)
+    # at least 2 warm-up steps, so very short (smoke-test) runs don't divide by zero
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=[a.lr, a.lr * 10], total_steps=total,
+                                                pct_start=max(0.05, 3.0 / total))
     amp_dtype = torch.bfloat16 if a.amp_dtype == "bf16" else torch.float16
     scaler = torch.amp.GradScaler("cuda", enabled=device == "cuda" and a.amp_dtype == "fp16")
     best, step, start_epoch = float("inf"), 0, 0
@@ -228,12 +327,14 @@ def main():
         if device == "cuda":
             torch.cuda.reset_peak_memory_stats()
         opt.zero_grad(set_to_none=True)
-        for batch_index, (x, h) in enumerate(train):
-            x, h = x.to(device), h.to(device)
+        for batch_index, (x, h, g) in enumerate(train):
+            x, h, g = x.to(device), h.to(device), g.to(device)
             with torch.autocast(device_type=device, enabled=device == "cuda", dtype=amp_dtype):
                 p = model(pixel_values=x).predicted_depth
             p = F.interpolate(p[:, None].float(), size=h.shape[-2:], mode="bilinear", align_corners=False)[:, 0]
             loss = ssi_loss(p, h)
+            if a.target == "metric":
+                loss = loss + a.metric_weight * metric_loss(p, h, g, 1.0, a.tall_weight)
             scaler.scale(loss / a.grad_accum).backward()
             if (batch_index + 1) % a.grad_accum == 0 or batch_index + 1 == len(train):
                 scaler.unscale_(opt)
@@ -250,14 +351,17 @@ def main():
                     print(f"ep {ep + 1} step {step}/{total} loss {loss.item():.4f}", flush=True)
                 if a.max_steps and step >= a.max_steps:
                     break
-        score = evaluate(model, val, device) if val else -ep
+        scores = evaluate(model, val, device, pixel_height) if val else None
+        score = scores[a.select] if scores else -ep
         minutes = (time.time() - started) / 60
         peak_gib = torch.cuda.max_memory_allocated() / 2**30 if device == "cuda" else 0
-        print((f"epoch {ep + 1}: val affine-RMSE {score:.3f} m" if val else f"epoch {ep + 1} done")
+        print((f"epoch {ep + 1}: val affine-RMSE {scores['affine']:.3f} m, absolute-RMSE "
+               f"{scores['absolute']:.3f} m (selecting on {a.select})" if val else f"epoch {ep + 1} done")
               + f" in {minutes:.1f} min; peak VRAM {peak_gib:.2f} GiB", flush=True)
         with (out / "history.jsonl").open("a") as history:
             history.write(json.dumps({"epoch": ep + 1, "optimizer_steps": step,
-                                      "val_affine_rmse_m": score if val else None,
+                                      "val_affine_rmse_m": scores["affine"] if val else None,
+                                      "val_absolute_rmse_m": scores["absolute"] if val else None,
                                       "minutes": minutes, "peak_vram_gib": peak_gib}) + "\n")
         if score < best:
             best = score
@@ -267,6 +371,14 @@ def main():
                 cfg_path = out / "config.json"
                 cfg = _json.loads(cfg_path.read_text())
                 cfg["depthwizard_target"] = "agl"
+                if a.target == "metric":
+                    cfg["depthwizard_pixel_height"] = 1.0
+                if a.net_gsd:
+                    cfg["depthwizard_train_net_gsd"] = a.net_gsd
+                cfg["depthwizard_training"] = {k: v for k, v in vars(a).items()
+                                               if k in ("model", "target", "metric_weight", "tall_weight", "gsd",
+                                                        "net_gsd", "scale_jitter", "sat_aug", "select",
+                                                        "epochs", "lr", "size")}
                 cfg_path.write_text(_json.dumps(cfg, indent=2))
             except Exception:  # noqa: BLE001
                 pass

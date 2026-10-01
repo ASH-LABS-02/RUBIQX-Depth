@@ -1,14 +1,17 @@
-# Model card – DepthWizard GAMUS height model (`da2-gamus-full`)
+# Model card – DepthWizard GAMUS height model (`da2-gamus-full`, v2)
 
 | | |
 |---|---|
-| Base model | Depth Anything V2 Small (DINOv2-S encoder, DPT head), Apache-2.0 |
-| Fine-tuning data | GAMUS train split (RGB + LiDAR above-ground height, CC BY 4.0), cities DC / NYC / PHL, 0.33 m GSD |
-| Target | Above-ground height (AGL / nDSM); `config.json` carries `"depthwizard_target": "agl"` |
-| Loss | Scale-and-shift-invariant L1 + multi-scale gradient matching; void value −5 masked |
-| Training | 10 epochs, batch 4, 518 px crops, AdamW (encoder LR 5e-6, decoder 10×), rotation/flip/colour augmentation, RTX 4060 Laptop (≈2 GB VRAM, ≈55 min) |
-| Selection | Best validation affine RMSE: 2.12 m (epoch 10, 858 validation crops) |
-| Held-out test | 30 GAMUS test tiles: RMSE 4.76 → 3.00 m, r 0.41 → 0.79 vs pretrained |
+| Base model | Depth Anything V2 **Base** (DINOv2-B encoder, DPT head, ~97 M parameters), CC BY-NC 4.0 weights* |
+| Fine-tuning data | Full GAMUS train split (5,004 tiles; RGB + LiDAR above-ground height, CC BY 4.0), cities DC / NYC / PHL, 0.33 m GSD |
+| Target | Above-ground height in metres; `config.json` carries `depthwizard_target`, `depthwizard_pixel_height` (1.0) and `depthwizard_train_net_gsd` (0.65) |
+| Loss | Metric L1 on height (pixel_height = 1) + scale-and-shift-invariant shape loss; pixels > 3 m weighted ×1.5 |
+| Training | 30 epochs, batch 4, 518 px crops at 0.65 m per network pixel (±15 % scale jitter), satellite-style degradation (blur/downsample, haze, noise), AdamW LR 5e-6, OneCycle; RTX 4060 Laptop, 4.6 GB VRAM, ≈18 min/epoch (≈7.5 h) |
+| Selection | Best validation **absolute** RMSE: 2.23 m (epoch 24, 859 validation tiles) |
+| Held-out test | 30 GAMUS test tiles, no per-tile fitting: **2.62 m RMSE, 1.48 m MAE, r 0.84, bias −0.07 m**, tall objects 0.97 of true height (v1 Small: 3.46 m, 2.18 m, r 0.79, bias −0.82 m, 0.82) |
+
+\* Check the licence of the Depth Anything V2 Base weights before commercial use; the Small model is Apache-2.0.
+The previous v1 model (Small, scale-invariant loss, learned scale C = 0.674) is described below for reference.
 
 ## Intended use
 
@@ -16,7 +19,7 @@ Single-image surface-height estimation for overhead RGB imagery at roughly
 0.3–1 m GSD, followed by DepthWizard calibration (GCPs, surface DEM or the
 learned pixel-footprint scale) to metres.
 
-## Metric scale
+## Metric scale (v1; v2 is trained directly in metres)
 
 The loss is scale-invariant, but the network's raw output behaves like height
 in "network pixels": metres ≈ 0.674 × raw × (ground metres per network input

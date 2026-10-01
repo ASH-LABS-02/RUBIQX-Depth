@@ -15,13 +15,39 @@ absolute accuracy). Test tiles were never used for training or validation.
 | Backbone | Mean RMSE | Mean MAE | Mean r |
 |---|---:|---:|---:|
 | Depth Anything V2 Small (pretrained) | 4.76 m | 3.71 m | 0.41 |
-| **DepthWizard GAMUS fine-tune** | **3.00 m** | **1.90 m** | **0.79** |
+| DepthWizard v1 (Small, scale-invariant loss) | 3.00 m | 1.90 m | 0.79 |
+| **DepthWizard v2 (Base, metric loss) – current** | **2.56 m** | **1.51 m** | **0.84** |
 
-All 30 tiles improved. Results: `docs/eval/gamus30/` (rows marked `[aligned]`).
+Results: `docs/eval/gamus30/` (v1) and `docs/eval/gamus30-v2/` (v2), rows marked `[aligned]`.
 
 ### 1b. Absolute height – same 30 tiles, **no fitting to the reference**
 
-The fine-tuned checkpoint's own metric output (learned pixel-footprint scale
+**Current model (v2).** Depth Anything V2 Base fine-tuned for 30 epochs on the
+full GAMUS train split with a metric height loss (plus the shape loss),
+extra weight on pixels taller than 3 m, training at the inference resolution
+(0.65 m per network pixel, ±15 % scale jitter) with satellite-style
+degradation (blur, haze, noise), and checkpoint selection on validation
+*absolute* RMSE (best 2.23 m, epoch 24). Nothing is fitted per tile.
+0.33 m/px, TTA 1.
+
+| Tiles | RMSE | MAE | r | Mean bias | Median est/ref height, objects > 3 m |
+|---|---:|---:|---:|---:|---:|
+| DC (10) | 3.45 m | 2.06 m | 0.90 | −0.02 m | 0.96 |
+| NYC (10) | 2.76 m | 1.64 m | 0.71 | −0.21 m | 0.84 |
+| PHL (10) | 1.65 m | 0.74 m | 0.90 | +0.01 m | 1.00 |
+| **All 30** | **2.62 m** | **1.48 m** | **0.84** | **−0.07 m** | **0.97** |
+
+Against v1 on the same tiles: RMSE −24 %, MAE −32 %, bias −0.82 → −0.07 m,
+tall objects 0.82 → 0.97 of true height; every city improved. Absolute RMSE
+is now only 0.06 m above the shape-aligned score, so scale is essentially
+solved on this data and the remaining error is shape (smooth crowns, leaf-off
+trees, flat roofs). NYC tall objects (0.84) are the weakest group. All test
+tiles come from the same three US cities as training; this is not evidence
+for Cartosat or Indian scenes. Raw results: `docs/eval/gamus30-v2/`.
+
+**Previous model (v1, kept for reference).**
+
+The v1 checkpoint's own metric output (learned pixel-footprint scale
 C = 0.674, fitted on GAMUS *validation* tiles, never on these test tiles)
 scored directly against the LiDAR AGL. Nothing is fitted per tile, so this is
 the honest single-image number. 0.33 m/px, TTA 1.
