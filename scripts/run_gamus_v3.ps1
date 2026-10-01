@@ -6,6 +6,7 @@ param(
     [string]$Name = 'da2-base-gamus-v3',
     [int]$Epochs = 12,
     [int]$Batch = 4,
+    [int]$GradAccum = 1,              # use -Batch 2 -GradAccum 2 if the GPU runs out of memory
     [double]$TallWeight = 1.0,
     [double]$Lr = 3e-6,
     [switch]$Smoke,
@@ -32,7 +33,7 @@ $trainArgs = @('scripts\finetune_gamus.py',
     '--target', 'metric', '--tall-weight', "$TallWeight",
     '--net-gsd', '0.65', '--scale-jitter', '0.15', '--sat-aug', '--res-range', '0.35', '2.5',
     '--select', 'absolute', '--lr', "$Lr",
-    '--epochs', "$Epochs", '--batch', "$Batch",
+    '--epochs', "$Epochs", '--batch', "$Batch", '--grad-accum', "$GradAccum",
     '--size', '518', '--amp-dtype', 'bf16', '--require-cuda')
 if ($Smoke) { $trainArgs += @('--epochs', '1', '--max-steps', '20', '--max-train-samples', '80', '--max-val-samples', '20') }
 if ($Resume) { $trainArgs += '--resume' }
