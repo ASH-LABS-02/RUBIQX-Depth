@@ -424,7 +424,7 @@ function applyShading() {
       lo = 0; hi = S.meta?.units === 'metre' ? 45 : Math.max(0.001, pct(vals, 0.98));
       legend = { name, lo, hi, unit: S.meta?.units === 'metre' ? '°' : 'relative / m' };
     } else if (S.mode === 'confidence') {
-      vals = S.confidence || new Float32Array(n).fill(0.95);
+      vals = S.confidence;
       lo = 0.5; hi = 1.0;
       legend = { name: 'confidence', lo: 50, hi: 100, unit: S.meta?.units === 'metre' ? '% · exp(−σ/2 m), σ = ensemble spread' : '% ensemble agreement' };
     } else if (S.mode === 'ndsm') {
@@ -545,6 +545,7 @@ function updateAnalysisTools() {
     const cellArea = S.W * S.H / S.h.length;
     volume.innerHTML = `<b>Fill</b> ${fmt(fill * cellArea, 1)} m³<br><b>Cut</b> ${fmt(cut * cellArea, 1)} m³<br><span class="note">Estimated from ${n.toLocaleString()} mesh cells against the reference DSM.</span>`;
   }
+  updateMissionHud();
 }
 
 $('#flood-level').addEventListener('input', () => { S.floodActive = true; updateAnalysisTools(); });
@@ -838,6 +839,8 @@ async function loadScene(id) {
     if (S.mode === 'hazard' && meta.units !== 'metre') setMode('optical');
     if (!ref && S.mode === 'error') setMode('optical');
     if (!demBase && S.mode === 'demdiff') setMode('optical');
+    if (!confidence && S.mode === 'confidence') setMode('optical');
+    $('#shade-mode button[data-mode="confidence"]').disabled=!confidence;
     $('#contour-unit').textContent = meta.units === 'metre' ? 'm' : 'rel';
     $('#contour-int').value = meta.units === 'metre' ? '5' : '0.1';
     S.topoManualStep = null;
@@ -857,7 +860,7 @@ async function loadScene(id) {
     const cal = meta.calibration || {};
     const evidence = meta.units === 'metre' ? `${evidenceLevel || 'unverified'} · ${cal.method || 'calibrated'}` : 'relative height';
     const badge = $('#scene-badge');
-    const label = document.createElement('strong'); label.textContent = inputDem ? 'Input DEM · no estimate' : meta.units === 'metre' ? (provisional ? 'Approximate evidence' : 'Measured evidence') : 'Relative scene';
+    const label = document.createElement('strong'); label.textContent = inputDem ? 'Input DEM (not estimated)' : meta.units === 'metre' ? (String(evidenceLevel).startsWith('provisional')?'Provisional evidence':provisional?'Approximate evidence':evidenceLevel?'Metric evidence':'Unverified evidence') : 'Relative scene';
     badge.replaceChildren(label, document.createTextNode(` · ${cal.method || evidence}`));
     badge.dataset.evidence = evidenceLevel;
     badge.classList.remove('hidden');
@@ -1127,7 +1130,14 @@ function selectBuilding(mesh) {
   if (!b) return;
   const info = $('#building-info');
   info.classList.remove('muted');
-  info.innerHTML = `
+  info.innerHTML = S.meta.units!=='metre' ? `
+    <b>Building #${b.id}</b><span>${fmt(b.height_m,3)} relative units</span>
+    <b>Roof elevation</b><span>${fmt(b.roof_elevation_m,3)} relative units</span>
+    <b>Ground elevation</b><span>${fmt(b.ground_elevation_m,3)} relative units</span>
+    <b>Confidence (uncalibrated)</b><span>${Number.isFinite(b.confidence)?`${Math.round(b.confidence*100)}%`:'Unavailable'} · model ensemble agreement</span>
+    <b>Storeys / volume</b><span>Require metric height calibration</span>
+    <b>Footprint area</b><span>Requires a georeferenced image</span>
+  ` : `
     <b>Building #${b.id}</b><span><strong style="color:var(--cyan);">${b.storeys} storeys</strong> (~${fmt(b.height_m, 1)} m)</span>
     <b>Roof elevation</b><span>${fmt(b.roof_elevation_m, 1)} m</span>
     <b>Ground elevation</b><span>${fmt(b.ground_elevation_m, 1)} m</span>
@@ -1142,7 +1152,12 @@ function selectBuilding(mesh) {
     $('#building-anchor-controls').classList.remove('hidden');
     $('#anchor-known-height').value = (b.storeys * 3.0).toFixed(1);
     $('#anchor-storeys-btn').onclick = () => { $('#anchor-known-height').value = (b.storeys * 3.0).toFixed(1); };
-    $('#anchor-add-btn').onclick = () => { addAnchor(b.id, b.height_m, parseFloat($('#anchor-known-height').value)); };
+    $('#anchor-add-btn').textContent='Apply height anchor';
+    $('#anchor-add-btn').onclick = () => {
+      const height=parseFloat($('#anchor-known-height').value);
+      if(!Number.isFinite(height)||height<=0){toast('Enter a positive, independently known building height.','error');return;}
+      addAnchor(b.id,b.height_m,height);setWorkspace('calibrate');$('#anchor-apply-btn').click();
+    };
   }
 }
 
@@ -1770,7 +1785,7 @@ function renderMetrics() {
     ? '<p class="note worse">⚠ Processed with the offline heuristic fallback (depth model weights were not available). Numbers are not representative.</p>' : '';
   const cal = S.meta?.calibration || {};
   const calRows = [['Method', cal.method], ['Evidence', cal.evidence_level || (cal.method === 'dem+prior' ? 'approximate' : null)],
-    ['Backbone', S.meta?.backbone], ['Scale source', cal.scale_source],
+    ['Backbone', /gamus/i.test(S.meta?.backbone||'')?'GAMUS fine-tuned':S.meta?.backbone], ['Scale source', cal.scale_source],
     ['Structure scale k', cal.scale_k !== undefined && `${fmt(cal.scale_k, 2)} m / unit`],
     ['DEM fit r', cal.fit_r !== undefined && fmt(cal.fit_r, 2)],
     ['DEM coverage', cal.dem_coverage !== undefined && `${fmt(cal.dem_coverage * 100, 1)} %`],
@@ -1782,11 +1797,11 @@ function renderMetrics() {
     ['DEM resolution', cal.dem_resolution_m !== undefined && `${fmt(cal.dem_resolution_m, 1)} m`],
     ['Matches DEM at its resolution', cal.reference_consistent === true ? `yes · residual ${fmt(cal.consistency_rmse_m)} m` : null],
     ['Vertical datum', cal.vertical_datum],
-    ['Learned scale', cal.learned_scale_k !== undefined && `${fmt(cal.learned_scale_k, 1)} m / unit`],
+    ['Learned scale', S.meta?.units==='metre'&&cal.learned_scale_k !== undefined && `${fmt(cal.learned_scale_k, 1)} m / unit`],
     ['Shadow check', cal.shadow_iou !== undefined && `IoU ${fmt(cal.shadow_iou, 2)} · sun az ${fmt(cal.sun_azimuth_deg, 0)}°`],
     ['Structure model', cal.structure_model],
     ['Rotation ensemble', S.meta?.tta ? `${S.meta.tta} passes` : null],
-    ['Note', cal.note]].filter(([, v]) => v);
+    ['Note', S.meta?.units==='metre'?cal.note:'Relative heights are uncalibrated. A learned display scale shapes the 3D view; surveyed GCPs are needed to establish metres.']].filter(([, v]) => v);
   const calHtml = `<h3 style="margin-top:16px">Calibration</h3><div class="kv">${calRows.map(([k, v]) => `<b>${escapeHtml(k)}</b><span>${escapeHtml(v)}</span>`).join('')}</div>`;
   const calWarning = cal.evidence_level === 'approximate' || cal.method === 'dem+prior'
     ? `<p class="note">Building/tree heights use ${cal.scale_source === 'learned pixel-footprint scale' ? 'the model\'s learned metre-per-pixel scale (±40 %)' : 'a scene prior'}; terrain comes from the DEM. Add GCPs or a surface DEM (Copernicus/SRTM) for measured scale.</p>`
@@ -1881,6 +1896,7 @@ $('#upload-close').onclick = () => $('#upload-modal').classList.add('hidden');
 $$('[data-close-upload]').forEach((el) => el.onclick = () => $('#upload-modal').classList.add('hidden'));
 $('#library-toggle').onclick = () => $('#app').classList.toggle('library-open');
 function setMode(m) {
+  if(m==='confidence'&&!S.confidence){toast('No ensemble confidence layer is available for this scene.');return;}
   if (S.swipeActive && S.swipeKind === 'model' && m !== 'optical') setSwipe(false, 'model');
   S.mode = m; $$('#layer-dock button[data-mode]').forEach((b) => b.classList.toggle('active', b.dataset.mode === m));
   $('#layer-legend')?.classList.toggle('topo-active', ['topo', 'topogray'].includes(m));
@@ -1989,29 +2005,30 @@ function saveView() {
   ctx.fillStyle = '#e9f4f9'; ctx.font = `600 ${Math.max(20, Math.round(out.width / 72))}px system-ui`;
   ctx.fillText(`DepthWizard · ${S.meta.input}`, 20, canvas.height + 30);
   ctx.fillStyle = '#a7c4d4'; ctx.font = `${Math.max(15, Math.round(out.width / 96))}px system-ui`;
-  const provenance = `${S.meta.units === 'metre' ? 'Metric DSM' : 'Relative rDSM'} · ${S.meta.calibration?.method || 'uncalibrated'} · ${S.meta.backbone || 'unknown model'} · ${S.mode} layer · ${S.exag.toFixed(1)}× display Z`;
+  const provenance = `${S.meta.calibration?.method === 'input-dem' ? 'Input DEM (not estimated)' : S.meta.units === 'metre' ? 'Metric DSM' : 'Relative rDSM'} · ${S.meta.calibration?.method || 'uncalibrated'} · ${S.meta.backbone || 'unknown model'} · ${S.mode} layer · ${S.exag.toFixed(1)}× display Z`;
   ctx.fillText(provenance, 20, canvas.height + 57, out.width - 40);
   const a = document.createElement('a'); a.href = out.toDataURL('image/png');
   a.download = `depthwizard_${S.id}_${S.mode}.png`; a.click();
 }
 $('#shot').onclick = saveView;
-$$('#export-menu [data-export]').forEach((b) => b.onclick = () => {
+$$('#export-menu [data-export]').forEach((b) => b.onclick = async () => {
   closeExportMenu(); if (!S.id) return;
   const kind = b.dataset.export;
-  if (kind === 'shot') saveView();
-  else if (kind === 'all') location.href = `api/scenes/${S.id}/export-all.zip`;
-  else if (kind === 'dsm') location.href = `api/scenes/${S.id}/dsm`;
-  else if (kind === 'report') window.open(`api/scenes/${S.id}/report`, '_blank');
-  else if (kind === 'evidence') location.href = `api/scenes/${S.id}/evidence`;
-  else if (kind === 'glb') location.href = `api/scenes/${S.id}/mesh.glb?resolution=256`;
-  else if (kind === 'obj') location.href = `api/scenes/${S.id}/mesh.obj.zip?resolution=256`;
-  else if (['dtm', 'ndsm', 'uncertainty'].includes(kind)) location.href = `api/scenes/${S.id}/product/${kind}`;
-  else if (kind === 'cityjson') location.href = `api/scenes/${S.id}/buildings.city.json`;
-  else if (kind === 'ply') location.href = `api/scenes/${S.id}/points.ply`;
-  else if (kind === 'heightmap') location.href = `api/scenes/${S.id}/heightmap.png?bits=16`;
+  if (kind === 'shot') {saveView();return;}
+  const endpoints={all:'export-all.zip',dsm:'dsm',report:'report',evidence:'evidence',glb:'mesh.glb?resolution=256',obj:'mesh.obj.zip?resolution=256',cityjson:'buildings.city.json',ply:'points.ply',heightmap:'heightmap.png?bits=16'};
+  const endpoint=endpoints[kind]||`product/${kind}`;
+  const sceneId=S.id;
+  const response=await apiFetch(`api/scenes/${sceneId}/${endpoint}`),blob=await response.blob();
+  const disposition=response.headers.get('Content-Disposition')||'';
+  const name=disposition.match(/filename="?([^";]+)"?/i)?.[1];
+  const extensions={all:'zip',dsm:'tif',report:'pdf',evidence:'json',glb:'glb',obj:'zip',cityjson:'json',ply:'ply',heightmap:'png'};
+  const a=document.createElement('a'),url=URL.createObjectURL(blob);a.href=url;
+  a.download=(name||`depthwizard_${sceneId}_${kind}.${extensions[kind]||'tif'}`).replace(/[\\/]/g,'_');
+  document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+  toast('Export ready. Your browser will save the file.');
 });
 document.addEventListener('pointerdown', (e) => {
-  if (!e.target.closest('.header-actions')) closeExportMenu();
+  if (!e.target.closest('.header-actions,#export-menu')) closeExportMenu();
 });
 fly.addEventListener('lock', () => $('#fly-hint').textContent = 'WASD move · Q/E down/up · Shift fast · Esc release');
 fly.addEventListener('unlock', () => $('#fly-hint').textContent = 'Click to look around · WASD move · Q/E down/up · Shift fast · Esc release');
@@ -2304,9 +2321,11 @@ $('#anchor-reset-btn').addEventListener('click', async () => {
 
 async function reloadViewer() {
   if (S.id) {
-    const id = S.id, geometry = S.viewGeometry;
+    const id = S.id, geometry = S.viewGeometry, workspace = S.workspace;
     await loadScene(id);
+    if(S.id!==id)return;
     if (geometry !== S.viewGeometry) setViewGeometry(geometry);
+    setWorkspace(workspace);
   }
 }
 
@@ -2816,6 +2835,10 @@ window.togglePresentation = (on = !$('#app').classList.contains('presentation'))
   $('#app').classList.toggle('presentation', on);
   const t = $('#pres-title');
   if (on && S.meta) {
+    if (!$('#comparison').classList.contains('hidden')) setComparison(false);
+    if (!$('#map-panel').classList.contains('hidden')) $('#map-toggle').click();
+    closeExportMenu();
+    closeCommandPalette();$('#help').classList.add('hidden');$('#compare-popover').classList.add('hidden');
     t.innerHTML = `${escapeHtml($('#hero-title').textContent || S.meta.input || 'Scene')}<small>${S.meta.calibration?.method==='input-dem'?'Input DEM (not estimated)':S.meta.units === 'metre' ? 'Metric 3D surface model' : 'Relative heights'} · ${escapeHtml(S.meta.calibration?.evidence_level || 'unverified')} evidence · DepthWizard</small>`;
     let strip=$('#pres-metrics');if(!strip){strip=document.createElement('div');strip.id='pres-metrics';$('#stage').append(strip);}
     const m=S.meta.metrics?.absolute;strip.innerHTML=m?`<span>${fmt(m.rmse)} m<small>RMSE</small></span><span>${fmt(m.mae)} m<small>MAE</small></span><span>${fmt(m.r,3)}<small>PEARSON R</small></span>`:`<span>${escapeHtml(S.meta.units==='metre'?'No independent reference':'Relative heights')}<small>ACCURACY NOT SCORED</small></span>`;
@@ -2855,7 +2878,7 @@ function setWorkspace(mode) {
   updateMissionHud();
 }
 function setAnimatedStat(el, value, suffix = '', precision = null) {
-  if (!el || !Number.isFinite(value)) { if (el) el.textContent = '—'; return; }
+  if (!el || !Number.isFinite(value)) { if (el) {el.textContent = '—';delete el.dataset.value;} return; }
   const target = Number(value), previous = Number(el.dataset.value);
   if (el.dataset.value && Math.abs(previous - target) < .0001 && el.dataset.suffix === suffix) return;
   el.dataset.value = String(target); el.dataset.suffix = suffix;
@@ -2865,7 +2888,7 @@ function setAnimatedStat(el, value, suffix = '', precision = null) {
   const start = performance.now(), initial = previous;
   const tick = (now) => {
     if (el.dataset.value !== String(target)) return;
-    const t = Math.min(1, (now - start) / 600), eased = 1 - Math.pow(1 - t, 3);
+    const t = Math.max(0, Math.min(1, (now - start) / 600)), eased = 1 - Math.pow(1 - t, 3);
     el.textContent = display(initial + (target - initial) * eased);
     if (t < 1) requestAnimationFrame(tick);
   }; requestAnimationFrame(tick);
@@ -2880,11 +2903,11 @@ function updateMissionHud() {
   const metrics = S.meta.metrics?.absolute || S.meta.metrics?.affine_aligned;
   const pinCount = S.gcpPins?.length || 0;
   let values;
-  if (mode === 'disaster') values = [['Flooded area', S.floodAreaHa || 0, ' ha'], ['Buildings hit', S.floodBuildings || 0, ''], ['People ≈', S.floodPeople || 0, '']];
+  if (mode === 'disaster') values = [['Flooded area', S.meta.units==='metre'?S.floodAreaHa || 0:undefined, ' ha'], ['Buildings hit', S.meta.units==='metre'?S.floodBuildings || 0:undefined, ''], ['People ≈', S.meta.units==='metre'?S.floodPeople || 0:undefined, '']];
   else if (mode === 'calibrate') values = [['RMSE vs reference', metrics?.rmse, metrics ? ' m' : ''], ['r²', metrics?.r !== undefined ? metrics.r ** 2 : undefined, ''], ['Pins', pinCount, '']];
   else if (mode === 'validate') values = [['RMSE', metrics?.rmse, metrics ? ' m' : ''], ['MAE', metrics?.mae, metrics ? ' m' : ''], ['Pearson r', metrics?.r, '']];
   else if (mode === 'buildings') values = [['Candidates', list.length, ''], ['Tallest', list.length ? tallest : undefined, ` ${S.units}`], ['Fitted roofs', list.filter((b) => b.roof_fit).length, '']];
-  else values = [['Scene area', S.W * S.H / 1e6, ' km²'], ['Candidates', list.length, ''], ['Tallest', list.length ? tallest : undefined, ` ${S.units}`]];
+  else values = [[S.meta.georeferenced?'Scene area':'Image pixels', S.meta.georeferenced?S.W*S.H/1e6:S.meta.src_w*S.meta.src_h, S.meta.georeferenced?' km²':' px'], ['Candidates', list.length, ''], ['Tallest', list.length ? tallest : undefined, ` ${S.units}`]];
   const signature = values.map(([label]) => label).join('|');
   if ($('#hero-stats').dataset.signature !== signature) {
     $('#hero-stats').dataset.signature = signature;
@@ -2896,7 +2919,7 @@ function updateMissionHud() {
   }
   values.forEach(([label, val, suffix], i) => setAnimatedStat($('#hero-stats').children[i]?.querySelector('b'), val, suffix, ['Pearson r','r²'].includes(label)?3:null));
   const level = S.meta.calibration?.evidence_level || (S.meta.units === 'relative' ? 'relative' : 'unverified');
-  $('#hero-caption').textContent = `${S.meta.units === 'metre' ? 'Metric DSM' : 'Relative surface'} · ${level} evidence · ${S.meta.crs || 'local coordinates'}`;
+  $('#hero-caption').textContent = `${S.meta.calibration?.method==='input-dem'?'Input DEM (not estimated)':S.meta.units === 'metre' ? 'Metric DSM' : 'Relative surface'} · ${level} evidence · ${S.meta.crs || 'local coordinates'}`;
   $$('#mode-rail [data-workspace="validate"]').forEach((b) => b.disabled = false);
 }
 function renderBuildingList() {

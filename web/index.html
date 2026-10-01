@@ -89,7 +89,7 @@
       <button id="swipe-toggle" title="Swipe compare DSM vs coarse DEM baseline (S)" aria-pressed="false">3D Swipe</button>
       <button id="model-swipe-toggle" title="Compare the same image with pretrained Depth Anything V2 and the local GAMUS model" aria-pressed="false">Model Compare</button>
       <button id="compare-toggle" title="Compare optical and height layers (V)" aria-pressed="false">2D Compare</button>
-      <button id="map-toggle" title="Show a synchronized OpenStreetMap basemap beside the 3D scene" aria-pressed="false">2D Map</button>
+      <button id="map-toggle" title="Show the synchronized optical map beside the 3D scene (offline)" aria-pressed="false">2D Map</button>
       <button id="vr-toggle" title="Enter immersive VR on a supported headset and secure browser" disabled>VR</button>
       <button id="gallery-btn" title="Demo scene gallery">Gallery</button>
       <button id="present-btn" title="Presentation mode: full-screen scene, big labels, automatic tour (P)">Present</button>
@@ -111,11 +111,11 @@
     <div id="swipe-label-right" class="swipe-label right hidden">DepthWizard DSM</div>
     <div id="model-compare-note" class="model-compare-note hidden"></div>
     <div id="scene-summary" class="scene-summary hidden" aria-live="polite"></div>
-    <section id="map-panel" class="map-panel hidden" aria-label="Synchronized 2D basemap">
+    <section id="map-panel" class="map-panel hidden" aria-label="Synchronized offline 2D map">
       <div class="map-heading"><strong>Site map</strong><span>Click to fly the 3D camera</span></div>
-      <canvas id="map-canvas" aria-label="OpenStreetMap basemap and camera position"></canvas>
-      <div id="map-status" class="map-status">Preparing basemap…</div>
-      <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" class="map-attribution">© OpenStreetMap contributors</a>
+      <canvas id="map-canvas" aria-label="Georeferenced optical image and camera position"></canvas>
+      <div id="map-status" class="map-status">Preparing optical map…</div>
+      <span class="map-attribution">Uploaded optical image · offline</span>
     </section>
 
     <!-- North Arrow & Dynamic Scale Bar -->

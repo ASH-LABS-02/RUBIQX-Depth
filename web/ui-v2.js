@@ -216,6 +216,9 @@ export function createMissionUi(ctx) {
     $('#contour-unit').textContent=metric?'m':'relative units';
     const badge=s.meta?.calibration?.method==='input-dem'?'Input DEM (not estimated)':metric?'Metric elevation':'Relative heights';
     $('#minimap').title=`${badge} · click to move camera`;
+    $('#export-menu [data-export="dsm"] small').textContent=s.meta?.calibration?.method==='input-dem'?'Original input grid · not estimated':metric?'Original estimated grid':'Relative surface grid · unitless';
+    $('#export-menu [data-export="uncertainty"]').disabled=!s.confidence;
+    $('#export-menu [data-export="ndsm"]').disabled=!metric||s.meta?.calibration?.method==='input-dem';
     if(!openingPlayed&&!reducedMotion()){
       openingPlayed=true;
       const toCamera=camera.position.clone(),toTarget=orbit.target.clone();

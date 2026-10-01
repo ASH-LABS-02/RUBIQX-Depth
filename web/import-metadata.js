@@ -21,7 +21,7 @@ export async function inspectTiff(file) {
   if (count > 4096) throw new Error('TIFF metadata directory is too large for a quick preview.');
   const entrySize = big ? 20 : 12, inlineSize = big ? 8 : 4;
   const directory = await read(offset + (big ? 8 : 2), count * entrySize);
-  const wanted = new Set([256,257,277,33550,33922,34264,34735]);
+  const wanted = new Set([256,257,258,277,339,33550,33922,34264,34735]);
   const types = {1:1,3:2,4:4,12:8,16:8};
   const tags = {};
   for (let i = 0; i < count; i++) {
@@ -70,6 +70,10 @@ export async function inspectTiff(file) {
       if (metres) gsd = {x:sx*metres,y:sy*metres,approximate:false};
     }
   }
-  return {width:tags[256]?.[0],height:tags[257]?.[0],bands:tags[277]?.[0]||1,
-    georeferenced,crs,gsd,inputDem:(tags[277]?.[0]||1)===1};
+  const bands=tags[277]?.[0]||1,format=tags[339]?.[0]||1;
+  // Match the server's elevation detector; a one-band panchromatic image
+  // is not a DEM merely because it has one band.
+  const named=/dem|dsm|dtm|srtm|elev|height|cop30|glo30/i.test(file.name||'');
+  return {width:tags[256]?.[0],height:tags[257]?.[0],bands,
+    georeferenced,crs,gsd,inputDem:bands===1&&(format===3||(format===2&&named))};
 }

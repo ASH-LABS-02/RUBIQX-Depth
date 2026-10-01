@@ -1,5 +1,5 @@
 /* UI v2: finish the existing rail / terrain / inspector system. */
-:root{--bg-0:#101923;--glass:rgba(15,25,36,.91);--glass-edge:rgba(170,197,220,.18);--ink-1:#edf4fa;--ink-2:#b7c9d8;--ink-3:#9eb4c6;--signal:#ffb547;--cyan:#51d1ed;--panel-width:336px;--ui-radius:8px;font-family:'Space Grotesk',Arial,sans-serif}
+:root{--mono:Consolas,'SFMono-Regular',monospace;--bg-0:#101923;--glass:rgba(15,25,36,.91);--glass-edge:rgba(170,197,220,.18);--ink-1:#edf4fa;--ink-2:#b7c9d8;--ink-3:#9eb4c6;--signal:#ffb547;--cyan:#51d1ed;--panel-width:336px;--ui-radius:8px;font-family:'Space Grotesk',Arial,sans-serif}
 html,body,button,input,select,textarea{font-family:'Space Grotesk',Arial,sans-serif}
 body{font-size:14px}
 button,input,select,details{border-radius:var(--ui-radius)}

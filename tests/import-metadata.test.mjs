@@ -3,9 +3,9 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {inspectTiff} from '../web/import-metadata.js';
 
-function fixture({little=true,big=false,bands=3,crs=32643,unit=9001,scale=.6,geographic=false,spatial=true}={}) {
+function fixture({little=true,big=false,bands=3,format=3,crs=32643,unit=9001,scale=.6,geographic=false,spatial=true}={}) {
   const keys=[1,1,0,3,1024,0,1,geographic?2:1,geographic?2048:3072,0,1,crs,geographic?2054:3076,0,1,unit];
-  const tags=[[256,4,[1024]],[257,4,[512]],[277,3,[bands]]];
+  const tags=[[256,4,[1024]],[257,4,[512]],[277,3,[bands]],[339,3,[format]]];
   if(spatial)tags.push([33550,12,[scale,scale,0]],[33922,12,[0,0,0,78,28,0]],[34735,3,keys]);
   const buf=new ArrayBuffer(1024),v=new DataView(buf),ifd=big?16:8,size=big?20:12,offsetSize=big?8:4;
   v.setUint16(0,little?0x4949:0x4d4d);v.setUint16(2,big?43:42,little);
@@ -25,6 +25,7 @@ for(const little of [true,false])for(const big of [true,false])test(`${little?'l
   const m=await inspectTiff(fixture({little,big}));assert.equal(m.crs,'EPSG:32643');assert.equal(m.width,1024);assert.equal(m.height,512);assert.equal(m.gsd.x,.6);assert.equal(m.inputDem,false);
 });
 test('single-band input DEM',async()=>assert.equal((await inspectTiff(fixture({bands:1}))).inputDem,true));
+test('panchromatic optical image is not a DEM',async()=>assert.equal((await inspectTiff(fixture({bands:1,format:1}))).inputDem,false));
 test('plain TIFF remains relative',async()=>{const m=await inspectTiff(fixture({spatial:false}));assert.equal(m.georeferenced,false);assert.equal(m.gsd,null);});
 test('feet are converted to metres',async()=>assert.equal((await inspectTiff(fixture({crs:26985,unit:9002,scale:2}))).gsd.x,.6096));
 test('degrees get approximate ground spacing',async()=>{const m=await inspectTiff(fixture({geographic:true,crs:4326,unit:9102,scale:.00001}));assert.equal(m.gsd.approximate,true);assert.ok(m.gsd.x>.9&&m.gsd.x<1.1);});
