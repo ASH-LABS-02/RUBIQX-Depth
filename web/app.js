@@ -880,7 +880,7 @@ async function loadScene(id) {
     drawComparison();
     updateSceneSummary();
     renderLayerPreviews();
-    setWorkspace('explore');
+    setWorkspace('explore', false);
     updateMapAvailability();
     updateMissionAvailability();
     currentAnchors = (meta.height_anchor?.anchors || []).map((a) => {
@@ -1547,6 +1547,7 @@ canvas.addEventListener('pointerdown', (e) => { down = [e.clientX, e.clientY]; }
 canvas.addEventListener('pointerup', (e) => {
   if (!S.mesh || !down) return;
   const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null;
+  if (moved <= 4 && e.button === 0) $('#app').classList.add('drawer-collapsed');
   if (S.nav === 'fly') { if (!fly.isLocked) fly.lock(); return; }
   if (S.nav === 'tour') { setNav('orbit'); return; }
   if (moved > 4 || e.button !== 0) return;
@@ -2861,8 +2862,9 @@ const WORKSPACES = {
   calibrate: { title: 'Calibrate height', subtitle: 'Trace every metric-scale cue', groups: ['gcp-group', 'anchor-panel-group', 'automatic-anchor-group'] },
   validate: { title: 'Validate', subtitle: 'Compare estimate, DEM baseline and reference', groups: [] },
 };
-function setWorkspace(mode) {
+function setWorkspace(mode, openDrawer = true) {
   if (!WORKSPACES[mode]) return;
+  if (openDrawer) $('#app').classList.remove('drawer-collapsed');
   S.workspace = mode; $('#app').dataset.workspace = mode;
   $$('#mode-rail [data-workspace]').forEach((b) => {
     b.classList.toggle('active', b.dataset.workspace === mode);
@@ -3079,13 +3081,14 @@ function initMissionLayout() {
   $$('#mode-rail [data-workspace]').forEach((b)=>b.onclick=()=>setWorkspace(b.dataset.workspace));
   addEventListener('keydown',(e)=>{
     if(e.key==='Escape'){
+      $('#app').classList.add('drawer-collapsed');
       closeCommandPalette();closeExportMenu();$('#compare-popover').classList.add('hidden');$('#help').classList.add('hidden');
       $('#layer-more-menu').classList.remove('open');$('#app').classList.remove('library-open');
       $('#upload-modal').classList.add('hidden');
       if(!$('#gallery').classList.contains('hidden')) closeGallery();
     }
   });
-  setWorkspace('explore');
+    setWorkspace('explore', false);
 }
 initMissionLayout();
 missionUi = createMissionUi({ getState: () => S, camera, orbit, requestRender, setWorkspace, loadScene, resetView, setNav, setMode, toast });
