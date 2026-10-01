@@ -15,6 +15,7 @@ export function createBoldUi({getState,orbit,canvas,requestRender}){
   }
   $('#drawer-toggle').textContent='×';$('#drawer-toggle').setAttribute('aria-label','Close inspector');
   const mapShell=document.createElement('div');mapShell.id='minimap-shell';$('#minimap').before(mapShell);mapShell.append($('#minimap'));
+  const mapNorth=document.createElement('span');mapNorth.id='minimap-north';mapNorth.innerHTML='▲<small>N</small>';mapShell.append(mapNorth);
   const syncDock=()=>$('#app').style.setProperty('--dock-width',`${$('#layer-dock').getBoundingClientRect().width}px`);
   new ResizeObserver(syncDock).observe($('#layer-dock'));syncDock();
   function stopArrival(){clearTimeout(fadeTimer);arrival.classList.add('hidden');$('#stage').classList.remove('arriving');}
@@ -24,6 +25,10 @@ export function createBoldUi({getState,orbit,canvas,requestRender}){
   function sceneLoaded(){
     lastInput=performance.now();orbit.autoRotate=false;
     const s=getState(),relative=s.meta.units!=='metre';
+    const t=s.meta.transform,det=t?t[0]*t[4]-t[1]*t[3]:0;
+    const nx=det?-t[1]/det*s.W/s.meta.src_w:0,nz=det?t[0]/det*s.H/s.meta.src_h:-1;
+    mapNorth.style.transform=`rotate(${Math.atan2(nx,-nz)*180/Math.PI}deg)`;
+    mapNorth.querySelector('small').textContent=s.meta.georeferenced?'N':'UP';mapNorth.title=s.meta.georeferenced?'Grid north in the optical image':'Image up · no geographic north';
     $('#arrival-subtitle').textContent=`One satellite image → ${relative?'a relative':'an estimated'} 3D world`;
     $('#arrival-evidence').textContent=relative?'Relative units · metric calibration not available':`${s.meta.calibration?.evidence_level||'unverified'} evidence · calibration and validation remain visible`;
     if(first){first=false;if(!matchMedia('(prefers-reduced-motion: reduce)').matches){arrival.classList.remove('hidden');$('#stage').classList.add('arriving');fadeTimer=setTimeout(stopArrival,5000);}}

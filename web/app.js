@@ -11,8 +11,8 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-v3';
 import { createMissionUi } from './ui-v2.js?v=20261001-bold';
-import { createDiorama } from './diorama.js?v=20261001-bold';
-import { createBoldUi } from './ui-v3.js?v=20261001-bold';
+import { createDiorama } from './diorama.js?v=20261001-bold-r2';
+import { createBoldUi } from './ui-v3.js?v=20261001-bold-r2';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
 const FLOOR_AREA_PER_PERSON_M2 = 30;
 

@@ -62,9 +62,16 @@
 #app.presentation #pres-title{top:24px;left:24px;padding:16px 24px;font-size:24px}#app.presentation #pres-metrics{padding:16px 24px}
 .v3-solid-glass{--glass:rgba(10,16,28,.9);--glass-blur:0px}
 #toolbar #view-pill button::before{display:none!important}
+#view-pill #nav-mode button,#view-pill #view-mode button{width:44px;height:36px;min-width:44px;padding:8px}
+#minimap-north{position:absolute;top:14px;right:28px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px;border-radius:8px;background:rgba(10,16,28,.8);font-size:12px;color:var(--cyan);pointer-events:none}#minimap-north small{font-size:10px;color:var(--ink-1)}
+#north-arrow{position:static;bottom:auto;right:auto;background:transparent;width:24px;height:24px;margin-right:8px}
 #layer-dock #shade-mode button{border-radius:50%!important}#layer-dock-actions{overflow:visible;flex:none}#layer-dock #shade-mode button{justify-content:flex-start}#scene-hero::before{display:none}
 #minimap-shell #minimap{width:150px!important;height:150px!important;box-shadow:none;border:0;background:transparent}
 #metrics .card .v{font:24px var(--mono);color:var(--ink-1)}#metrics .card .k{font-size:12px}#metrics .card{padding:8px 0}.validation-baseline strong{font-size:15px}.validation-baseline span{font-size:13px}
+button,input,select,textarea{border-radius:12px}button{background:transparent;border:1px solid var(--glass-edge);font-size:13px;transition:transform .15s ease-out,border-color .15s ease-out,background .15s ease-out}button:hover:not(:disabled){transform:translateY(-1px);border-color:rgba(56,211,245,.42);background:rgba(56,211,245,.07)}button.primary{background:var(--signal);border-color:var(--signal);color:#070b14;font-weight:600}button.primary:hover:not(:disabled){background:#ffc05b;color:#070b14}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}
+#upload-modal .upload-dialog,#export-menu.export-menu,.command-box,#help,#gallery{background:var(--glass);border:1px solid var(--glass-edge);backdrop-filter:blur(var(--glass-blur));border-radius:16px}#upload-modal .upload-dialog{top:16px;right:16px;bottom:16px;width:min(520px,calc(100vw - 32px));padding:24px}
+#export-menu.export-menu{top:72px;bottom:auto;right:16px;max-height:calc(100dvh - 88px)}.export-menu .export-category button{background:transparent;border-color:var(--glass-edge)}
+[data-theme="light"]{--glass:rgba(239,245,249,.86);--glass-edge:rgba(14,36,55,.14);--ink-1:#112738;--ink-2:#425b6e;--ink-3:#425b6e;--cyan:#00758e;--paper:#eff5f9;--text:var(--ink-1);--muted:var(--ink-2)}
 @media(max-width:1000px){#minimap-shell #minimap{width:110px!important;height:110px!important}}
 @media(max-width:700px){#layer-dock-actions{overflow:visible}#arrival h1{font-size:40px}#arrival p{font-size:18px}}
 @media(min-width:1700px){#hero-stats .hero-stat b{font-size:32px}#scene-hero{max-width:550px}}
