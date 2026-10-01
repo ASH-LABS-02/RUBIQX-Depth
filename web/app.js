@@ -11,8 +11,8 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-v3';
 import { createMissionUi } from './ui-v2.js?v=20261001-bold';
-import { createDiorama } from './diorama.js?v=20261001-bold-r2';
-import { createBoldUi } from './ui-v3.js?v=20261001-bold-r2';
+import { createDiorama } from './diorama.js?v=20261001-bold-r4';
+import { createBoldUi } from './ui-v3.js?v=20261001-bold-r4';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
 const FLOOR_AREA_PER_PERSON_M2 = 30;
 
@@ -897,7 +897,7 @@ function resetView() {
   camera.up.set(0, 1, 0);
   const cy = worldY((S.hmin + S.hmax) / 2);
   orbit.target.set(0, cy, 0);
-  camera.position.set(S.extent*.14, cy + S.extent * 1.05, S.extent * 1.45);
+  camera.position.set(S.extent*.18, cy + S.extent * .85, S.extent * 1.05);
   orbit.minDistance = S.extent * 0.01; orbit.maxDistance = S.extent * 4;
   orbit.update();
 }
@@ -1363,7 +1363,8 @@ function updateFly(dt) {
   clampCamera();
 }
 function clampCamera() {
-  const m = S.extent * 0.6;
+  // Constrain first-person travel, not the orbit dolly or the diorama framing.
+  const m = S.extent * (S.nav === 'fly' ? .6 : 5);
   camera.position.x = Math.max(-m, Math.min(m, camera.position.x));
   camera.position.z = Math.max(-m, Math.min(m, camera.position.z));
   const inside = Math.abs(camera.position.x) < S.W / 2 && Math.abs(camera.position.z) < S.H / 2;
@@ -1371,7 +1372,7 @@ function clampCamera() {
     const g = terrainY(camera.position.x, camera.position.z) + Math.max(S.extent / 800, 1.5 * S.exag);
     if (camera.position.y < g) camera.position.y = g;
   }
-  camera.position.y = Math.min(camera.position.y, S.extent * 3);
+  camera.position.y = Math.min(camera.position.y, S.extent * (S.nav === 'fly' ? 3 : 5));
 }
 function updateTour(dt) {
   S.tourT += dt * (S.presentation ? 0.025 : 0.08);

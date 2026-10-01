@@ -14,6 +14,7 @@ export function createBoldUi({getState,orbit,canvas,requestRender}){
     const tip=document.createElement('span');tip.className='v3-tool-label';tip.textContent=button.title||name;button.replaceChildren(svg,tip);
   }
   $('#drawer-toggle').textContent='×';$('#drawer-toggle').setAttribute('aria-label','Close inspector');
+  $('#exposure').value='1.08';$('#exposure-v').textContent='1.08';
   const mapShell=document.createElement('div');mapShell.id='minimap-shell';$('#minimap').before(mapShell);mapShell.append($('#minimap'));
   const mapNorth=document.createElement('span');mapNorth.id='minimap-north';mapNorth.innerHTML='▲<small>N</small>';mapShell.append(mapNorth);
   const syncDock=()=>$('#app').style.setProperty('--dock-width',`${$('#layer-dock').getBoundingClientRect().width}px`);
