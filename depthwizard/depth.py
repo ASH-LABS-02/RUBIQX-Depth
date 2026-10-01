@@ -76,6 +76,10 @@ class DepthBackbone:
         # record their own pixel-height constant and training resolution; older
         # checkpoints fall back to the constants fitted for da2-gamus-full.
         self.pixel_height, self.train_net_gsd = C_PIXEL_HEIGHT, TRAIN_NET_GSD_M
+        # smallest tile (source pixels) fed to the network; checkpoints trained
+        # on simulated coarse imagery (--res-range) may upsample small tiles so
+        # the network keeps its training resolution on 1-2.5 m scenes
+        self.min_tile = int(os.environ.get("DEPTHWIZARD_MIN_TILE", 0)) or 256
         cfg_path = Path(str(name)) / "config.json"
         if cfg_path.exists():
             try:
@@ -83,6 +87,8 @@ class DepthBackbone:
                 cfg = json.loads(cfg_path.read_text())
                 self.pixel_height = float(cfg.get("depthwizard_pixel_height", C_PIXEL_HEIGHT))
                 self.train_net_gsd = float(cfg.get("depthwizard_train_net_gsd", TRAIN_NET_GSD_M))
+                if cfg.get("depthwizard_res_range") and not os.environ.get("DEPTHWIZARD_MIN_TILE"):
+                    self.min_tile = 96
             except Exception:  # noqa: BLE001
                 pass
         self.info: dict = {}
@@ -172,7 +178,7 @@ class DepthBackbone:
         with the learned pixel-footprint scale. No tile affine re-alignment is
         needed because every tile is already in (approximate) metres."""
         h, w = rgb.shape[:2]
-        T = int(np.clip(round(self.train_net_gsd * 518 / gsd), 256, 4096))
+        T = int(np.clip(round(self.train_net_gsd * 518 / gsd), self.min_tile, 4096))
         if T >= max(h, w):
             raw, std = self._infer(rgb, tta=tta, return_std=True)
             net_gsd = gsd * self._last_factor

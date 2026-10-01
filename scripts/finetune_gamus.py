@@ -78,7 +78,8 @@ def read_rgb(path):
 
 class Pairs(Dataset):
     def __init__(self, rgb_glob, h_glob, size=518, scale=1.0, train=True,
-                 limit=0, seed=42, gsd=0.33, net_gsd=0.0, scale_jitter=0.0, sat_aug=False):
+                 limit=0, seed=42, gsd=0.33, net_gsd=0.0, scale_jitter=0.0, sat_aug=False,
+                 res_range=None):
         rgbs = {Path(p).stem: p for p in glob.glob(rgb_glob)}
         hs = {Path(p).stem: p for p in glob.glob(h_glob)}
         # GAMUS uses both xxx_RGB/xxx_AGL and xxx_IMG/xxx_AGL.
@@ -91,6 +92,7 @@ class Pairs(Dataset):
             self.items = sorted(random.Random(seed).sample(self.items, limit))
         self.size, self.scale, self.train = size, scale, train
         self.gsd, self.net_gsd, self.jitter, self.sat_aug = gsd, net_gsd, scale_jitter, sat_aug
+        self.res_range = res_range
 
     def __len__(self):
         return len(self.items)
@@ -128,6 +130,8 @@ class Pairs(Dataset):
             rgb, h = np.rot90(rgb, k), np.rot90(h, k)
             if random.random() < 0.5:
                 rgb, h = rgb[:, ::-1], h[:, ::-1]
+            if self.res_range:
+                rgb = _source_resolution_aug(np.ascontiguousarray(rgb), eff_gsd, *self.res_range)
             if self.sat_aug:
                 rgb = _satellite_aug(np.ascontiguousarray(rgb))
         t = torch.from_numpy(np.ascontiguousarray(rgb)).permute(2, 0, 1).float() / 255
@@ -145,6 +149,24 @@ def _resize_heights(h, size):
     out = num / np.maximum(den, 1e-6)
     out[den < 0.5] = np.nan
     return out.astype(np.float32)
+
+
+def _source_resolution_aug(rgb, eff_gsd, lo, hi, p=0.7):
+    """Simulate a coarser sensor: re-sample the image as if it had been
+    captured at a ground resolution between ``lo`` and ``hi`` m/px (log-uniform),
+    then bring it back to the network grid. The height target is unchanged, so
+    the model learns to predict fine-grid heights from blurrier imagery - what
+    the app does when it upsamples a 1-2.5 m scene to the training resolution."""
+    if random.random() > p:
+        return rgb
+    r = math.exp(random.uniform(math.log(lo), math.log(hi)))
+    k = r / eff_gsd
+    if k <= 1.05:
+        return rgb
+    s = rgb.shape[0]
+    small = max(8, int(round(s / k)))
+    img = Image.fromarray(rgb).resize((small, small), Image.BOX)
+    return np.asarray(img.resize((s, s), random.choice((Image.BILINEAR, Image.BICUBIC))))
 
 
 def _satellite_aug(rgb):
@@ -254,6 +276,8 @@ def main():
                     help="train at this network-pixel size (0 = native crops, original recipe)")
     ap.add_argument("--scale-jitter", type=float, default=0.0)
     ap.add_argument("--sat-aug", action="store_true")
+    ap.add_argument("--res-range", type=float, nargs=2, metavar=("MIN", "MAX"),
+                    help="simulate source imagery between MIN and MAX m/px (e.g. 0.35 2.5)")
     ap.add_argument("--select", choices=("affine", "absolute"), default="affine",
                     help="validation score that picks the saved checkpoint")
     ap.add_argument("--out", default="checkpoints/da2-gamus")
@@ -295,7 +319,7 @@ def main():
 
     train_data = Pairs(a.rgb, a.height, a.size, a.height_scale,
                        limit=a.max_train_samples, seed=a.seed, gsd=a.gsd, net_gsd=a.net_gsd,
-                       scale_jitter=a.scale_jitter, sat_aug=a.sat_aug)
+                       scale_jitter=a.scale_jitter, sat_aug=a.sat_aug, res_range=a.res_range)
     train = DataLoader(train_data, batch_size=a.batch,
                        shuffle=True, num_workers=0 if os.name == "nt" else 4)
     val = DataLoader(Pairs(a.val_rgb, a.val_height, a.size, a.height_scale,
@@ -375,9 +399,11 @@ def main():
                     cfg["depthwizard_pixel_height"] = 1.0
                 if a.net_gsd:
                     cfg["depthwizard_train_net_gsd"] = a.net_gsd
+                if a.res_range:
+                    cfg["depthwizard_res_range"] = list(a.res_range)
                 cfg["depthwizard_training"] = {k: v for k, v in vars(a).items()
                                                if k in ("model", "target", "metric_weight", "tall_weight", "gsd",
-                                                        "net_gsd", "scale_jitter", "sat_aug", "select",
+                                                        "net_gsd", "scale_jitter", "sat_aug", "res_range", "select",
                                                         "epochs", "lr", "size")}
                 cfg_path.write_text(_json.dumps(cfg, indent=2))
             except Exception:  # noqa: BLE001
