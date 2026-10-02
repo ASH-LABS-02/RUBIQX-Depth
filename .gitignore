@@ -28,6 +28,7 @@ data/jobs/*
 
 
 # generated caches
+data/dem_cache/
 data/jobs/*/viewer/normal.png
 data/jobs/*/gcp_backup/
 data/jobs/*/status.json

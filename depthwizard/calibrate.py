@@ -178,7 +178,7 @@ def _ellipsoidal_to_egm2008(row: np.ndarray, col: np.ndarray, z: np.ndarray, ima
         if not np.isfinite(height).all():
             raise ValueError("EGM2008 conversion returned invalid heights")
         return height
-    except (ImportError, Exception) as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         raise RuntimeError("Cannot convert ellipsoidal GCP heights to EGM2008: "
                            "install pyproj and the us_nga_egm08_25.tif PROJ grid "
                            "or enable PROJ_NETWORK=ON. Heights were not mixed.") from exc
