@@ -79,7 +79,7 @@ def read_rgb(path):
 class Pairs(Dataset):
     def __init__(self, rgb_glob, h_glob, size=518, scale=1.0, train=True,
                  limit=0, seed=42, gsd=0.33, net_gsd=0.0, scale_jitter=0.0, sat_aug=False,
-                 res_range=None):
+                 res_range=None, gray_prob=0.0, force_gray=False):
         rgbs = {Path(p).stem: p for p in glob.glob(rgb_glob)}
         hs = {Path(p).stem: p for p in glob.glob(h_glob)}
         # GAMUS uses both xxx_RGB/xxx_AGL and xxx_IMG/xxx_AGL.
@@ -93,6 +93,7 @@ class Pairs(Dataset):
         self.size, self.scale, self.train = size, scale, train
         self.gsd, self.net_gsd, self.jitter, self.sat_aug = gsd, net_gsd, scale_jitter, sat_aug
         self.res_range = res_range
+        self.gray_prob, self.force_gray = gray_prob, force_gray
 
     def __len__(self):
         return len(self.items)
@@ -134,6 +135,10 @@ class Pairs(Dataset):
                 rgb = _source_resolution_aug(np.ascontiguousarray(rgb), eff_gsd, *self.res_range)
             if self.sat_aug:
                 rgb = _satellite_aug(np.ascontiguousarray(rgb))
+            if self.gray_prob and random.random() < self.gray_prob:
+                rgb = _panchromatic(np.ascontiguousarray(rgb), stretch=random.random() < 0.5)
+        elif self.force_gray:
+            rgb = _panchromatic(np.ascontiguousarray(rgb), stretch=True)
         t = torch.from_numpy(np.ascontiguousarray(rgb)).permute(2, 0, 1).float() / 255
         if self.train:
             t = (t * random.uniform(0.8, 1.2) + random.uniform(-0.08, 0.08)).clamp(0, 1)
@@ -167,6 +172,17 @@ def _source_resolution_aug(rgb, eff_gsd, lo, hi, p=0.7):
     small = max(8, int(round(s / k)))
     img = Image.fromarray(rgb).resize((small, small), Image.BOX)
     return np.asarray(img.resize((s, s), random.choice((Image.BILINEAR, Image.BICUBIC))))
+
+
+def _panchromatic(rgb, stretch=True):
+    """Single-band (panchromatic) look, as Cartosat-2S 0.6 m imagery: luminance
+    copied into R, G, B; optionally the app loader's 2-98 % stretch."""
+    g = rgb.astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    if stretch:
+        lo, hi = np.percentile(g, (2, 98))
+        g = (g - lo) / max(hi - lo, 1e-6) * 255
+    g = np.clip(g, 0, 255).astype(np.uint8)
+    return np.repeat(g[..., None], 3, axis=2)
 
 
 def _satellite_aug(rgb):
@@ -276,6 +292,9 @@ def main():
                     help="train at this network-pixel size (0 = native crops, original recipe)")
     ap.add_argument("--scale-jitter", type=float, default=0.0)
     ap.add_argument("--sat-aug", action="store_true")
+    ap.add_argument("--gray-prob", type=float, default=0.0,
+                    help="fraction of training crops turned panchromatic; also validates on a "
+                         "greyscale copy and selects on the mean of colour and greyscale")
     ap.add_argument("--res-range", type=float, nargs=2, metavar=("MIN", "MAX"),
                     help="simulate source imagery between MIN and MAX m/px (e.g. 0.35 2.5)")
     ap.add_argument("--select", choices=("affine", "absolute"), default="affine",
@@ -319,13 +338,18 @@ def main():
 
     train_data = Pairs(a.rgb, a.height, a.size, a.height_scale,
                        limit=a.max_train_samples, seed=a.seed, gsd=a.gsd, net_gsd=a.net_gsd,
-                       scale_jitter=a.scale_jitter, sat_aug=a.sat_aug, res_range=a.res_range)
+                       scale_jitter=a.scale_jitter, sat_aug=a.sat_aug, res_range=a.res_range,
+                       gray_prob=a.gray_prob)
     train = DataLoader(train_data, batch_size=a.batch,
                        shuffle=True, num_workers=0 if os.name == "nt" else 4)
     val = DataLoader(Pairs(a.val_rgb, a.val_height, a.size, a.height_scale,
                            train=False, limit=a.max_val_samples, seed=a.seed,
                            gsd=a.gsd, net_gsd=a.net_gsd),
                      batch_size=a.batch) if a.val_rgb else None
+    val_gray = DataLoader(Pairs(a.val_rgb, a.val_height, a.size, a.height_scale,
+                                train=False, limit=a.max_val_samples, seed=a.seed,
+                                gsd=a.gsd, net_gsd=a.net_gsd, force_gray=True),
+                          batch_size=a.batch) if (a.val_rgb and a.gray_prob) else None
     total = a.epochs * math.ceil(len(train) / a.grad_accum)
     total = max(total, 10)
     # at least 2 warm-up steps, so very short (smoke-test) runs don't divide by zero
@@ -346,6 +370,10 @@ def main():
         print(f"Resuming from epoch {start_epoch + 1}, step {step}", flush=True)
     print(f"Training {len(train_data)} tiles, validation {len(val.dataset) if val else 0} tiles; "
           f"batch {a.batch}, accumulation {a.grad_accum}, {a.epochs} epochs", flush=True)
+    if val_gray is not None and start_epoch == 0 and not a.max_steps:
+        # starting point, so the first epoch can be judged against it
+        c0, g0 = evaluate(model, val, device, pixel_height), evaluate(model, val_gray, device, pixel_height)
+        print(f"start: val absolute-RMSE colour {c0['absolute']:.3f} m, greyscale {g0['absolute']:.3f} m", flush=True)
     for ep in range(start_epoch, a.epochs):
         started = time.time()
         if device == "cuda":
@@ -377,6 +405,12 @@ def main():
                     break
         scores = evaluate(model, val, device, pixel_height) if val else None
         score = scores[a.select] if scores else -ep
+        if val_gray is not None:
+            gscores = evaluate(model, val_gray, device, pixel_height)
+            print(f"  greyscale val: affine-RMSE {gscores['affine']:.3f} m, absolute-RMSE "
+                  f"{gscores['absolute']:.3f} m", flush=True)
+            scores["gray_absolute"] = gscores["absolute"]
+            score = (score + gscores[a.select]) / 2
         minutes = (time.time() - started) / 60
         peak_gib = torch.cuda.max_memory_allocated() / 2**30 if device == "cuda" else 0
         print((f"epoch {ep + 1}: val affine-RMSE {scores['affine']:.3f} m, absolute-RMSE "
@@ -386,6 +420,7 @@ def main():
             history.write(json.dumps({"epoch": ep + 1, "optimizer_steps": step,
                                       "val_affine_rmse_m": scores["affine"] if val else None,
                                       "val_absolute_rmse_m": scores["absolute"] if val else None,
+                                      "val_gray_absolute_rmse_m": scores.get("gray_absolute") if val else None,
                                       "minutes": minutes, "peak_vram_gib": peak_gib}) + "\n")
         if score < best:
             best = score
@@ -403,7 +438,7 @@ def main():
                     cfg["depthwizard_res_range"] = list(a.res_range)
                 cfg["depthwizard_training"] = {k: v for k, v in vars(a).items()
                                                if k in ("model", "target", "metric_weight", "tall_weight", "gsd",
-                                                        "net_gsd", "scale_jitter", "sat_aug", "res_range", "select",
+                                                        "net_gsd", "scale_jitter", "sat_aug", "res_range", "gray_prob", "select",
                                                         "epochs", "lr", "size")}
                 cfg_path.write_text(_json.dumps(cfg, indent=2))
             except Exception:  # noqa: BLE001
