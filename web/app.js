@@ -13,7 +13,7 @@ import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg
 import { createMissionUi } from './ui-v2.js?v=20261001-bold';
 import { createDiorama } from './diorama.js?v=20261001-bold-r4';
 import { createBoldUi } from './ui-v3.js?v=20261001-bold-r4';
-import { buildTreeGroup, disposeTreeGroup, flattenCanopyHeights } from './trees.js?v=20261002-trees';
+import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261002-trees-b';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
 const FLOOR_AREA_PER_PERSON_M2 = 30;
 
@@ -176,7 +176,7 @@ const S = {
   id: null, meta: null, gw: 0, gh: 0, W: 1, H: 1, h: null, dtm: null, confidence: null,
   renderH: null, ref: null, base: 0,
   exag: 1, smoothingM: 0, mode: 'optical', tool: 'probe', nav: 'orbit',
-  viewGeometry: 'surface', treesEnabled: true, treeGroup: null,
+  viewGeometry: 'surface', treesEnabled: true, treeGroup: null, canopyCache: null,
   mesh: null, skirt: null, water: null, floodActive: false, tex: null, texImg: null,
   marker: null, profileLine: null, profilePts: [],
   distPts: [], distLine: null,
@@ -266,6 +266,8 @@ function despikeGrid(src) {
 
 function updateRenderHeight(rebuild = true) {
   let src = S.h;
+  let flattened = 0;
+  S.canopyCache = null;
   if (S.viewGeometry === 'city') {
     src = Float32Array.from(S.h);
     const m = buildingMaskGrid();
@@ -287,19 +289,27 @@ function updateRenderHeight(rebuild = true) {
         src = out;
       }
     }
-    if (treesActive()) flattenCanopyHeights(src, S.h, S.dtm, m, S.texImg, S.gw, S.gh);
+    if (treesActive()) {
+      S.canopyCache = analyzeCanopy({ h: S.h, dtm: S.dtm, buildingMask: m, texImg: S.texImg, gw: S.gw, gh: S.gh });
+      S.canopyCache.dtm = S.dtm;
+      flattened = flattenCanopyHeights(src, S.canopyCache);
+    }
   }
   if ($('#despike')?.checked !== false) src = despikeGrid(src);
   S.renderH = smoothGrid(src, S.smoothingM / Math.max(S.W / (S.gw - 1), 1e-6));
+  // Mesh smoothing would reintroduce DSM mounds in woods; lock canopy cells to DTM after smooth.
+  if (treesActive() && S.canopyCache?.mask) {
+    flattened = flattenCanopyHeights(S.renderH, S.canopyCache);
+  }
   if (rebuild && S.mesh) applyHeights();
-  syncTreeLayer();
+  syncTreeLayer(flattened);
 }
 
 function treesActive() {
   return S.viewGeometry === 'city' && S.treesEnabled && S.meta?.units === 'metre' && S.dtm && S.h;
 }
 
-function syncTreeLayer() {
+function syncTreeLayer(flattenedCells = 0) {
   if (S.treeGroup) {
     scene.remove(S.treeGroup);
     disposeTreeGroup(S.treeGroup);
@@ -307,14 +317,18 @@ function syncTreeLayer() {
   }
   if (!treesActive()) return;
   const mask = buildingMaskGrid();
-  S.treeGroup = buildTreeGroup({
+  const canopy = S.canopyCache || analyzeCanopy({ h: S.h, dtm: S.dtm, buildingMask: mask, texImg: S.texImg, gw: S.gw, gh: S.gh });
+  canopy.dtm = S.dtm;
+  const built = buildTreeGroup({
     h: S.h, dtm: S.dtm, buildingMask: mask, gw: S.gw, gh: S.gh, W: S.W, H: S.H,
-    worldY, exag: S.exag, texImg: S.texImg,
+    worldY, exag: S.exag, texImg: S.texImg, canopy,
   });
+  S.treeGroup = built.group;
   if (S.treeGroup) {
     scene.add(S.treeGroup);
     S.treeGroup.visible = true;
   }
+  logTreeStats(S.id || 'scene', flattenedCells, canopy, built);
   requestRender();
 }
 
@@ -809,6 +823,7 @@ async function loadScene(id) {
     S.cameraFlight = null;
     S.mapTiles.clear();
     S._bmask = null;
+    S.canopyCache = null;
     if (S.treeGroup) { scene.remove(S.treeGroup); disposeTreeGroup(S.treeGroup); S.treeGroup = null; }
     Object.assign(S, { demBase, modelBaseline: null, susc, change, viewshed: null, floodMask: null,
       floodSeed: null, floodSource: S.floodSource || 'edge', missionAction: null });
