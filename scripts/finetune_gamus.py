@@ -297,6 +297,10 @@ def main():
                          "greyscale copy and selects on the mean of colour and greyscale")
     ap.add_argument("--res-range", type=float, nargs=2, metavar=("MIN", "MAX"),
                     help="simulate source imagery between MIN and MAX m/px (e.g. 0.35 2.5)")
+    ap.add_argument("--extra", action="append", default=[],
+                    help="repeatable NAME:RGB_GLOB:HEIGHT_GLOB:GSD[:VAL_RGB_GLOB:VAL_HEIGHT_GLOB]")
+    ap.add_argument("--extra-weight", type=float, default=0.3,
+                    help="probability per batch item to sample from the extra datasets")
     ap.add_argument("--select", choices=("affine", "absolute"), default="affine",
                     help="validation score that picks the saved checkpoint")
     ap.add_argument("--out", default="checkpoints/da2-gamus")
@@ -340,16 +344,61 @@ def main():
                        limit=a.max_train_samples, seed=a.seed, gsd=a.gsd, net_gsd=a.net_gsd,
                        scale_jitter=a.scale_jitter, sat_aug=a.sat_aug, res_range=a.res_range,
                        gray_prob=a.gray_prob)
-    train = DataLoader(train_data, batch_size=a.batch,
-                       shuffle=True, num_workers=0 if os.name == "nt" else 4)
-    val = DataLoader(Pairs(a.val_rgb, a.val_height, a.size, a.height_scale,
-                           train=False, limit=a.max_val_samples, seed=a.seed,
-                           gsd=a.gsd, net_gsd=a.net_gsd),
-                     batch_size=a.batch) if a.val_rgb else None
-    val_gray = DataLoader(Pairs(a.val_rgb, a.val_height, a.size, a.height_scale,
-                                train=False, limit=a.max_val_samples, seed=a.seed,
-                                gsd=a.gsd, net_gsd=a.net_gsd, force_gray=True),
-                          batch_size=a.batch) if (a.val_rgb and a.gray_prob) else None
+    datasets = [train_data]
+    val_loaders = []
+    val_gray_loaders = []
+    
+    if a.val_rgb:
+        val_loaders.append(("GAMUS", DataLoader(Pairs(a.val_rgb, a.val_height, a.size, a.height_scale,
+                               train=False, limit=a.max_val_samples, seed=a.seed,
+                               gsd=a.gsd, net_gsd=a.net_gsd), batch_size=a.batch)))
+        if a.gray_prob:
+            val_gray_loaders.append(("GAMUS", DataLoader(Pairs(a.val_rgb, a.val_height, a.size, a.height_scale,
+                                     train=False, limit=a.max_val_samples, seed=a.seed,
+                                     gsd=a.gsd, net_gsd=a.net_gsd, force_gray=True), batch_size=a.batch)))
+
+    if a.extra:
+        for ext in a.extra:
+            # Handle Windows paths by rejoining drive letters
+            parts = ext.split(":")
+            merged = []
+            for p in parts:
+                if len(p) == 1 and p.isalpha() and len(merged) >= 1:
+                    merged.append(p)
+                else:
+                    if len(merged) > 0 and len(merged[-1]) == 1 and merged[-1].isalpha():
+                        merged[-1] = merged[-1] + ":" + p
+                    else:
+                        merged.append(p)
+            parts = merged
+            
+            name, ex_rgb, ex_h, ex_gsd = parts[0], parts[1], parts[2], float(parts[3])
+            ex_data = Pairs(ex_rgb, ex_h, a.size, a.height_scale,
+                            limit=a.max_train_samples, seed=a.seed, gsd=ex_gsd, net_gsd=a.net_gsd,
+                            scale_jitter=a.scale_jitter, sat_aug=a.sat_aug, res_range=a.res_range,
+                            gray_prob=a.gray_prob)
+            datasets.append(ex_data)
+            if len(parts) >= 6:
+                val_rgb, val_h = parts[4], parts[5]
+                val_loaders.append((name, DataLoader(Pairs(val_rgb, val_h, a.size, a.height_scale,
+                                      train=False, limit=a.max_val_samples, seed=a.seed,
+                                      gsd=ex_gsd, net_gsd=a.net_gsd), batch_size=a.batch)))
+                if a.gray_prob:
+                    val_gray_loaders.append((name, DataLoader(Pairs(val_rgb, val_h, a.size, a.height_scale,
+                                              train=False, limit=a.max_val_samples, seed=a.seed,
+                                              gsd=ex_gsd, net_gsd=a.net_gsd, force_gray=True), batch_size=a.batch)))
+
+    train_concat = torch.utils.data.ConcatDataset(datasets)
+    if a.extra:
+        w_base = (1.0 - a.extra_weight) / len(train_data)
+        weights = [w_base] * len(train_data)
+        w_extra = a.extra_weight / (len(datasets) - 1)
+        for d in datasets[1:]:
+            weights.extend([w_extra / len(d)] * len(d))
+        sampler = torch.utils.data.WeightedRandomSampler(weights, num_samples=len(train_concat), replacement=True)
+        train = DataLoader(train_concat, batch_size=a.batch, sampler=sampler, num_workers=0 if os.name == "nt" else 4)
+    else:
+        train = DataLoader(train_concat, batch_size=a.batch, shuffle=True, num_workers=0 if os.name == "nt" else 4)
     total = a.epochs * math.ceil(len(train) / a.grad_accum)
     total = max(total, 10)
     # at least 2 warm-up steps, so very short (smoke-test) runs don't divide by zero
@@ -368,11 +417,20 @@ def main():
         scaler.load_state_dict(state["scaler"])
         best, step, start_epoch = state["best"], state["step"], state["next_epoch"]
         print(f"Resuming from epoch {start_epoch + 1}, step {step}", flush=True)
-    print(f"Training {len(train_data)} tiles, validation {len(val.dataset) if val else 0} tiles; "
+    def evaluate_all(loaders, gray=False):
+        t_aff, t_abs = 0.0, 0.0
+        for name, loader in loaders:
+            res = evaluate(model, loader, device, pixel_height)
+            suf = " greyscale" if gray else ""
+            print(f"  {name} val{suf}: affine-RMSE {res['affine']:.3f} m, absolute-RMSE {res['absolute']:.3f} m", flush=True)
+            t_aff += res['affine']; t_abs += res['absolute']
+        return {"affine": t_aff / len(loaders), "absolute": t_abs / len(loaders)}
+
+    print(f"Training {len(train_concat)} tiles (from {len(datasets)} sets), validation {sum(len(l.dataset) for _, l in val_loaders)} tiles; "
           f"batch {a.batch}, accumulation {a.grad_accum}, {a.epochs} epochs", flush=True)
-    if val_gray is not None and start_epoch == 0 and not a.max_steps:
+    if val_gray_loaders and start_epoch == 0 and not a.max_steps:
         # starting point, so the first epoch can be judged against it
-        c0, g0 = evaluate(model, val, device, pixel_height), evaluate(model, val_gray, device, pixel_height)
+        c0, g0 = evaluate_all(val_loaders), evaluate_all(val_gray_loaders, gray=True)
         print(f"start: val absolute-RMSE colour {c0['absolute']:.3f} m, greyscale {g0['absolute']:.3f} m", flush=True)
     for ep in range(start_epoch, a.epochs):
         started = time.time()
@@ -403,24 +461,23 @@ def main():
                     print(f"ep {ep + 1} step {step}/{total} loss {loss.item():.4f}", flush=True)
                 if a.max_steps and step >= a.max_steps:
                     break
-        scores = evaluate(model, val, device, pixel_height) if val else None
+        scores = evaluate_all(val_loaders) if val_loaders else None
         score = scores[a.select] if scores else -ep
-        if val_gray is not None:
-            gscores = evaluate(model, val_gray, device, pixel_height)
-            print(f"  greyscale val: affine-RMSE {gscores['affine']:.3f} m, absolute-RMSE "
-                  f"{gscores['absolute']:.3f} m", flush=True)
+        if val_gray_loaders:
+            gscores = evaluate_all(val_gray_loaders, gray=True)
+            print(f"  mean greyscale val: affine-RMSE {gscores['affine']:.3f} m, absolute-RMSE {gscores['absolute']:.3f} m", flush=True)
             scores["gray_absolute"] = gscores["absolute"]
             score = (score + gscores[a.select]) / 2
         minutes = (time.time() - started) / 60
         peak_gib = torch.cuda.max_memory_allocated() / 2**30 if device == "cuda" else 0
-        print((f"epoch {ep + 1}: val affine-RMSE {scores['affine']:.3f} m, absolute-RMSE "
-               f"{scores['absolute']:.3f} m (selecting on {a.select})" if val else f"epoch {ep + 1} done")
+        print((f"epoch {ep + 1}: mean val affine-RMSE {scores['affine']:.3f} m, absolute-RMSE "
+               f"{scores['absolute']:.3f} m (selecting on {a.select})" if val_loaders else f"epoch {ep + 1} done")
               + f" in {minutes:.1f} min; peak VRAM {peak_gib:.2f} GiB", flush=True)
         with (out / "history.jsonl").open("a") as history:
             history.write(json.dumps({"epoch": ep + 1, "optimizer_steps": step,
-                                      "val_affine_rmse_m": scores["affine"] if val else None,
-                                      "val_absolute_rmse_m": scores["absolute"] if val else None,
-                                      "val_gray_absolute_rmse_m": scores.get("gray_absolute") if val else None,
+                                      "val_affine_rmse_m": scores["affine"] if val_loaders else None,
+                                      "val_absolute_rmse_m": scores["absolute"] if val_loaders else None,
+                                      "val_gray_absolute_rmse_m": scores.get("gray_absolute") if val_loaders else None,
                                       "minutes": minutes, "peak_vram_gib": peak_gib}) + "\n")
         if score < best:
             best = score
@@ -439,7 +496,7 @@ def main():
                 cfg["depthwizard_training"] = {k: v for k, v in vars(a).items()
                                                if k in ("model", "target", "metric_weight", "tall_weight", "gsd",
                                                         "net_gsd", "scale_jitter", "sat_aug", "res_range", "gray_prob", "select",
-                                                        "epochs", "lr", "size")}
+                                                        "epochs", "lr", "size", "extra", "extra_weight")}
                 cfg_path.write_text(_json.dumps(cfg, indent=2))
             except Exception:  # noqa: BLE001
                 pass
