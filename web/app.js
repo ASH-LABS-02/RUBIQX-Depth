@@ -13,7 +13,7 @@ import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg
 import { createMissionUi } from './ui-v2.js?v=20261001-bold';
 import { createDiorama } from './diorama.js?v=20261001-bold-r4';
 import { createBoldUi } from './ui-v3.js?v=20261001-bold-r4';
-import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261002-trees-b';
+import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261002-trees-scale-colour-c';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
 const FLOOR_AREA_PER_PERSON_M2 = 30;
 
@@ -297,8 +297,9 @@ function updateRenderHeight(rebuild = true) {
   }
   if ($('#despike')?.checked !== false) src = despikeGrid(src);
   S.renderH = smoothGrid(src, S.smoothingM / Math.max(S.W / (S.gw - 1), 1e-6));
-  // Mesh smoothing would reintroduce DSM mounds in woods; lock canopy cells to DTM after smooth.
-  if (treesActive() && S.canopyCache?.mask) {
+  // Restore the expanded canopy footprint to DTM after smoothing, then
+  // upload those final heights so shaded canopy shoulders cannot reappear.
+  if (treesActive() && S.canopyCache?.flattenMask) {
     flattened = flattenCanopyHeights(S.renderH, S.canopyCache);
   }
   if (rebuild && S.mesh) applyHeights();
@@ -321,7 +322,8 @@ function syncTreeLayer(flattenedCells = 0) {
   canopy.dtm = S.dtm;
   const built = buildTreeGroup({
     h: S.h, dtm: S.dtm, buildingMask: mask, gw: S.gw, gh: S.gh, W: S.W, H: S.H,
-    worldY, exag: S.exag, texImg: S.texImg, canopy,
+    groundWm: S.meta.ground_w_m, groundHm: S.meta.ground_h_m,
+    worldY, units: S.meta.units, texImg: S.texImg, canopy,
   });
   S.treeGroup = built.group;
   if (S.treeGroup) {
