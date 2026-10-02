@@ -19,17 +19,19 @@
   "vertical_datum": "same as input DEM",
   "calibration": {
     "method": "dem+learned-scale",
-    "scale_k": 20.37864361552056,
+    "scale_k": 18.93572399324512,
     "n_gcp": 0,
     "dem_coverage": 1.0,
+    "dem_origin": "user",
+    "dem_tile_names": [],
     "scale_source": "learned pixel-footprint scale",
     "evidence_level": "approximate",
     "dem_kind": "terrain",
-    "dem_hp_r": -0.08967609378794666,
+    "dem_hp_r": -0.06748866786648419,
     "dem_resolution_m": 32.0,
     "reference_consistent": false,
-    "consistency_rmse_m": 0.16748808614862518,
-    "learned_scale_k": 20.37864361552056,
+    "consistency_rmse_m": 0.16748807121548365,
+    "learned_scale_k": 18.93572399324512,
     "structure_model": "agl-lower-tail",
     "vertical_datum": "same as input DEM",
     "match_dem_30m": false,
@@ -42,26 +44,26 @@
   "tta": 4,
   "water_fraction": 0.0,
   "agl_model": true,
-  "learned_scale_m_per_unit": 20.37864361552056,
+  "learned_scale_m_per_unit": 18.93572399324512,
   "timing_s": {
-    "depth": 43.54,
-    "total": 57.41
+    "depth": 8.26,
+    "total": 12.65
   },
   "sun_input": {
     "elevation_deg": null,
     "azimuth_deg": null
   },
-  "buildings_count": 145,
-  "total_footprint_m2": 30483.2,
+  "buildings_count": 140,
+  "total_footprint_m2": 36717.9,
   "auto_anchors": {
     "anchors": [
       {
-        "building_id": 62,
+        "building_id": 61,
         "height_m": 9.0,
         "source": "OpenStreetMap levels estimate",
         "evidence_level": "approximate levels",
-        "confidence": 0.541,
-        "footprint_iou": 0.832,
+        "confidence": 0.475,
+        "footprint_iou": 0.731,
         "osm_way_id": 66693559,
         "osm_url": "https://www.openstreetmap.org/way/66693559",
         "osm_tag": "building:levels",
@@ -80,7 +82,7 @@
       },
       "shadow": {
         "source": "RGB shadow geometry",
-        "candidates": 145,
+        "candidates": 140,
         "accepted": 0,
         "rejected": {},
         "sun_elevation_deg": null,
@@ -136,7 +138,7 @@
     "calibration_method": "dem+learned-scale",
     "scale_source": "learned pixel-footprint scale",
     "evidence_level": "approximate",
-    "scale_k": 20.37864361552056,
+    "scale_k": 18.93572399324512,
     "vertical_datum": "same as input DEM",
     "software_version": "DepthWizard 2.2 (SIH26175)"
   },
@@ -177,8 +179,8 @@
     },
     "solar": {
       "latitude_deg": 38.913050874165606,
-      "buildings": 145,
-      "total_pv_mwh_yr": 5804.3,
+      "buildings": 140,
+      "total_pv_mwh_yr": 7032.8,
       "assumptions": "GHI 1,900 kWh/m\u00b2/yr, 18 % modules, 70 % usable roof"
     }
   },
@@ -207,6 +209,6 @@
     "susc": true
   },
   "validation_plot": null,
-  "h_min": 29.712936401367188,
-  "h_max": 79.8431396484375
+  "h_min": 30.73453140258789,
+  "h_max": 78.22610473632812
 }

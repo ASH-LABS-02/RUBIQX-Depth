@@ -1,0 +1,34 @@
+{
+  "da2-gamus-full[absolute]/RIC": {
+    "tiles": 159,
+    "mean_rmse_m": 3.055740744639306,
+    "mean_mae_m": 1.8897451220738113,
+    "mean_r": 0.8250969939268563,
+    "mean_bias_m": -0.9853253253168945,
+    "median_ratio_tall": 0.8144254416543008
+  },
+  "da2-gamus-full[absolute]/all": {
+    "tiles": 159,
+    "mean_rmse_m": 3.055740744639306,
+    "mean_mae_m": 1.8897451220738113,
+    "mean_r": 0.8250969939268563,
+    "mean_bias_m": -0.9853253253168945,
+    "median_ratio_tall": 0.8144254416543008
+  },
+  "da2-base-v5-urban3d[absolute]/RIC": {
+    "tiles": 159,
+    "mean_rmse_m": 1.8185602572854247,
+    "mean_mae_m": 1.0903218720878411,
+    "mean_r": 0.9250205579477503,
+    "mean_bias_m": -0.12453184984280957,
+    "median_ratio_tall": 0.9697775078781513
+  },
+  "da2-base-v5-urban3d[absolute]/all": {
+    "tiles": 159,
+    "mean_rmse_m": 1.8185602572854247,
+    "mean_mae_m": 1.0903218720878411,
+    "mean_r": 0.9250205579477503,
+    "mean_bias_m": -0.12453184984280957,
+    "median_ratio_tall": 0.9697775078781513
+  }
+}

@@ -105,7 +105,33 @@ adds error at object edges.
   uses as a height cue. This is a hypothesis, not yet tested; a height anchor or
   GCPs correct it in practice (§3).
 
-### 1f. Panchromatic (single-band) input – current model (v4)
+### 1g. Satellite training data – current model (v5)
+
+v5 = v4 fine-tuned 4 epochs on GAMUS plus the **Urban 3D Challenge** dataset
+(WorldView satellite RGB, 0.5 m, Jacksonville/Tampa/Richmond; heights = Vricon
+satellite-stereo DSM − DTM, CC BY-NC). Train = Provisional_Train + Unused_Data,
+validation = Provisional_Test, test = Sequestered_Test (never used for training
+or selection). Mixed 70 % GAMUS / 30 % Urban 3D, a third of crops panchromatic,
+selection on the mean of GAMUS and Urban 3D validation. Scripts:
+`scripts/prepare_urban3d.py`, `scripts/run_gamus_urban3d.ps1`; details in
+`CHANGES_URBAN3D.md`; raw results `docs/eval/v5-urban3d/`.
+
+| Test (no fitting) | v4 | **v5 (shipped)** |
+|---|---:|---:|
+| Urban 3D test, 159 satellite tiles, 0.5 m | 3.06 m, r 0.83, bias −0.99, tall 0.81 | **1.82 m, r 0.93, bias −0.12, tall 0.97** |
+| GAMUS 30 tiles, colour, 0.33 m / 0.6 m | 2.65 / 2.51 m | **2.61 / 2.47 m** (bias ≈ 0) |
+| GAMUS 30 tiles, panchromatic, 0.6 m | 2.86 m | **2.76 m** |
+| Blind DC Glover Park, colour / panchromatic | 4.30 / 4.70 m | 4.37 / **4.51 m** |
+| Blind DC Capitol Hill East, colour / panchromatic | 2.88 / 3.22 m | **2.84 / 3.13 m** |
+| Blind DC mean, colour / panchromatic | 3.59 / 3.96 m | 3.61 / **3.82 m** |
+
+Satellite error falls 41 % and the tall-object under-estimate on satellite
+imagery disappears; aerial and DC results are unchanged within noise. Caveat:
+Urban 3D test tiles come from the same cities as its training tiles, and its
+heights are satellite-stereo (smoother than LiDAR) – this shows adaptation to
+satellite imagery, not performance on Indian scenes.
+
+### 1f. Panchromatic (single-band) input – v4
 
 Cartosat-2S acquires 0.6 m imagery in one panchromatic band (colour is 1.6 m),
 so SAC's test images may be greyscale. v2 was trained on colour only. Inputs

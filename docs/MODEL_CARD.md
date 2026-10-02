@@ -1,4 +1,4 @@
-# Model card – DepthWizard GAMUS height model (`da2-gamus-full`, v4)
+# Model card – DepthWizard GAMUS height model (`da2-gamus-full`, v5)
 
 | | |
 |---|---|
@@ -8,7 +8,8 @@
 | Loss | Metric L1 on height (pixel_height = 1) + scale-and-shift-invariant shape loss; pixels > 3 m weighted ×1.5 |
 | Training | 30 epochs, batch 4, 518 px crops at 0.65 m per network pixel (±15 % scale jitter), satellite-style degradation (blur/downsample, haze, noise), AdamW LR 5e-6, OneCycle; RTX 4060 Laptop, 4.6 GB VRAM, ≈18 min/epoch (≈7.5 h) |
 | Selection | Best validation **absolute** RMSE: 2.23 m (epoch 24, 859 validation tiles) |
-| Panchromatic | v4 = v2 + 2 epochs with a third of crops greyscale/panchromatic, selected on colour + greyscale validation (2.25 / 2.61 m). Test, 0.6 m: colour 2.51 m, panchromatic 2.86 m (v2 3.35 m); blind DC colour 3.59 m |
+| Satellite (v5) | v4 + 4 epochs on GAMUS + Urban 3D (WorldView 0.5 m, CC BY-NC). Urban 3D test 3.06 → 1.82 m; GAMUS 0.6 m colour 2.47 m, panchromatic 2.76 m; blind DC colour 3.61 m. See BENCHMARKS §1g |
+| Panchromatic (v4) | v4 = v2 + 2 epochs with a third of crops greyscale/panchromatic, selected on colour + greyscale validation (2.25 / 2.61 m). Test, 0.6 m: colour 2.51 m, panchromatic 2.86 m (v2 3.35 m); blind DC colour 3.59 m |
 | Held-out test (v2) | 30 GAMUS test tiles, no per-tile fitting: **2.62 m RMSE, 1.48 m MAE, r 0.84, bias −0.07 m**, tall objects 0.97 of true height (v1 Small: 3.46 m, 2.18 m, r 0.79, bias −0.82 m, 0.82) |
 
 \* Check the licence of the Depth Anything V2 Base weights before commercial use; the Small model is Apache-2.0.
