@@ -95,15 +95,15 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         # Mode C: derive approximate bare-earth terrain from the Copernicus DSM so
         # that nDSM captures real building heights instead of being suppressed by
         # the surface signal already embedded in the Copernicus DSM.
-        from .calibrate import copernicus_terrain_from_dsm
+        from .calibrate import copernicus_terrain_from_dsm, dem_resolution_m
         import rasterio as _rio
         cop_terrain_path = out / "dem_terrain.tif"
         with _rio.open(dem) as _src:
             _arr  = _src.read(1).astype(np.float32)
-            _res  = abs(_src.transform.a)
             _prof = _src.profile.copy()
         _prof.update(dtype="float32", nodata=np.nan)
-        _terrain = copernicus_terrain_from_dsm(_arr, _res)
+        _res_m = dem_resolution_m(dem)
+        _terrain = copernicus_terrain_from_dsm(_arr, _res_m)
         with _rio.open(cop_terrain_path, "w", **_prof) as _dst:
             _dst.write(_terrain, 1)
             _dst.update_tags(

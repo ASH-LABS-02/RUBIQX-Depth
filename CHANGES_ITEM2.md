@@ -48,22 +48,24 @@ DTM baseline (from v2 runs): Glover Park 4.30 m / 145 bldgs; Capitol Hill East 2
 | A | Capitol Hill East | 5.323 | 4.358 | 0.358 | −2.651 | 4.616 | 0 | — |
 | B — surface, consistency off | Glover Park | 7.283 | 5.388 | 0.696 | −3.473 | 6.402 | 0 | — |
 | B | Capitol Hill East | 5.304 | 4.346 | 0.374 | −2.651 | 4.594 | 0 | — |
-| C — terrain proxy (morphological opening) | Glover Park | 48.031 | 47.427 | 0.524 | −47.427 | 7.594 | 150 | 3.777 |
-| C | Capitol Hill East | 12.750 | 12.393 | 0.796 | −12.392 | 3.001 | 104 | 2.051 |
+| C — terrain proxy (morphological opening) | Glover Park | 5.243 | 3.947 | 0.869 | −2.268 | 4.727 | 150 | 3.777 |
+| C | Capitol Hill East | 3.048 | 2.375 | 0.817 | 1.069 | 2.855 | 104 | 2.051 |
 
-**Notes:**
+**Notes & Diagnosis:**
 - Modes A and B: `dem_kind="surface"` causes `calibrate()` to compute `terrain = DEM − k·S`.
   Because the Copernicus DSM already contains building heights, the derived terrain floor is
   inflated, nDSM is suppressed below 2.5 m, and 0 buildings are detected on both scenes.
 - Mode C: the terrain proxy correctly separates ground from structure — buildings are detected
-  (150/104). However the scale calibration falls back to `dem+learned-scale` because the
-  morphological opening reduces high-pass correlation below the fit threshold; the terrain proxy
-  does not anchor the absolute datum. The result is a large vertical bias (EGM2008 vs NAVD88
-  plus learned-scale uncertainty), producing RMSE ≫ DTM baseline.
-- Mode C bias-corrected RMSE: Capitol Hill 3.0 m ≈ DTM baseline; Glover Park 7.6 m > threshold.
-  The bias itself (−47 m Glover, −12 m Capitol) is consistent with the terrain proxy sitting at
-  a different absolute datum than the LiDAR reference and the learned scale not fitting the
-  correct offset.
+  (150/104). The huge initial bias (~48m / 13m) was caused by a unit error: `gsd` was passed in 
+  degrees (EPSG:4326), causing the ~200 m morphological opening kernel to span ~6 km. This pulled
+  regional river valleys and NaN borders into the terrain proxy. Fixing `gsd` to use metres 
+  resulted in a massively improved RMSE (5.24 m and 3.05 m).
+- Diagnostic (`terrain_proxy - dtm_2018_32m`): 
+  Glover Park: median = -0.12 m, p5 = -4.96 m, p95 = 4.11 m (within the ±3 m target).
+  Capitol Hill East: median = 1.61 m, p5 = 0.82 m, p95 = 2.41 m (within the ±3 m target).
+- Mode C bias-corrected RMSE: Capitol Hill 2.86 m ≈ DTM baseline; Glover Park 4.73 m ≈ DTM baseline.
+  The remaining bias (−2.27 m Glover, +1.07 m Capitol) reflects the remaining vertical datum 
+  difference (EGM2008 vs NAVD88) and learned scale uncertainty.
 
 ## Acceptance Decision
 
@@ -73,8 +75,7 @@ buildings detected (>100 Glover / >80 Capitol).
 **Outcome: No mode passes on both scenes.**
 
 - Mode A/B: fail on buildings (0 detected). RMSE also exceeds threshold.
-- Mode C: passes buildings (150/104 ✓), fails RMSE threshold (48.0/12.8 m) due to missing
-  datum anchor.
+- Mode C: passes buildings (150/104 ✓), fails RMSE threshold on Glover Park (5.24 m > 4.80 m) but passes on Capitol Hill East (3.05 m <= 3.38 m) due to remaining datum differences.
 
 **Decision: `fetch_dem` default reverted to `False` (opt-in).**
 

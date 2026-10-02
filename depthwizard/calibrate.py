@@ -307,13 +307,28 @@ def copernicus_terrain_from_dsm(dsm_arr: np.ndarray, gsd: float) -> np.ndarray:
     float32 array of the same shape; every value ≤ the corresponding input.
     """
     kernel_px = max(3, int(round(200.0 / max(gsd, 1.0))))
+    
+    mask = np.isnan(dsm_arr) | (dsm_arr < -10000)
+    if mask.all():
+        return dsm_arr
+        
+    valid_dsm = dsm_arr.copy()
+    if mask.any():
+        idx = ndimage.distance_transform_edt(mask, return_distances=False, return_indices=True)
+        valid_dsm = valid_dsm[tuple(idx)]
+
     opened = ndimage.grey_opening(
-        np.nan_to_num(dsm_arr, nan=float(np.nanmin(dsm_arr))),
+        valid_dsm,
         size=(kernel_px, kernel_px),
     )
-    return ndimage.gaussian_filter(
+    
+    smoothed = ndimage.gaussian_filter(
         opened, max(1.0, 50.0 / max(gsd, 1.0))
     ).astype(np.float32)
+    
+    terrain = np.minimum(smoothed, valid_dsm)
+    terrain[mask] = np.nan
+    return terrain
 
 
 def _surface_fit(structure, dem, n):
