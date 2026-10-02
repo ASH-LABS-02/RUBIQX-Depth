@@ -1,0 +1,18 @@
+# GPU deployment (e.g. AWS g4dn.xlarge with the Deep Learning Base GPU AMI):
+#   sudo docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+services:
+  depthwizard:
+    build:
+      args:
+        TORCH_INDEX: https://download.pytorch.org/whl/cu124
+    ports:
+      - "80:8000"                       # serve on http://<ip>/ as well as :8000
+    environment:
+      - DEPTHWIZARD_MAX_MP=64
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
