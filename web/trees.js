@@ -181,7 +181,7 @@ export function buildTreeGroup({ h, dtm, buildingMask, gw, gh, W, H, worldY, exa
   const trunkGeo = new THREE.CylinderGeometry(0.2, 0.28, 1, 6);
   trunkGeo.translate(0, 0.5, 0);
   trunkGeo.computeVertexNormals();
-  const crownGeo = new THREE.IcosphereGeometry(1, 2);
+  const crownGeo = new THREE.IcosahedronGeometry(1, 2);
   crownGeo.computeVertexNormals();
 
   const trunkMat = new THREE.MeshLambertMaterial({ color: TRUNK_BROWN });

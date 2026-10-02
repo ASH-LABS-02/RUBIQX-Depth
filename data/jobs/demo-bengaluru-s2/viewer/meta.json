@@ -1,0 +1,147 @@
+{
+  "input": "bengaluru_sentinel2_2026-04-29_10m.tif",
+  "input_paths": {
+    "image": "D:\\DepthWizard\\india\\bengaluru_sentinel2_2026-04-29_10m.tif",
+    "dem": "C:\\Users\\AR\\Desktop\\depthwizard\\data\\jobs\\demo-bengaluru-s2\\dem.tif"
+  },
+  "backbone": "D:\\DepthWizard\\checkpoints\\da2-gamus-full",
+  "georeferenced": true,
+  "crs": "EPSG:32643",
+  "transform": [
+    10.0,
+    0.0,
+    778950.0,
+    0.0,
+    -10.0,
+    1437940.0
+  ],
+  "units": "metre",
+  "vertical_datum": "EGM2008 geoid (Copernicus GLO-30)",
+  "calibration": {
+    "method": "dem+prior",
+    "scale_k": 115.90550241110324,
+    "n_gcp": 0,
+    "dem_coverage": 1.0,
+    "dem_origin": "copernicus-glo30-auto",
+    "dem_tile_names": [
+      "Copernicus_DSM_COG_10_N12_00_E077_00_DEM"
+    ],
+    "scale_source": "scene prior",
+    "evidence_level": "approximate",
+    "dem_kind": "surface",
+    "dem_hp_r": -0.008646481447726694,
+    "dem_resolution_m": 30.133129253136964,
+    "reference_consistent": true,
+    "consistency_rmse_m": 0.28094095573625755,
+    "structure_model": "agl-lower-tail",
+    "vertical_datum": "EGM2008 geoid (Copernicus GLO-30)",
+    "match_dem_30m": true,
+    "is_agl": true,
+    "note": "No scale evidence; upper-tail structure height assumed from the 'urban' prior. Metric heights are approximate."
+  },
+  "scene": "urban",
+  "assumed_gsd_m": 1.0,
+  "dsm_file": "dsm.tif",
+  "tta": 4,
+  "water_fraction": 0.0,
+  "agl_model": true,
+  "learned_scale_m_per_unit": null,
+  "timing_s": {
+    "depth": 11.21,
+    "total": 13.91
+  },
+  "sun_input": {
+    "elevation_deg": null,
+    "azimuth_deg": null
+  },
+  "buildings_count": 0,
+  "total_footprint_m2": 0.0,
+  "metrics": {
+    "vs_copernicus_30m": {
+      "n": 27624,
+      "rmse": 0.7058073683481991,
+      "mae": 0.5349589772339044,
+      "bias": 0.00013109831888710903,
+      "r": 0.9983441156145267,
+      "resolution": "native Copernicus GLO-30 cells; DSM area mean; valid cells only",
+      "note": "Copernicus was the calibration input; this measures consistency, not independent accuracy"
+    }
+  },
+  "evidence_bundle": {
+    "image_sha256": "193126be7f8a0f6e",
+    "dem_sha256": "345f8a8eab68f1bb",
+    "gcp_sha256": null,
+    "reference_sha256": null,
+    "model_identifier": "D:\\DepthWizard\\checkpoints\\da2-gamus-full",
+    "rotation_passes": 4,
+    "calibration_method": "dem+prior",
+    "scale_source": "scene prior",
+    "evidence_level": "approximate",
+    "scale_k": 115.90550241110324,
+    "vertical_datum": "EGM2008 geoid (Copernicus GLO-30)",
+    "software_version": "DepthWizard 2.2 (SIH26175)"
+  },
+  "corners_lonlat": [
+    [
+      77.57152012487678,
+      12.99453824093775
+    ],
+    [
+      77.6180399725865,
+      12.99407337926665
+    ],
+    [
+      77.57105399389414,
+      12.949189686463107
+    ],
+    [
+      77.61756543237547,
+      12.948726501611802
+    ]
+  ],
+  "analytics": {
+    "landslide": {
+      "fractions": {
+        "low": 0.9652321407439549,
+        "moderate": 0.018417419431186147,
+        "high": 0.004911048873811684,
+        "very_high": 0.011439390951047295
+      },
+      "mean_slope_deg": 5.370606273245766,
+      "max_slope_deg": 57.46224317832943,
+      "weights": {
+        "slope": 0.5,
+        "concavity": 0.15,
+        "relief": 0.2,
+        "sparse_vegetation": 0.15
+      }
+    }
+  },
+  "confidence_definition": "exp(-spread / 2 m), spread = rotation-ensemble spread; a relative reliability index, not a probability",
+  "uncertainty_calibration": {
+    "model": "sqrt(4.0^2 + (5.5 * ensemble_spread)^2)",
+    "fitted_on": "2 DC LiDAR scenes (Glover Park, Capitol Hill East), DEM + learned-scale route",
+    "held_out_1sigma_coverage": "52-88 % (ideal 68 %); raw ensemble spread 5-9 %",
+    "status": "provisional - small calibration set",
+    "file": "uncertainty.tif",
+    "raw_spread_file": "ensemble_spread.tif"
+  },
+  "grid_w": 505,
+  "grid_h": 502,
+  "src_w": 505,
+  "src_h": 502,
+  "ground_w_m": 5050.0,
+  "ground_h_m": 5020.0,
+  "gsd_m": 10.0,
+  "has_reference": false,
+  "has_dtm": true,
+  "has_confidence": true,
+  "layers": {
+    "base": true,
+    "unc": true,
+    "susc": true
+  },
+  "validation_plot": null,
+  "h_min": 880.7039794921875,
+  "h_max": 966.39794921875
+}

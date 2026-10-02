@@ -41,6 +41,9 @@ def _file_sha256(path: str | Path | None) -> str | None:
     return h.hexdigest()[:16]
 
 
+COARSE_GSD_M = 2.5  # at/above this pixel size auto-Copernicus uses surface mode
+
+
 def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small",
         scene="auto", fetch_dem=True, assumed_gsd_m=1.0, allow_fallback=True,
         relative_display_height_m=None, device=None, dem_source="COP30",
@@ -91,7 +94,14 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
                     dem = None
     effective_kind = dem_kind  # explicit user override always respected
     cop_terrain_dem = None     # path to derived terrain proxy; None for all non-Mode-C paths
-    if dem and dem_origin == "copernicus-glo30-auto" and dem_kind == "auto":
+    if dem and dem_origin == "copernicus-glo30-auto" and dem_kind == "auto" and gsd >= COARSE_GSD_M:
+        # Coarse imagery (>= 2.5 m): single buildings are 1-3 pixels and the
+        # learned metric scale is not trusted, so follow the Copernicus surface
+        # model at its 30 m cells and use the image for texture/finer detail.
+        # Bengaluru Sentinel-2 10 m: agreement with Copernicus 11.1 m -> 0.71 m.
+        effective_kind = "surface"
+        log(f"  coarse image ({gsd:.1f} m): Copernicus used as surface model (30 m consistency)")
+    elif dem and dem_origin == "copernicus-glo30-auto" and dem_kind == "auto":
         # Mode C: derive approximate bare-earth terrain from the Copernicus DSM so
         # that nDSM captures real building heights instead of being suppressed by
         # the surface signal already embedded in the Copernicus DSM.
@@ -228,6 +238,11 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     log("extracting LoD1 building footprints")
     b_dtm = cal.dtm if units == "metre" else None
     min_h = 2.5 if units == "metre" else 0.12 * float(np.percentile(view_h - view_h.min(), 98))
+    if gsd >= COARSE_GSD_M:
+        # buildings are 1-3 pixels at >= 2.5 m: footprints would be whole blocks
+        # with meaningless heights, so LoD1 extraction is skipped
+        min_h = float("inf")
+        log(f"  coarse image ({gsd:.1f} m): LoD1 building extraction skipped")
     buildings = extract_buildings(view_h, dtm=b_dtm, gsd=gsd, world_w=img.shape[1] * gsd,
                                   world_h=img.shape[0] * gsd, rgb=img.rgb,
                                   uncertainty_m=unc_view, min_height_m=max(min_h, 1e-3),

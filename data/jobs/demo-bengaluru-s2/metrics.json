@@ -1,0 +1,11 @@
+{
+  "vs_copernicus_30m": {
+    "n": 27624,
+    "rmse": 0.7058073683481991,
+    "mae": 0.5349589772339044,
+    "bias": 0.00013109831888710903,
+    "r": 0.9983441156145267,
+    "resolution": "native Copernicus GLO-30 cells; DSM area mean; valid cells only",
+    "note": "Copernicus was the calibration input; this measures consistency, not independent accuracy"
+  }
+}
