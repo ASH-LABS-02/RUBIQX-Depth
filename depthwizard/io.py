@@ -58,13 +58,31 @@ def _metres_per_pixel(crs, transform: Affine, height: int) -> float | None:
     return px  # projected CRS, assume metres
 
 
+def _rgb_band_order(count: int, colorinterp=()) -> list[int]:
+    """1-based band indices to read as R, G, B.
+
+    * 1-2 bands (panchromatic, e.g. Cartosat-2S PAN): band 1 repeated.
+    * Bands tagged red/green/blue in the file: use the tags.
+    * 3 bands or RGB + alpha: bands 1, 2, 3.
+    * 4+ untagged bands: satellite multispectral order Blue, Green, Red, NIR
+      (Cartosat MX, Sentinel-2 / PlanetScope stacks), so read 3, 2, 1.
+    """
+    if count < 3:
+        return [1, 1, 1]
+    names = [getattr(c, "name", str(c)).lower() for c in (colorinterp or ())]
+    if {"red", "green", "blue"} <= set(names):
+        return [names.index("red") + 1, names.index("green") + 1, names.index("blue") + 1]
+    if count == 3 or "alpha" in names:
+        return [1, 2, 3]
+    return [3, 2, 1]
+
+
 def read_image(path: str | Path) -> InputImage:
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix in (".tif", ".tiff"):
         with rasterio.open(path) as src:
-            count = src.count
-            idx = [1, 2, 3] if count >= 3 else [1, 1, 1]
+            idx = _rgb_band_order(src.count, src.colorinterp)
             bands = np.stack([src.read(i) for i in idx], axis=-1)
             crs = src.crs
             transform = src.transform
