@@ -105,6 +105,41 @@ adds error at object edges.
   uses as a height cue. This is a hypothesis, not yet tested; a height anchor or
   GCPs correct it in practice (§3).
 
+### 1e. Resolution stress test, 0.33 m to 10 m
+
+SAC requires the method to work for 0.35-10 m imagery without overfitting to
+0.6 m. Each of the 30 held-out GAMUS test tiles was area-averaged to a coarser
+resolution (a simulated coarser sensor), the LiDAR height averaged to the same
+grid, and the model's metric output from the coarse image alone scored on that
+grid (no fitting). Script: `scripts/resolution_sweep.py`; raw results:
+`docs/eval/resolution-sweep/`.
+
+| Image GSD | v2 RMSE / MAE / r | v3 RMSE / MAE / r |
+|---|---|---|
+| 0.33 m | **2.62** / 1.48 / 0.84 | 2.62 / 1.47 / 0.84 |
+| 0.6 m (Cartosat-2S) | **2.48** / 1.40 / 0.85 | 2.48 / 1.39 / 0.85 |
+| 1.0 m | **2.38** / 1.36 / 0.86 | 2.38 / 1.34 / 0.86 |
+| 1.5 m | 2.43 / 1.39 / 0.85 | **2.41** / 1.36 / 0.86 |
+| 2.5 m | 2.65 / 1.53 / 0.84 | **2.50** / 1.43 / 0.86 |
+| 5 m | 3.37 / 2.04 / 0.76 | **3.02** / 1.81 / 0.78 |
+| 10 m | 6.47 / 4.46 / 0.29 | **5.84** / 3.92 / 0.43 |
+
+The shipped model (v2) is stable from 0.33 to 2.5 m (2.38-2.65 m RMSE, r
+0.84-0.86), so it is not tuned to one resolution. From 5 m it degrades, and at
+10 m single-image detail is gone for any model (buildings are smaller than a
+pixel); there DepthWizard relies on the DEM for heights and uses the image for
+texture and land-cover context. All tiles are US aerial imagery degraded in
+software, not real Cartosat or Sentinel data.
+
+**v3 (not shipped).** v2 fine-tuned 24 more epochs with simulated 0.35-2.5 m
+sensors (`--res-range`) and double weight on tall pixels. It matches v2 up to
+1 m and is 6-10 % better at 2.5-10 m, but on the blind DC scenes (0.5 m) it is
+slightly worse (Glover Park 4.44 vs 4.35 m, Capitol Hill 2.92 vs 2.86 m) and
+biased lower (-0.22 vs -0.07 m on GAMUS; tall objects 0.94 vs 0.97 of true
+height), so the stronger tall weighting did not help. v2 stays the default;
+v3 is kept as a candidate for coarse (>2 m) imagery. Raw results:
+`docs/eval/gamus30-v3/`, `docs/eval/dc-v3/`.
+
 ## 2. Absolute DSM – reference-held-out DC LiDAR evaluation
 
 ### 2a. Current model (v2, Base, metric loss)
