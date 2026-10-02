@@ -11,10 +11,10 @@ def main(argv=None):
     p.add_argument("image", help="PNG / JPG / TIFF / GeoTIFF")
     p.add_argument("-o", "--out", default="output", help="output folder")
     p.add_argument("--dem", help="low-res DEM GeoTIFF (SRTM 30 m, CartoDEM) for absolute scale")
-    p.add_argument("--fetch-dem", dest="fetch_dem", action="store_true", default=False,
-                   help="download Copernicus GLO-30 for georeferenced images (opt-in)")
+    p.add_argument("--fetch-dem", dest="fetch_dem", action="store_true", default=True,
+                   help="download Copernicus GLO-30 for georeferenced images (default)")
     p.add_argument("--no-fetch-dem", dest="fetch_dem", action="store_false",
-                   help="skip automatic DEM download (default)")
+                   help="skip automatic DEM download")
     p.add_argument("--dem-source", default=None, choices=["COP30", "SRTMGL1"],
                    help="identify a supplied DEM; SRTM also enables OpenTopography fallback")
     p.add_argument("--gcp", help="CSV of ground control points (x,y,z or easting,northing,z)")

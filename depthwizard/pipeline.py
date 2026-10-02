@@ -66,7 +66,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
             f"(limit {max_pixels / 1e6:.0f} MP; set DEPTHWIZARD_MAX_MP to change)")
     gsd = img.pixel_size_m or assumed_gsd_m
     log(f"  {img.shape[1]}x{img.shape[0]} px, georeferenced={img.georeferenced}"
-        + (f", GSD≈{gsd:.2f} m" if img.pixel_size_m else ""))
+        + (f", GSD~{gsd:.2f} m" if img.pixel_size_m else ""))
 
     dem_origin = "user" if dem else None
     dem_tiles = []
