@@ -106,7 +106,8 @@ def read_raster(path: str | Path):
 
 
 def write_dsm(path: str | Path, dsm: np.ndarray, image: InputImage, *,
-              units: str, description: str, vertical_datum: str | None = None) -> None:
+              units: str, description: str, vertical_datum: str | None = None,
+              compound_vertical: bool = True) -> None:
     """Write the DSM as a Float32 GeoTIFF. Georeferenced inputs keep their
     CRS/transform so the DSM overlays exactly in QGIS/ArcGIS."""
     profile = dict(driver="GTiff", height=dsm.shape[0], width=dsm.shape[1],
@@ -114,6 +115,16 @@ def write_dsm(path: str | Path, dsm: np.ndarray, image: InputImage, *,
                    compress="deflate", predictor=3, tiled=True)
     if image.georeferenced:
         profile.update(crs=image.crs, transform=image.transform)
+        if compound_vertical and vertical_datum and image.crs.to_epsg():
+            vertical_epsg = (3855 if "EGM2008" in vertical_datum else
+                             5773 if "EGM96" in vertical_datum else None)
+            if vertical_epsg:
+                try:
+                    from pyproj import CRS
+                    compound = CRS.from_user_input(f"EPSG:{image.crs.to_epsg()}+{vertical_epsg}")
+                    profile["crs"] = rasterio.crs.CRS.from_wkt(compound.to_wkt("WKT1_GDAL"))
+                except Exception:  # noqa: BLE001
+                    pass  # horizontal CRS and VERTICAL_DATUM tag remain valid
     out = np.where(np.isfinite(dsm), dsm, -9999.0).astype(np.float32)
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(out, 1)

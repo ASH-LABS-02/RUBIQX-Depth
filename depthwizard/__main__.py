@@ -18,6 +18,9 @@ def main(argv=None):
     p.add_argument("--dem-source", default=None, choices=["COP30", "SRTMGL1"],
                    help="identify a supplied DEM; SRTM also enables OpenTopography fallback")
     p.add_argument("--gcp", help="CSV of ground control points (x,y,z or easting,northing,z)")
+    p.add_argument("--gcp-height-type", default="orthometric",
+                   choices=["orthometric", "ellipsoidal"],
+                   help="GCP z datum; raw WGS84 GNSS heights convert to EGM2008")
     p.add_argument("--ref", help="reference DSM/LiDAR raster for validation")
     p.add_argument("--model", default=None,
                    help="pretrained | small | base | large | HF id | local fine-tuned checkpoint")
@@ -73,7 +76,8 @@ def main(argv=None):
                scene=a.scene, fetch_dem=a.fetch_dem, dem_source=a.dem_source, assumed_gsd_m=a.gsd,
                allow_fallback=not a.no_fallback, device=a.device, tta=a.tta,
                dem_kind=a.dem_kind, match_dem_30m=not a.no_consistency,
-               sun_elevation=a.sun_elevation, sun_azimuth=a.sun_azimuth, anchors=anchors)
+               sun_elevation=a.sun_elevation, sun_azimuth=a.sun_azimuth, anchors=anchors,
+               gcp_height_type=a.gcp_height_type)
     if "metrics" in meta:
         print(json.dumps(meta["metrics"], indent=2))
 

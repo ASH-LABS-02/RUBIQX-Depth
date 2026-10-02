@@ -45,7 +45,8 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         scene="auto", fetch_dem=True, assumed_gsd_m=1.0, allow_fallback=True,
         relative_display_height_m=None, device=None, dem_source="COP30",
         match_dem_30m=True, tta=4, dem_kind="auto", sun_elevation=None, sun_azimuth=None,
-        vertical_datum=None, anchors=None, max_pixels=None, log=print) -> dict:
+        vertical_datum=None, gcp_height_type="orthometric", anchors=None,
+        max_pixels=None, log=print) -> dict:
     t0 = time.time()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -115,7 +116,8 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
             rel, img, dem_path=source_dem, gcp_path=gcp, scene=scene, agl=is_agl,
             learned_scale=learned, dem_kind=kind, reference_consistent=match_dem_30m,
             sun_elevation=sun_elevation, sun_azimuth=sun_azimuth,
-            dem_source=source or None, vertical_datum=datum_name)
+            dem_source=source or None, vertical_datum=datum_name,
+            gcp_height_type=gcp_height_type)
     try:
         dsm, units, cal = do_calibration(dem, effective_kind, effective_source, datum)
     except ValueError as exc:
@@ -150,7 +152,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     if units == "metre" and cal.ndsm is not None:
         dio.write_dsm(out / "ndsm.tif", cal.ndsm, img, units=units,
                       description=f"DepthWizard above-ground heights nDSM ({backbone})",
-                      vertical_datum=datum)
+                      vertical_datum=datum, compound_vertical=False)
 
     # per-pixel 1-sigma uncertainty from the rotation ensemble, in output units
     std_rel = dinfo.get("std_rel")

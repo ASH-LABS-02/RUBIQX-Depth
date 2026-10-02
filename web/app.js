@@ -854,7 +854,10 @@ async function loadScene(id) {
     const evidence = meta.units === 'metre' ? `${evidenceLevel || 'unverified'} · ${cal.method || 'calibrated'}` : 'relative height';
     const badge = $('#scene-badge');
     const label = document.createElement('strong'); label.textContent = inputDem ? 'Input DEM (not estimated)' : meta.units === 'metre' ? (String(evidenceLevel).startsWith('provisional')?'Provisional evidence':provisional?'Approximate evidence':evidenceLevel?'Metric evidence':'Unverified evidence') : 'Relative scene';
+    if (meta.units === 'metre' && cal.vertical_datum === 'same as input DEM')
+      label.textContent = 'Datum: same as input DEM';
     badge.replaceChildren(label, document.createTextNode(` · ${cal.method || evidence}`));
+    badge.title = `${evidence} · vertical datum: ${cal.vertical_datum || 'unspecified'}`;
     badge.dataset.evidence = evidenceLevel;
     badge.classList.remove('hidden');
 

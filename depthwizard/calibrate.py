@@ -160,7 +160,31 @@ def fetch_srtm(image, out_path: str | Path, api_key: str | None = None,
     return out_path
 
 
-def load_gcps(path: str | Path, image) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _ellipsoidal_to_egm2008(row: np.ndarray, col: np.ndarray, z: np.ndarray, image) -> np.ndarray:
+    """Convert raw WGS84 GNSS heights with the real EGM2008 geoid grid."""
+    if not image.georeferenced or image.crs is None:
+        raise ValueError("ellipsoidal GCP heights require a georeferenced image")
+    try:
+        from pyproj import Transformer, network
+        from rasterio.warp import transform
+        if os.environ.get("PROJ_NETWORK", "ON").upper() not in {"OFF", "NO", "FALSE", "0"}:
+            network.set_network_enabled(True)
+        x, y = image.transform * (col, row)
+        lon, lat = transform(image.crs, "EPSG:4326", list(x), list(y))
+        converter = Transformer.from_crs("EPSG:4979", "EPSG:4326+3855",
+                                         always_xy=True, allow_ballpark=False, only_best=True)
+        _, _, height = converter.transform(lon, lat, z.tolist(), errcheck=True)
+        height = np.asarray(height, dtype=np.float64)
+        if not np.isfinite(height).all():
+            raise ValueError("EGM2008 conversion returned invalid heights")
+        return height
+    except (ImportError, Exception) as exc:  # noqa: BLE001
+        raise RuntimeError("Cannot convert ellipsoidal GCP heights to EGM2008: "
+                           "install pyproj and the us_nga_egm08_25.tif PROJ grid "
+                           "or enable PROJ_NETWORK=ON. Heights were not mixed.") from exc
+
+
+def load_gcps(path: str | Path, image, *, gcp_height_type: str = "orthometric") -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """CSV with columns x,y,z. x/y are pixel col/row, or map coordinates when
     the image is georeferenced and the header says 'easting,northing,z' /
     'lon,lat,z'."""
@@ -197,6 +221,10 @@ def load_gcps(path: str | Path, image) -> tuple[np.ndarray, np.ndarray, np.ndarr
         raise ValueError("GCP coordinates and heights must be finite")
     if np.any((row < 0) | (row > h - 1) | (col < 0) | (col > w - 1)):
         raise ValueError("one or more GCPs lie outside the image footprint")
+    if gcp_height_type not in {"orthometric", "ellipsoidal"}:
+        raise ValueError("gcp_height_type must be orthometric or ellipsoidal")
+    if gcp_height_type == "ellipsoidal":
+        z = _ellipsoidal_to_egm2008(row, col, z, image)
     return row, col, z
 
 
@@ -283,7 +311,8 @@ def calibrate(rel: np.ndarray, image, *, dem_path=None, gcp_path=None,
               reference_consistent: bool = True, sun_elevation: float | None = None,
               sun_azimuth: float | None = None, dem_source: str | None = None,
               is_agl: bool | None = None, match_dem_30m: bool | None = None,
-              vertical_datum: str | None = None):
+              vertical_datum: str | None = None,
+              gcp_height_type: str = "orthometric"):
     """Return (height_map, units, Calibration).
 
     Scale evidence priority for the structure (buildings/trees) component:
@@ -296,7 +325,12 @@ def calibrate(rel: np.ndarray, image, *, dem_path=None, gcp_path=None,
     if match_dem_30m is not None:
         reference_consistent = bool(match_dem_30m)
     gsd = image.pixel_size_m or 1.0
-    gcps = load_gcps(gcp_path, image) if gcp_path else None
+    gcps = load_gcps(gcp_path, image, gcp_height_type=gcp_height_type) if gcp_path else None
+    if gcps is not None and gcp_height_type == "ellipsoidal" and dem_path:
+        datum_name = vertical_datum or DATUMS.get((dem_source or "").upper(), "")
+        if "EGM2008" not in datum_name:
+            raise ValueError("ellipsoidal GCPs were converted to EGM2008; "
+                             "the supplied DEM must explicitly use EGM2008 as well")
 
     # ---- 1. DEM fusion -------------------------------------------------
     if dem_path and image.georeferenced:
@@ -406,6 +440,8 @@ def calibrate(rel: np.ndarray, image, *, dem_path=None, gcp_path=None,
         spread, loo, evidence = _gcp_quality(rows, cols, samples, z, rel.shape)
         return (a * rel + b).astype(np.float32), "metre", Calibration(
             "gcp-affine", a=a, b=b, fit_r=r, n_gcp=len(z),
+            vertical_datum=(DATUMS["COP30"] if gcp_height_type == "ellipsoidal"
+                            else vertical_datum or "same as supplied orthometric GCP heights"),
             scale_source="GCP", evidence_level=evidence,
             gcp_residual_rmse_m=float(np.sqrt(np.mean((pred - z) ** 2))),
             gcp_loo_rmse_m=loo, gcp_spread_fraction=spread,
