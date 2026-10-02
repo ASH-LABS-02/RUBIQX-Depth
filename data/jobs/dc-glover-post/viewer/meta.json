@@ -19,17 +19,17 @@
   "vertical_datum": "same as input DEM",
   "calibration": {
     "method": "dem+learned-scale",
-    "scale_k": 19.94924506836105,
+    "scale_k": 20.37864361552056,
     "n_gcp": 0,
     "dem_coverage": 1.0,
     "scale_source": "learned pixel-footprint scale",
     "evidence_level": "approximate",
     "dem_kind": "terrain",
-    "dem_hp_r": -0.10503257600356714,
+    "dem_hp_r": -0.08967609378794666,
     "dem_resolution_m": 32.0,
     "reference_consistent": false,
-    "consistency_rmse_m": 0.1674880735918291,
-    "learned_scale_k": 19.94924506836105,
+    "consistency_rmse_m": 0.16748808614862518,
+    "learned_scale_k": 20.37864361552056,
     "structure_model": "agl-lower-tail",
     "vertical_datum": "same as input DEM",
     "match_dem_30m": false,
@@ -42,19 +42,35 @@
   "tta": 4,
   "water_fraction": 0.0,
   "agl_model": true,
-  "learned_scale_m_per_unit": 19.94924506836105,
+  "learned_scale_m_per_unit": 20.37864361552056,
   "timing_s": {
-    "depth": 7.09,
-    "total": 20.76
+    "depth": 43.54,
+    "total": 57.41
   },
   "sun_input": {
     "elevation_deg": null,
     "azimuth_deg": null
   },
-  "buildings_count": 147,
-  "total_footprint_m2": 31443.8,
+  "buildings_count": 145,
+  "total_footprint_m2": 30483.2,
   "auto_anchors": {
-    "anchors": [],
+    "anchors": [
+      {
+        "building_id": 62,
+        "height_m": 9.0,
+        "source": "OpenStreetMap levels estimate",
+        "evidence_level": "approximate levels",
+        "confidence": 0.541,
+        "footprint_iou": 0.832,
+        "osm_way_id": 66693559,
+        "osm_url": "https://www.openstreetmap.org/way/66693559",
+        "osm_tag": "building:levels",
+        "osm_tag_value": "3",
+        "osm_source_height": null,
+        "osm_height_accuracy": null,
+        "uncertainty_note": "3 m per level heuristic; roof height and local floor heights unknown"
+      }
+    ],
     "diagnostics": {
       "sun_metadata": {
         "elevation_deg": null,
@@ -64,7 +80,7 @@
       },
       "shadow": {
         "source": "RGB shadow geometry",
-        "candidates": 147,
+        "candidates": 145,
         "accepted": 0,
         "rejected": {},
         "sun_elevation_deg": null,
@@ -74,10 +90,13 @@
       },
       "osm": {
         "source": "OpenStreetMap",
-        "accepted": 0,
+        "accepted": 1,
         "height_tags": 0,
-        "levels_estimates": 0,
-        "rejected": {},
+        "levels_estimates": 1,
+        "rejected": {
+          "weak footprint match": 1,
+          "no matching detected footprint": 1
+        },
         "attribution": "\u00a9 OpenStreetMap contributors",
         "license": "ODbL",
         "endpoint": "https://overpass-api.de/api/interpreter",
@@ -88,9 +107,11 @@
           -77.0609703
         ],
         "bbox_km2": 0.262,
-        "skipped": "OSM Overpass unavailable: HTTP Error 504: Gateway Timeout"
+        "cache": "fresh",
+        "cache_file": "D:\\DepthWizard\\evaluation\\osm_cache\\buildings-4eed83eaca972f17dd13.json",
+        "tagged_ways": 3
       },
-      "selected_count": 0,
+      "selected_count": 1,
       "warning": "automatic anchors are external/physics estimates, not independent validation",
       "application_reason": "fewer than three consistent high-confidence anchors"
     },
@@ -115,7 +136,7 @@
     "calibration_method": "dem+learned-scale",
     "scale_source": "learned pixel-footprint scale",
     "evidence_level": "approximate",
-    "scale_k": 19.94924506836105,
+    "scale_k": 20.37864361552056,
     "vertical_datum": "same as input DEM",
     "software_version": "DepthWizard 2.2 (SIH26175)"
   },
@@ -156,8 +177,8 @@
     },
     "solar": {
       "latitude_deg": 38.913050874165606,
-      "buildings": 147,
-      "total_pv_mwh_yr": 6039.9,
+      "buildings": 145,
+      "total_pv_mwh_yr": 5804.3,
       "assumptions": "GHI 1,900 kWh/m\u00b2/yr, 18 % modules, 70 % usable roof"
     }
   },
@@ -186,6 +207,6 @@
     "susc": true
   },
   "validation_plot": null,
-  "h_min": 29.57244873046875,
-  "h_max": 79.30036926269531
+  "h_min": 29.712936401367188,
+  "h_max": 79.8431396484375
 }
