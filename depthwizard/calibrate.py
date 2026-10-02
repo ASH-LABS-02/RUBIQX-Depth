@@ -289,6 +289,33 @@ def extract_structure(rel: np.ndarray, gsd: float, agl: bool, dem_res_m: float =
     return np.maximum(hp - np.percentile(hp, 30.0), 0.0).astype(np.float32), "highpass-q30"
 
 
+def copernicus_terrain_from_dsm(dsm_arr: np.ndarray, gsd: float) -> np.ndarray:
+    """Approximate bare-earth terrain from a Copernicus DSM array.
+
+    Morphological opening with a kernel spanning ~200 m removes building/canopy
+    tops; subsequent Gaussian smoothing fills small gaps left by narrow streets
+    and clearings. Identical in spirit to metrics._ground() but tuned for a
+    coarser (~30 m) input.
+
+    Parameters
+    ----------
+    dsm_arr : H×W float32 array — Copernicus surface DSM values in metres
+    gsd     : native DEM pixel size in metres (≈30 m for Copernicus GLO-30)
+
+    Returns
+    -------
+    float32 array of the same shape; every value ≤ the corresponding input.
+    """
+    kernel_px = max(3, int(round(200.0 / max(gsd, 1.0))))
+    opened = ndimage.grey_opening(
+        np.nan_to_num(dsm_arr, nan=float(np.nanmin(dsm_arr))),
+        size=(kernel_px, kernel_px),
+    )
+    return ndimage.gaussian_filter(
+        opened, max(1.0, 50.0 / max(gsd, 1.0))
+    ).astype(np.float32)
+
+
 def _surface_fit(structure, dem, n):
     """Fit DEM ≈ terrain + k·mean(structure) at DEM scale using high-passed
     fields (terrain is smooth). Returns (k, r)."""

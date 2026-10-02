@@ -89,7 +89,29 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
                 except Exception as fallback_exc:  # noqa: BLE001
                     log(f"  WARNING: OpenTopography fallback failed: {fallback_exc}")
                     dem = None
-    effective_kind = "surface" if dem and effective_source == "COP30" and dem_kind == "auto" else dem_kind
+    effective_kind = dem_kind  # explicit user override always respected
+    cop_terrain_dem = None     # path to derived terrain proxy; None for all non-Mode-C paths
+    if dem and dem_origin == "copernicus-glo30-auto" and dem_kind == "auto":
+        # Mode C: derive approximate bare-earth terrain from the Copernicus DSM so
+        # that nDSM captures real building heights instead of being suppressed by
+        # the surface signal already embedded in the Copernicus DSM.
+        from .calibrate import copernicus_terrain_from_dsm
+        import rasterio as _rio
+        cop_terrain_path = out / "dem_terrain.tif"
+        with _rio.open(dem) as _src:
+            _arr  = _src.read(1).astype(np.float32)
+            _res  = abs(_src.transform.a)
+            _prof = _src.profile.copy()
+        _prof.update(dtype="float32", nodata=np.nan)
+        _terrain = copernicus_terrain_from_dsm(_arr, _res)
+        with _rio.open(cop_terrain_path, "w", **_prof) as _dst:
+            _dst.write(_terrain, 1)
+            _dst.update_tags(
+                SOURCE="Copernicus GLO-30 terrain proxy (morphological opening)",
+                VERTICAL_DATUM="EGM2008 geoid (Copernicus GLO-30)")
+        cop_terrain_dem = str(cop_terrain_path)
+        effective_kind  = "terrain"
+        log("  Mode C: derived terrain proxy from Copernicus DSM (morphological opening)")
 
     passes = 4 if tta is True else (1 if not tta else int(tta))
     log(f"relative height ({model}, {passes}-pass rotation ensemble)")
@@ -119,12 +141,14 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
             dem_source=source or None, vertical_datum=datum_name,
             gcp_height_type=gcp_height_type)
     try:
-        dsm, units, cal = do_calibration(dem, effective_kind, effective_source, datum)
+        cal_dem = cop_terrain_dem if cop_terrain_dem else dem
+        dsm, units, cal = do_calibration(cal_dem, effective_kind, effective_source, datum)
     except ValueError as exc:
         if not downloaded:
             raise
         log(f"  WARNING: downloaded DEM rejected ({exc}); continuing with learned scale")
         dem, dem_origin, dem_tiles, effective_source = None, None, [], ""
+        cop_terrain_dem = None
         dsm, units, cal = do_calibration(None, dem_kind, "", vertical_datum)
     if dem_origin:
         cal.dem_origin = dem_origin
