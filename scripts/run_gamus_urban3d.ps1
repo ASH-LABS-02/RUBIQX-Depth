@@ -9,6 +9,8 @@ param(
     [int]$GradAccum = 1,
     [double]$GrayProb = 0.33,
     [double]$Lr = 3e-6,
+    [double]$TallWeight = 0.5,
+    [double]$ExtraWeight = 0.3,
     [switch]$Smoke
 )
 $ErrorActionPreference = 'Stop'
@@ -30,7 +32,7 @@ $trainArgs = @('scripts\finetune_gamus.py',
     '--val-rgb', "$data\images\val\*.h5", '--val-height', "$data\heights\val\*.h5",
     '--extra', "urban3d:D:\DepthWizard\Urban3D_h5\images\train\*.h5:D:\DepthWizard\Urban3D_h5\heights\train\*.h5:0.5:D:\DepthWizard\Urban3D_h5\images\val\*.h5:D:\DepthWizard\Urban3D_h5\heights\val\*.h5",
     '--out', $out, '--model', $Init,
-    '--target', 'metric', '--tall-weight', '0.5',
+    '--target', 'metric', '--tall-weight', "$TallWeight", '--extra-weight', "$ExtraWeight",
     '--net-gsd', '0.65', '--scale-jitter', '0.15', '--sat-aug', '--gray-prob', "$GrayProb",
     '--select', 'absolute', '--lr', "$Lr",
     '--epochs', "$Epochs", '--batch', "$Batch", '--grad-accum', "$GradAccum",
@@ -43,7 +45,7 @@ if ($Smoke) { return }
 
 # evaluate_gamus_h5.py on Urban 3D TEST split
 & $python scripts\evaluate_gamus_h5.py --root D:\DepthWizard\Urban3D_h5 --gsd 0.5 --mode absolute `
-    --models D:\DepthWizard\checkpoints\da2-gamus-full $out --out (Join-Path $runRoot "evaluation\urban3d_v5") 2>&1 | ForEach-Object { "$_" }
+    --models D:\DepthWizard\checkpoints\da2-gamus-full $out --out (Join-Path $runRoot "evaluation\urban3d_$Name") 2>&1 | ForEach-Object { "$_" }
 
 # colour + greyscale + panchromatic on the 30 test tiles
 & $python scripts\pan_check.py --model $out --out (Join-Path $runRoot "evaluation\$Name") 2>&1 | ForEach-Object { "$_" } | Select-Object -Last 8
