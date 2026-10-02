@@ -105,6 +105,36 @@ adds error at object edges.
   uses as a height cue. This is a hypothesis, not yet tested; a height anchor or
   GCPs correct it in practice (§3).
 
+### 1f. Panchromatic (single-band) input – current model (v4)
+
+Cartosat-2S acquires 0.6 m imagery in one panchromatic band (colour is 1.6 m),
+so SAC's test images may be greyscale. v2 was trained on colour only. Inputs
+were converted to greyscale, or to a simulated 11-bit panchromatic sensor
+(luminance as DN with noise, then the app loader's stretch); DC scenes were
+written as 1-band 16-bit GeoTIFFs and run through the full pipeline.
+Script: `scripts/pan_check.py`; raw results: `docs/eval/pan/` (v2) and
+`docs/eval/v4-pan/` (v4).
+
+**v4** = v2 fine-tuned 2 more epochs with a third of training crops
+panchromatic, validated and selected on colour *and* greyscale
+(`scripts/run_gamus_pan.ps1`; the 6-epoch run was stopped after epoch 3 got
+worse, epoch 2 kept).
+
+| Test (no fitting) | v2 | **v4 (shipped)** |
+|---|---:|---:|
+| GAMUS 30 tiles, colour, 0.33 m | 2.62 m | 2.65 m |
+| GAMUS 30 tiles, colour, 0.6 m | 2.48 m | 2.51 m |
+| GAMUS 30 tiles, greyscale, 0.6 m | 3.25 m | **2.80 m** |
+| GAMUS 30 tiles, simulated panchromatic, 0.6 m | 3.35 m (bias +0.65) | **2.86 m** (bias −0.01) |
+| Blind DC Glover Park, colour / panchromatic | 4.35 / 4.92 m | **4.30 / 4.70 m** |
+| Blind DC Capitol Hill East, colour / panchromatic | 2.86 / 3.17 m | 2.88 / 3.22 m |
+| Blind DC mean, colour / panchromatic | 3.61 / 4.05 m | **3.59 / 3.96 m** |
+
+Colour accuracy is unchanged within noise; panchromatic error falls 15 % on
+GAMUS and 2 % on DC, and the panchromatic over-estimate disappears. Colour
+remains better than panchromatic by about 0.35 m, so a colour or
+pan-sharpened product should be preferred when available.
+
 ### 1e. Resolution stress test, 0.33 m to 10 m
 
 SAC requires the method to work for 0.35-10 m imagery without overfitting to
@@ -142,7 +172,7 @@ v3 is kept as a candidate for coarse (>2 m) imagery. Raw results:
 
 ## 2. Absolute DSM – reference-held-out DC LiDAR evaluation
 
-### 2a. Current model (v2, Base, metric loss)
+### 2a. v2 (Base, metric loss); current v4 in §1f
 
 Same inputs and scoring as below (2023 image, 2018 DTM at 32 m, 2024 LiDAR DSM
 for scoring only), rerun with the v2 checkpoint, TTA 4, scene prior *urban*.

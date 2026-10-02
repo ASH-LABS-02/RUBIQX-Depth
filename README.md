@@ -7,7 +7,7 @@ Smart India Hackathon 2026 · Problem Statement 26175 (ISRO / SAC) · Team RUBIQ
 
 | Absolute height, 30 held-out GAMUS tiles | Reference-held-out DC LiDAR check (2 scenes) | Runs offline |
 |---|---|---|
-| **2.62 m RMSE / 1.48 m MAE, r 0.84** – single image, **no per-tile fitting**, bias −0.07 m (previous model 3.46 m; pretrained shape-aligned: 4.76 m, r 0.41) | **3.61 m RMSE / 2.59 m MAE, r 0.87** vs **9.04 m / 6.92 m** for the input DTM alone (previous model 5.07 m) | one laptop, no cloud, open formats; [live demo](http://16.170.173.94/) |
+| **2.65 m RMSE / 1.50 m MAE, r 0.84** – single image, **no per-tile fitting**; panchromatic (Cartosat-style) input **2.86 m** at 0.6 m (first model 3.46 m; pretrained shape-aligned: 4.76 m, r 0.41) | **3.59 m RMSE / 2.57 m MAE, r 0.87** vs **9.04 m / 6.92 m** for the input DTM alone (first model 5.07 m) | one laptop, no cloud, open formats; [live demo](http://16.170.173.94/) |
 
 The two DC scenes use a 2018 DTM for calibration and a 2024 LiDAR DSM only for
 scoring. They are a small, related-domain evaluation because the sites are near
@@ -98,7 +98,7 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 | | |
 |---|---|
-| **Accuracy** | Reference-held-out, related-domain DC LiDAR evaluation with the v2 model: **3.61 m RMSE / 2.59 m MAE**, Pearson **r = 0.87** over two urban scenes (previous model 5.07 m / 3.74 m), vs **9.04 m / 6.92 m** for the input DTM alone ([benchmarks](docs/BENCHMARKS.md)). The six-scene 5.04 m mixed-evidence aggregate is reported separately, not as independent validation. GAMUS fine-tune (v2, Base): 2.62 m RMSE / 1.48 m MAE, r 0.84 on 30 held-out tiles with no per-tile fitting (pretrained shape-aligned r 0.41). |
+| **Accuracy** | Reference-held-out, related-domain DC LiDAR evaluation with the current model: **3.59 m RMSE / 2.57 m MAE**, Pearson **r = 0.87** over two urban scenes (first model 5.07 m / 3.74 m), vs **9.04 m / 6.92 m** for the input DTM alone ([benchmarks](docs/BENCHMARKS.md)). The six-scene 5.04 m mixed-evidence aggregate is reported separately, not as independent validation. GAMUS fine-tune (Base, colour + panchromatic): 2.65 m RMSE / 1.50 m MAE, r 0.84 on 30 held-out tiles with no per-tile fitting, 2.86 m on simulated Cartosat panchromatic input (pretrained shape-aligned r 0.41). |
 | **Calibration** | Detects whether the DEM is a surface model (Copernicus/SRTM) or bare earth; fits building scale from a surface DEM and matches it exactly at 30 m; otherwise uses GCPs, a learned pixel-footprint scale or a scene prior, always labelled. |
 | **Products** | DSM, DTM, nDSM and per-pixel uncertainty GeoTIFFs · CityJSON with LoD1 or supported fitted LoD2 roofs · GLB/OBJ/PLY · HTML report · evidence JSON |
 | **3D** | Textured city on bare ground, fitted roof hypotheses, adjustable sun lighting, geometric DEM-vs-DSM swipe, orbit/fly/tour, one-click flythrough video |
