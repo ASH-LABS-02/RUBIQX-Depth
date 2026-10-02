@@ -50,6 +50,8 @@ class Calibration:
     n_gcp: int = 0
     datum_offset_m: float | None = None
     dem_coverage: float | None = None
+    dem_origin: str | None = None
+    dem_tile_names: list[str] | None = None
     scale_source: str | None = None
     evidence_level: str | None = None
     ground_anchor_quantile: float | None = None

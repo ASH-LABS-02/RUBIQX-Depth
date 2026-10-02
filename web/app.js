@@ -2086,6 +2086,7 @@ async function refreshScenes(selectId, forceFetch = true) {
 
 // upload
 const form = $('#upload-form'), drop = $('#drop');
+form.dem_source.addEventListener('change', () => { form.dataset.demSourceTouched = 'true'; });
 form.image.onchange = () => { $('#drop-text').innerHTML = `<b>${escapeHtml(form.image.files[0]?.name ?? 'Drop satellite image')}</b>`; refreshImportPreview(); };
 ['dragover', 'dragenter'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, () => drop.classList.remove('over')));
@@ -2094,12 +2095,14 @@ form.onsubmit = async (e) => {
   e.preventDefault();
   if(form.dataset.detecting==='true'||form.dataset.invalidInput==='true')return;
   const fd = new FormData(form);
+  fd.set('fetch_dem', form.fetch_dem.checked ? 'true' : 'false');
+  if (form.dem.files.length && form.dataset.demSourceTouched !== 'true') fd.delete('dem_source');
   const customModel = String(fd.get('custom_model') || '').trim();
   if (customModel) fd.set('model', customModel);
   fd.delete('custom_model');
   // Uploaded evidence wins over an unnecessary network download. Relative
   // images retain the unchanged API contract but don't request a DEM.
-  if(form.dem.files.length || form.dataset.inputPath==='relative')fd.delete('fetch_dem');
+  if(form.dem.files.length || form.dataset.inputPath==='relative')fd.set('fetch_dem','false');
   for (const k of ['dem', 'reference', 'gcp']) if (!form[k].files.length) fd.delete(k);
   const log = $('#job-log'); log.classList.remove('hidden'); log.textContent = 'Uploading…\n';
   const btn = form.querySelector('button[type=submit]'); btn.disabled = true;

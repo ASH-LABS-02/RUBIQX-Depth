@@ -13,6 +13,7 @@ from . import io as dio
 from .buildings import extract_buildings
 from .calibrate import DATUMS, calibrate, fetch_srtm
 from .depth import relative_height
+from .dem_fetch import cached_tile_names, fetch_copernicus_glo30
 from .metrics import building_level, evaluate, reference_on_grid
 
 SOFTWARE_VERSION = "DepthWizard 2.2 (SIH26175)"
@@ -41,7 +42,7 @@ def _file_sha256(path: str | Path | None) -> str | None:
 
 
 def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small",
-        scene="auto", fetch_dem=False, assumed_gsd_m=1.0, allow_fallback=True,
+        scene="auto", fetch_dem=True, assumed_gsd_m=1.0, allow_fallback=True,
         relative_display_height_m=None, device=None, dem_source="COP30",
         match_dem_30m=True, tta=4, dem_kind="auto", sun_elevation=None, sun_azimuth=None,
         vertical_datum=None, anchors=None, max_pixels=None, log=print) -> dict:
@@ -66,11 +67,28 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     log(f"  {img.shape[1]}x{img.shape[0]} px, georeferenced={img.georeferenced}"
         + (f", GSD≈{gsd:.2f} m" if img.pixel_size_m else ""))
 
-    fetched = False
+    dem_origin = "user" if dem else None
+    dem_tiles = []
+    effective_source = (dem_source or "COP30").upper() if not dem else (dem_source or "").upper()
+    downloaded = False
     if fetch_dem and not dem and img.georeferenced:
-        log(f"fetching {dem_source} DEM for footprint")
-        dem = str(fetch_srtm(img, out / "dem.tif", demtype=dem_source))
-        fetched = True
+        log("fetching keyless Copernicus GLO-30 for footprint")
+        try:
+            dem = str(fetch_copernicus_glo30(img, out / "dem.tif"))
+            dem_origin, effective_source, downloaded = "copernicus-glo30-auto", "COP30", True
+            dem_tiles = cached_tile_names(dem)
+            log(f"  Copernicus tiles: {', '.join(dem_tiles)}")
+        except (RuntimeError, ValueError) as exc:
+            log(f"  WARNING: {exc}; continuing with learned scale")
+            if (dem_source or "").upper() == "SRTMGL1" and os.environ.get("OPENTOPO_API_KEY"):
+                try:
+                    dem = str(fetch_srtm(img, out / "dem.tif", demtype="SRTMGL1"))
+                    dem_origin, effective_source, downloaded = "opentopography", "SRTMGL1", True
+                    log("  OpenTopography SRTM fallback downloaded")
+                except Exception as fallback_exc:  # noqa: BLE001
+                    log(f"  WARNING: OpenTopography fallback failed: {fallback_exc}")
+                    dem = None
+    effective_kind = "surface" if dem and effective_source == "COP30" and dem_kind == "auto" else dem_kind
 
     passes = 4 if tta is True else (1 if not tta else int(tta))
     log(f"relative height ({model}, {passes}-pass rotation ensemble)")
@@ -83,14 +101,32 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     is_agl = bool(dinfo.get("agl"))
     learned = dinfo["learned_scale"](gsd) if dinfo.get("learned_scale") else None
 
-    # a fetched global DEM has a known geoid; a user-supplied DEM keeps its own datum
-    datum = vertical_datum or (DATUMS.get(dem_source.upper()) if fetched and dem_source else None)
+    # A tagged user raster wins over a source hint; untagged user rasters keep
+    # the explicit source datum or "same as input DEM" when source is unknown.
+    source_datum = None
+    if dem:
+        import rasterio
+        with rasterio.open(dem) as source:
+            source_datum = source.tags().get("VERTICAL_DATUM")
+    datum = vertical_datum or source_datum or DATUMS.get(effective_source)
     log(f"scale calibration (above-ground model={is_agl}, 30 m match={match_dem_30m})")
-    dsm, units, cal = calibrate(
-        rel, img, dem_path=dem, gcp_path=gcp, scene=scene, agl=is_agl,
-        learned_scale=learned, dem_kind=dem_kind, reference_consistent=match_dem_30m,
-        sun_elevation=sun_elevation, sun_azimuth=sun_azimuth,
-        dem_source=dem_source if fetched else None, vertical_datum=datum)
+    def do_calibration(source_dem, kind, source, datum_name):
+        return calibrate(
+            rel, img, dem_path=source_dem, gcp_path=gcp, scene=scene, agl=is_agl,
+            learned_scale=learned, dem_kind=kind, reference_consistent=match_dem_30m,
+            sun_elevation=sun_elevation, sun_azimuth=sun_azimuth,
+            dem_source=source or None, vertical_datum=datum_name)
+    try:
+        dsm, units, cal = do_calibration(dem, effective_kind, effective_source, datum)
+    except ValueError as exc:
+        if not downloaded:
+            raise
+        log(f"  WARNING: downloaded DEM rejected ({exc}); continuing with learned scale")
+        dem, dem_origin, dem_tiles, effective_source = None, None, [], ""
+        dsm, units, cal = do_calibration(None, dem_kind, "", vertical_datum)
+    if dem_origin:
+        cal.dem_origin = dem_origin
+        cal.dem_tile_names = dem_tiles
     log(f"  method={cal.method} ({cal.scale_source}) {cal.note}")
     datum = cal.vertical_datum if units == "metre" else None
     if units == "metre" and cal.dtm is not None:

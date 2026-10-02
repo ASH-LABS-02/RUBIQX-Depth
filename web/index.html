@@ -382,7 +382,7 @@
         <details open>
           <summary>Absolute scale (georeferenced imagery)</summary>
           <label>Low-resolution DEM (SRTM / CartoDEM GeoTIFF)<input type="file" name="dem" accept=".tif,.tiff"></label>
-          <label class="row check"><input type="checkbox" name="fetch_dem" value="true"> Auto-download DEM if none given</label>
+          <label class="row check"><input type="checkbox" name="fetch_dem" value="true" checked> Auto-download Copernicus GLO-30 (30 m) when no DEM is given – needs internet</label>
           <label>DEM source for download<select name="dem_source"><option value="COP30">Copernicus GLO-30</option><option value="SRTMGL1">SRTM 30 m</option></select></label>
           <label>Ground control points (CSV x,y,z)<input type="file" name="gcp" accept=".csv"></label>
         </details>
