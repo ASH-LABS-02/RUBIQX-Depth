@@ -13,6 +13,7 @@ import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg
 import { createMissionUi } from './ui-v2.js?v=20261001-bold';
 import { createDiorama } from './diorama.js?v=20261001-bold-r4';
 import { createBoldUi } from './ui-v3.js?v=20261001-bold-r4';
+import { buildTreeGroup, disposeTreeGroup, flattenCanopyHeights } from './trees.js?v=20261002-trees';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
 const FLOOR_AREA_PER_PERSON_M2 = 30;
 
@@ -175,7 +176,7 @@ const S = {
   id: null, meta: null, gw: 0, gh: 0, W: 1, H: 1, h: null, dtm: null, confidence: null,
   renderH: null, ref: null, base: 0,
   exag: 1, smoothingM: 0, mode: 'optical', tool: 'probe', nav: 'orbit',
-  viewGeometry: 'surface',
+  viewGeometry: 'surface', treesEnabled: true, treeGroup: null,
   mesh: null, skirt: null, water: null, floodActive: false, tex: null, texImg: null,
   marker: null, profileLine: null, profilePts: [],
   distPts: [], distLine: null,
@@ -266,9 +267,9 @@ function despikeGrid(src) {
 function updateRenderHeight(rebuild = true) {
   let src = S.h;
   if (S.viewGeometry === 'city') {
+    src = Float32Array.from(S.h);
     const m = buildingMaskGrid();
     if (m) {
-      src = Float32Array.from(S.h);
       // ground under footprints: DTM when calibrated, otherwise the lowest nearby surface
       for (let i = 0; i < src.length; i++) if (m[i]) src[i] = S.dtm ? Math.min(S.h[i], S.dtm[i]) : S.h[i];
       if (!S.dtm) {
@@ -286,10 +287,35 @@ function updateRenderHeight(rebuild = true) {
         src = out;
       }
     }
+    if (treesActive()) flattenCanopyHeights(src, S.h, S.dtm, m, S.texImg, S.gw, S.gh);
   }
   if ($('#despike')?.checked !== false) src = despikeGrid(src);
   S.renderH = smoothGrid(src, S.smoothingM / Math.max(S.W / (S.gw - 1), 1e-6));
   if (rebuild && S.mesh) applyHeights();
+  syncTreeLayer();
+}
+
+function treesActive() {
+  return S.viewGeometry === 'city' && S.treesEnabled && S.meta?.units === 'metre' && S.dtm && S.h;
+}
+
+function syncTreeLayer() {
+  if (S.treeGroup) {
+    scene.remove(S.treeGroup);
+    disposeTreeGroup(S.treeGroup);
+    S.treeGroup = null;
+  }
+  if (!treesActive()) return;
+  const mask = buildingMaskGrid();
+  S.treeGroup = buildTreeGroup({
+    h: S.h, dtm: S.dtm, buildingMask: mask, gw: S.gw, gh: S.gh, W: S.W, H: S.H,
+    worldY, exag: S.exag, texImg: S.texImg,
+  });
+  if (S.treeGroup) {
+    scene.add(S.treeGroup);
+    S.treeGroup.visible = true;
+  }
+  requestRender();
 }
 
 function slopeAt(r, c) {                    // degrees, true metres (no exaggeration)
@@ -783,6 +809,7 @@ async function loadScene(id) {
     S.cameraFlight = null;
     S.mapTiles.clear();
     S._bmask = null;
+    if (S.treeGroup) { scene.remove(S.treeGroup); disposeTreeGroup(S.treeGroup); S.treeGroup = null; }
     Object.assign(S, { demBase, modelBaseline: null, susc, change, viewshed: null, floodMask: null,
       floodSeed: null, floodSource: S.floodSource || 'edge', missionAction: null });
     Object.assign(S, { id, meta, gw: meta.grid_w, gh: meta.grid_h, W: meta.ground_w_m, H: meta.ground_h_m,
@@ -807,6 +834,13 @@ async function loadScene(id) {
     buildTerrain();
     createBuildingMeshes(S.buildings);
     const builtFraction = (buildings?.total_footprint_m2 || 0) / Math.max(1, S.W * S.H);
+    S.treesEnabled = meta.units === 'metre';
+    const treesEl = $('#trees');
+    if (treesEl) {
+      treesEl.checked = S.treesEnabled;
+      treesEl.disabled = meta.units !== 'metre';
+    }
+    $('#trees-toggle-row')?.classList.toggle('hidden', meta.units !== 'metre');
     if (meta.scene === 'urban' || ((buildings?.count || 0) >= 50 && builtFraction >= 0.025)) setViewGeometry('city');
     else $$('#view-mode button').forEach((b) => b.classList.toggle('active', b.dataset.view === 'surface'));
     updateAnalysisTools();
@@ -1912,7 +1946,7 @@ $$('#nav-mode button').forEach((b) => b.onclick = () => setNav(b.dataset.nav));
 $('#exag').oninput = (e) => {
   S.exag = +e.target.value; $('#exag-v').textContent = S.exag.toFixed(1) + '×';
   if (S.mesh) {
-    applyHeights(); createBuildingMeshes(S.buildings);
+    applyHeights(); createBuildingMeshes(S.buildings); syncTreeLayer();
     if (S.mesh.material.normalMap) { const k = Math.min(4, S.exag); S.mesh.material.normalScale.set(k, k); }
   }
 };
@@ -1926,6 +1960,10 @@ $('#contour-int').oninput = (e) => {
 };
 $('#wire').onchange = (e) => { if (S.mesh) S.mesh.material.wireframe = e.target.checked; };
 $('#despike').onchange = () => { if (S.h) updateRenderHeight(); };
+$('#trees')?.addEventListener('change', (e) => {
+  S.treesEnabled = e.target.checked;
+  if (S.h) updateRenderHeight();
+});
 $('#exposure').oninput = (e) => { renderer.toneMappingExposure = +e.target.value; $('#exposure-v').textContent = (+e.target.value).toFixed(2); };
 $('#quality').onchange = (e) => applyQuality(e.target.value);
 function applyQuality(q) {
@@ -2206,10 +2244,15 @@ renderer.setAnimationLoop(() => {
   if (S.swipeActive && S.baseMesh && S.mesh) {
     const w = canvas.clientWidth, h = canvas.clientHeight, split = Math.round(w * S.swipeX);
     const hideCity = S.buildingGroup?.visible;
+    const hideTrees = S.treeGroup?.visible;
     renderer.setScissorTest(true);
-    S.baseMesh.visible = true; S.mesh.visible = false; if (hideCity) S.buildingGroup.visible = false;
+    S.baseMesh.visible = true; S.mesh.visible = false;
+    if (hideCity) S.buildingGroup.visible = false;
+    if (hideTrees) S.treeGroup.visible = false;
     renderer.setScissor(0, 0, split, h); renderer.setViewport(0, 0, w, h); renderer.render(scene, camera);
-    S.baseMesh.visible = false; S.mesh.visible = true; if (hideCity) S.buildingGroup.visible = true;
+    S.baseMesh.visible = false; S.mesh.visible = true;
+    if (hideCity) S.buildingGroup.visible = true;
+    if (hideTrees) S.treeGroup.visible = true;
     renderer.setScissor(split, 0, w - split, h); renderer.render(scene, camera);
     renderer.setScissorTest(false);
   } else if (S.quality !== 'performance' && S.aoEnabled !== false && post.composer && !S.recording) post.composer.render(dt);
