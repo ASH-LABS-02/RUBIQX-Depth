@@ -1787,6 +1787,8 @@ function renderMetrics() {
     ['Structure scale k', cal.scale_k !== undefined && `${fmt(cal.scale_k, 2)} m / unit`],
     ['DEM fit r', cal.fit_r !== undefined && fmt(cal.fit_r, 2)],
     ['DEM coverage', cal.dem_coverage !== undefined && `${fmt(cal.dem_coverage * 100, 1)} %`],
+    ['DEM origin', cal.dem_origin],
+    ['Copernicus tiles', cal.dem_tile_names?.join(', ')],
     ['GCPs used', cal.n_gcp || null],
     ['GCP fit residual', cal.gcp_residual_rmse_m !== undefined && `${fmt(cal.gcp_residual_rmse_m)} m (in-sample)`],
     ['GCP leave-one-out', cal.gcp_loo_rmse_m !== undefined && `${fmt(cal.gcp_loo_rmse_m)} m`],
@@ -1801,14 +1803,16 @@ function renderMetrics() {
     ['Rotation ensemble', S.meta?.tta ? `${S.meta.tta} passes` : null],
     ['Note', S.meta?.units==='metre'?cal.note:'Relative heights are uncalibrated. A learned display scale shapes the 3D view; surveyed GCPs are needed to establish metres.']].filter(([, v]) => v);
   const calHtml = `<h3 style="margin-top:16px">Calibration</h3><div class="kv">${calRows.map(([k, v]) => `<b>${escapeHtml(k)}</b><span>${escapeHtml(v)}</span>`).join('')}</div>`;
+  const cop = m?.vs_copernicus_30m;
+  const copHtml = cop ? `<div class="validation-baseline"><strong>Agreement with Copernicus GLO-30 (30 m)</strong><span>RMSE ${fmt(cop.rmse)} m · bias ${fmt(cop.bias)} m · ${cop.n} cells</span><small>${escapeHtml(cop.note || 'DSM averaged to native Copernicus cells.')}</small></div>` : '';
   const calWarning = cal.evidence_level === 'approximate' || cal.method === 'dem+prior'
     ? `<p class="note">Building/tree heights use ${cal.scale_source === 'learned pixel-footprint scale' ? 'the model\'s learned metre-per-pixel scale (±40 %)' : 'a scene prior'}; terrain comes from the DEM. Add GCPs or a surface DEM (Copernicus/SRTM) for measured scale.</p>`
     : cal.evidence_level === 'provisional-gcp'
       ? '<p class="note">GCP calibration is provisional: more distributed surveyed points and an independent reference are needed.</p>'
       : cal.evidence_level === 'provisional'
         ? '<p class="note">Automatic building-height cues are provisional. They are calibration inputs, not independent validation; compare against held-out LiDAR or surveyed heights before claiming accuracy.</p>' : '';
-  if (!m) {
-    el.innerHTML = warn + calWarning + '<h3>Validate against an independent reference</h3><p class="note">Upload a LiDAR / DSM GeoTIFF to score this scene. Reprocess the optical image with the reference selected under Advanced; calibration and validation are separate inputs.</p><button id="add-validation-reference" type="button" class="primary">Add reference with imagery</button>' + calHtml;
+  if (!m?.absolute && !m?.affine_aligned) {
+    el.innerHTML = warn + copHtml + calWarning + '<h3>Validate against an independent reference</h3><p class="note">Upload a LiDAR / DSM GeoTIFF to score this scene. Reprocess the optical image with the reference selected under Advanced; calibration and validation are separate inputs.</p><button id="add-validation-reference" type="button" class="primary">Add reference with imagery</button>' + calHtml;
     $('#add-validation-reference').onclick = () => {showTab('upload');$('#import-advanced').open = true;form.reference.focus();};
     addDemComparison(el);return;
   }
@@ -1833,7 +1837,7 @@ function renderMetrics() {
     Object.entries(heights).map(([k, v]) => `<tr><td>${k}</td><td>${v.estimate.n.toLocaleString()}</td><td>${fmt(v.estimate.rmse)} m</td>${hasBandBaseline ? `<td>${fmt(v.baseline_dem?.rmse)} m</td>` : ''}</tr>`).join('') + '</table>' : '';
   const edgeHtml = m.edge_gradient_rmse !== undefined ? `<h3>Edge detail</h3><div class="kv"><b>Gradient RMSE</b><span>${fmt(m.edge_gradient_rmse, 3)} m/m</span><b>DEM baseline</b><span>${fmt(m.baseline_edge_gradient_rmse, 3)} m/m</span></div>` : '';
   const acc = `<div class="kv"><b>|error| ≤ 1 m</b><span>${fmt(main.within_1m * 100, 1)} %</span><b>|error| ≤ 2 m</b><span>${fmt(main.within_2m * 100, 1)} %</span><b>|error| ≤ 5 m</b><span>${fmt(main.within_5m * 100, 1)} %</span><b>Bias</b><span>${fmt(main.bias)} m</span></div>`;
-  el.innerHTML = warn + (aligned ? '<p class="note">Relative heights are fitted to this reference for shape diagnostics. These values are not operational metric accuracy.</p>' : '') + `<div class="cards">${cards.map(([l, v, u]) => `<div class="card"><div class="v">${v}<small> ${u}</small></div><div class="l">${l}</div></div>`).join('')}</div>` + baselineHtml +
+  el.innerHTML = warn + copHtml + (aligned ? '<p class="note">Relative heights are fitted to this reference for shape diagnostics. These values are not operational metric accuracy.</p>' : '') + `<div class="cards">${cards.map(([l, v, u]) => `<div class="card"><div class="v">${v}<small> ${u}</small></div><div class="l">${l}</div></div>`).join('')}</div>` + baselineHtml +
     (S.meta.validation_plot ? `<h3>Estimated vs reference</h3><div class="charts">${scatterSvg(S.meta.validation_plot, S.meta.units === 'metre' ? 'm' : 'rel')}${histSvg(S.meta.validation_plot)}</div>` : '') +
     `<details class="validation-details"><summary>Detailed accuracy breakdown</summary>` + calWarning + table +
     (m.buildings ? `<p class="note">Per-building: ${m.buildings.n} footprints · median roof ${fmt(m.buildings.est_median, 1)} m estimated vs ${fmt(m.buildings.ref_median, 1)} m reference.</p>` : '') +

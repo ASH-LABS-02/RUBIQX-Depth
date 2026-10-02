@@ -34,6 +34,45 @@ def reference_on_grid(ref_path, image) -> np.ndarray:
     return arr
 
 
+def vs_copernicus_30m(dsm: np.ndarray, image, dem_path) -> dict:
+    """Compare area-averaged DSM with native Copernicus cells, NaN aware.
+
+    This uses the source DEM's grid rather than a bilinear upsample of that DEM
+    to optical resolution. Edge cells with no valid DSM or DEM are omitted.
+    """
+    import rasterio
+    from rasterio.warp import reproject, Resampling, transform_bounds
+    from rasterio.windows import from_bounds, transform as window_transform
+
+    h, w = image.shape
+    xy = [image.transform * (c, r) for c, r in ((0, 0), (w, 0), (0, h), (w, h))]
+    x, y = zip(*xy)
+    with rasterio.open(dem_path) as src:
+        if not image.georeferenced or src.crs is None:
+            raise ValueError("Copernicus agreement requires two georeferenced rasters")
+        bounds = transform_bounds(image.crs, src.crs, min(x), min(y), max(x), max(y),
+                                  densify_pts=21)
+        window = from_bounds(*bounds, transform=src.transform).round_offsets().round_lengths()
+        window = window.intersection(rasterio.windows.Window(0, 0, src.width, src.height))
+        dem = src.read(1, window=window, masked=True).astype(np.float32).filled(np.nan)
+        native = np.full(dem.shape, np.nan, dtype=np.float32)
+        reproject(source=np.asarray(dsm, dtype=np.float32), destination=native,
+                  src_transform=image.transform, src_crs=image.crs, src_nodata=np.nan,
+                  dst_transform=window_transform(window, src.transform), dst_crs=src.crs,
+                  dst_nodata=np.nan, resampling=Resampling.average)
+    valid = np.isfinite(native) & np.isfinite(dem)
+    if not valid.any():
+        raise ValueError("Copernicus DEM has no valid native cells over this image")
+    pred, truth = native[valid].astype(np.float64), dem[valid].astype(np.float64)
+    error = pred - truth
+    return {"n": int(valid.sum()),
+            "rmse": float(np.sqrt(np.mean(error ** 2))),
+            "mae": float(np.mean(np.abs(error))),
+            "bias": float(np.mean(error)),
+            "r": float(np.corrcoef(pred, truth)[0, 1]) if len(pred) > 1 and pred.std() > 0 and truth.std() > 0 else None,
+            "resolution": "native Copernicus GLO-30 cells; DSM area mean; valid cells only"}
+
+
 def _core(pred, ref):
     m = np.isfinite(pred) & np.isfinite(ref)
     p, r = pred[m].astype(np.float64), ref[m].astype(np.float64)

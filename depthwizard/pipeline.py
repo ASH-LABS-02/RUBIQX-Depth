@@ -14,7 +14,7 @@ from .buildings import extract_buildings
 from .calibrate import DATUMS, calibrate, fetch_srtm
 from .depth import relative_height
 from .dem_fetch import cached_tile_names, fetch_copernicus_glo30
-from .metrics import building_level, evaluate, reference_on_grid
+from .metrics import building_level, evaluate, reference_on_grid, vs_copernicus_30m
 
 SOFTWARE_VERSION = "DepthWizard 2.2 (SIH26175)"
 
@@ -348,19 +348,32 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
             unc_view = unc_units
 
     ref = None
+    metrics = {}
     if reference:
         log("validating against reference")
         ref = reference_on_grid(reference, img)
         baseline = getattr(cal, "extras", {}).get("dem") if units == "metre" else None
-        meta["metrics"] = evaluate(dsm, ref, units, rgb=img.rgb, gsd=gsd, baseline=baseline)
+        metrics = evaluate(dsm, ref, units, rgb=img.rgb, gsd=gsd, baseline=baseline)
         if units == "metre" and labels is not None and buildings["count"] >= 5:
             est_nd = dsm - (cal.dtm if cal.dtm is not None else np.percentile(dsm, 2))
             bm = building_level(labels, est_nd, ref, gsd)
             if bm:
-                meta["metrics"]["buildings"] = bm
+                metrics["buildings"] = bm
                 log(f"  per-building heights vs reference: n={bm['n']} "
                     f"RMSE {bm['rmse']:.2f} m, r {bm['r']:.2f}")
-        (out / "metrics.json").write_text(json.dumps(meta["metrics"], indent=2))
+    if dem and effective_source == "COP30" and units == "metre":
+        try:
+            agreement = vs_copernicus_30m(dsm, img, dem)
+            agreement["note"] = ("Copernicus was the calibration input; this measures consistency, "
+                                 "not independent accuracy")
+            metrics["vs_copernicus_30m"] = agreement
+            log(f"  agreement with Copernicus GLO-30: n={agreement['n']} "
+                f"RMSE {agreement['rmse']:.2f} m, bias {agreement['bias']:.2f} m")
+        except ValueError as exc:
+            log(f"  WARNING: Copernicus agreement skipped: {exc}")
+    if metrics:
+        meta["metrics"] = metrics
+        (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
