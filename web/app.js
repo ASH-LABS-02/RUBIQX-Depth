@@ -13,7 +13,7 @@ import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg
 import { createMissionUi } from './ui-v2.js?v=20261003-integrity';
 import { createDiorama } from './diorama.js?v=20261001-bold-r4';
 import { createBoldUi } from './ui-v3.js?v=20261001-bold-r4';
-import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261002-trees-scale-colour-c';
+import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261003-branched-crowns';
 import { cinematicPath } from './cinematic.js?v=20261003-cinematic';
 import { coordinateAt, coordinateFrame, coordinateGrid } from './coordinates.js?v=20261003-grid';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
@@ -1393,6 +1393,7 @@ function buildingMaskGrid() {
   S._bmask = m; return m;
 }
 function setViewGeometry(mode) {
+  if (!S.h || !S.mesh) return;
   if (mode === 'city' && !S.buildingToolsAvailable) mode = 'surface';
   const changed = S.viewGeometry !== mode;
   S.viewGeometry = mode;

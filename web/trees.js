@@ -134,9 +134,9 @@ export function disposeTreeGroup(group) {
 
 function crownColor(seed) {
   return new THREE.Color().setHSL(
-    0.27 + hash01(seed * 19) * 0.09,
-    0.38 + hash01(seed * 23) * 0.20,
-    0.28 + hash01(seed * 29) * 0.13,
+    0.28 + hash01(seed * 19) * 0.06,
+    0.32 + hash01(seed * 23) * 0.20,
+    0.24 + hash01(seed * 29) * 0.12,
   );
 }
 
@@ -181,7 +181,7 @@ export function buildTreeGroup({ h, dtm, buildingMask, gw, gh, W, H, groundWm = 
         if (!Number.isFinite(dtm[ii]) || !Number.isFinite(agl) || agl < CANOPY_MIN_AGL_M) continue;
         const x = (cc / (gw - 1) - 0.5) * W;
         const z = (rr / (gh - 1) - 0.5) * H;
-        out.push({ x, z, ground: dtm[ii], agl, seed: ii, blobs: hash01(ii * 31) < 0.5 ? 2 : 3 });
+        out.push({ x, z, ground: dtm[ii], agl, seed: ii, blobs: hash01(ii * 31) < 0.65 ? 5 : 6 });
         if (out.length > MAX_INSTANCES) return out;
       }
     }
@@ -209,7 +209,18 @@ export function buildTreeGroup({ h, dtm, buildingMask, gw, gh, W, H, groundWm = 
   const trunkGeo = new THREE.CylinderGeometry(0.7, 1, 1, 6);
   trunkGeo.translate(0, 0.5, 0);
   trunkGeo.computeVertexNormals();
+  const branchGeo = new THREE.CylinderGeometry(0.25, 1, 1, 5);
+  branchGeo.translate(0, 0.5, 0);
   const crownGeo = new THREE.IcosahedronGeometry(1, 1);
+  // Uneven leaf-clump silhouettes, shared by every instance. Equal positions
+  // receive equal deformation so neighbouring triangles never open cracks.
+  const crownPos = crownGeo.attributes.position;
+  for (let i = 0; i < crownPos.count; i++) {
+    const x = crownPos.getX(i), y = crownPos.getY(i), z = crownPos.getZ(i);
+    const ripple = 0.88 + 0.12 * Math.sin(x * 11 + y * 7) * Math.cos(z * 13 - y * 5);
+    crownPos.setXYZ(i, x * ripple, y * ripple, z * ripple);
+  }
+  crownGeo.computeVertexNormals();
   crownGeo.computeBoundingBox();
   const crownMinY = crownGeo.boundingBox.min.y, crownMaxY = crownGeo.boundingBox.max.y;
 
@@ -219,9 +230,12 @@ export function buildTreeGroup({ h, dtm, buildingMask, gw, gh, W, H, groundWm = 
   const crownMat = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
 
   const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, trees.length);
+  const branchMesh = new THREE.InstancedMesh(branchGeo, trunkMat.clone(), trees.length * 4);
   const crownMesh = new THREE.InstancedMesh(crownGeo, crownMat, trees.reduce((n, t) => n + t.blobs, 0));
-  trunkMesh.castShadow = crownMesh.castShadow = true;
-  trunkMesh.receiveShadow = crownMesh.receiveShadow = true;
+  trunkMesh.name = 'treeTrunks'; branchMesh.name = 'treeBranches'; crownMesh.name = 'treeFoliage';
+  trunkMesh.castShadow = branchMesh.castShadow = crownMesh.castShadow = true;
+  trunkMesh.receiveShadow = branchMesh.receiveShadow = crownMesh.receiveShadow = true;
+  const up = new THREE.Vector3(0, 1, 0), branchDirection = new THREE.Vector3();
 
   let crownIndex = 0;
   for (let n = 0; n < trees.length; n++) {
@@ -238,19 +252,38 @@ export function buildTreeGroup({ h, dtm, buildingMask, gw, gh, W, H, groundWm = 
     dummy.updateMatrix();
     trunkMesh.setMatrixAt(n, dummy.matrix);
 
+    // A short exposed trunk forks into a central leader and three tapered
+    // limbs. Everything stays in the same metric/exaggerated frame as the DSM.
+    for (let b = 0; b < 4; b++) {
+      const angle = rot + b * 2.399963;
+      const reachM = b === 0 ? 0 : crownR * 0.47;
+      const baseY = worldY(t.ground + t.agl * (b === 0 ? 0.3 : 0.25));
+      const tipY = worldY(t.ground + t.agl * (b === 0 ? 0.72 : 0.61 + hash01(t.seed + b) * 0.07));
+      branchDirection.set(Math.cos(angle) * reachM * scaleX, tipY - baseY,
+        Math.sin(angle) * reachM * scaleZ);
+      const length = branchDirection.length();
+      dummy.position.set(t.x, baseY, t.z);
+      dummy.quaternion.setFromUnitVectors(up, branchDirection.normalize());
+      dummy.scale.set(trunkR * 0.65 * scaleX, length, trunkR * 0.65 * scaleZ);
+      dummy.updateMatrix();
+      branchMesh.setMatrixAt(n * 4 + b, dummy.matrix);
+    }
+
     for (let b = 0; b < t.blobs; b++) {
       const seed = t.seed * 37 + b * 101;
       const main = b === 0;
-      const angle = rot + b * Math.PI * 1.1;
-      const offsetM = main ? 0 : crownR * (0.22 + hash01(seed) * 0.10);
-      const radiusM = crownR * (main ? 0.9 : 0.68);
-      const bottomY = worldY(t.ground + t.agl * (main ? 0.3 : 0.28));
-      const topY = worldY(t.ground + t.agl * (main ? 1 : 0.85 + hash01(seed * 7) * 0.10));
+      const lower = b > 0 && b <= 3;
+      const angle = rot + b * 2.399963;
+      const offsetM = main ? 0 : crownR * (lower ? 0.47 : 0.30);
+      const radiusM = crownR * (main ? 0.58 : lower ? 0.46 : 0.42);
+      const bottomY = worldY(t.ground + t.agl * (main ? 0.56 : lower ? 0.32 + hash01(seed) * 0.08 : 0.52));
+      const topY = worldY(t.ground + t.agl * (main ? 1 : lower ? 0.74 + hash01(seed * 7) * 0.10 : 0.88 + hash01(seed * 7) * 0.08));
       const radiusY = (topY - bottomY) / (crownMaxY - crownMinY);
       dummy.position.set(t.x + Math.cos(angle) * offsetM * scaleX,
         topY - crownMaxY * radiusY, t.z + Math.sin(angle) * offsetM * scaleZ);
       dummy.rotation.set(0, rot + b, 0);
-      dummy.scale.set(radiusM * scaleX, radiusY, radiusM * scaleZ);
+      const width = 0.85 + hash01(t.seed * 41) * 0.25;
+      dummy.scale.set(radiusM * width * scaleX, radiusY, radiusM * (0.85 + hash01(seed * 11) * 0.20) * scaleZ);
       dummy.updateMatrix();
       crownMesh.setMatrixAt(crownIndex, dummy.matrix);
       crownMesh.setColorAt(crownIndex++, crownColor(seed));
@@ -258,12 +291,13 @@ export function buildTreeGroup({ h, dtm, buildingMask, gw, gh, W, H, groundWm = 
   }
 
   trunkMesh.instanceMatrix.needsUpdate = true;
+  branchMesh.instanceMatrix.needsUpdate = true;
   crownMesh.instanceMatrix.needsUpdate = true;
   if (crownMesh.instanceColor) crownMesh.instanceColor.needsUpdate = true;
 
   const group = new THREE.Group();
   group.name = 'treeInstances';
-  group.add(trunkMesh, crownMesh);
+  group.add(trunkMesh, branchMesh, crownMesh);
   return { group, instanceCount: trees.length, stats };
 }
 
