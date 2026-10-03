@@ -1948,9 +1948,9 @@ async function refreshLocalModel() {
       select.add(option, 0);
       if (prior === info.path || !select.dataset.userSelected) select.value = info.path;
     }
-    note.textContent = info.stage
+    note.textContent = info.error || (info.stage
       ? `${info.stage}${info.epochs_done ? ` · ${info.epochs_done} epochs complete` : ''}${info.ready ? ' · checkpoint available' : ''}`
-      : info.ready ? 'Local GAMUS checkpoint available.' : 'Use a pretrained backbone or enter a local checkpoint path.';
+      : info.ready ? 'Local GAMUS checkpoint available.' : 'Use a pretrained backbone or enter a local checkpoint path.');
   } catch {
     note.textContent = 'Use a pretrained backbone or enter a local checkpoint path.';
   }

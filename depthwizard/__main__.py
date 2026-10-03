@@ -1,8 +1,23 @@
 """Command line: python -m depthwizard IMAGE [options]"""
 import argparse
 import json
+import os
+from pathlib import Path
 
 from .pipeline import run
+
+ROOT = Path(__file__).resolve().parents[1]
+TRAINING_ROOT = Path(os.environ.get("DEPTHWIZARD_TRAINING_ROOT", "D:/DepthWizard"))
+if not TRAINING_ROOT.is_dir():
+    TRAINING_ROOT = ROOT / "models"
+CHECKPOINT_ERROR = "Model checkpoint not found. Put it in models/da2-gamus-full or set DEPTHWIZARD_CHECKPOINT."
+
+
+def _checkpoint_ready(path):
+    path = Path(path)
+    return (path / "config.json").is_file() and any(
+        (path / name).is_file() for name in ("model.safetensors", "pytorch_model.bin")
+    )
 
 
 def main(argv=None):
@@ -60,21 +75,23 @@ def main(argv=None):
 
     model = a.model
     if model is None:
-        import os
-        from pathlib import Path
-        training_root = os.environ.get("DEPTHWIZARD_TRAINING_ROOT", "D:/DepthWizard")
-        candidates = [os.environ.get("DEPTHWIZARD_CHECKPOINT"),
-                      "models/da2-gamus-full",   # bundled location (Docker / repo)
-                      f"{training_root}/checkpoints/da2-gamus-full"]
+        configured = os.environ.get("DEPTHWIZARD_CHECKPOINT")
+        candidates = [configured] if configured else [
+            ROOT / "models" / "da2-gamus-full",
+            TRAINING_ROOT / "checkpoints" / "da2-gamus-full"]
         for path in (c for c in candidates if c):
-            if Path(path).exists():
-                model = path
+            if _checkpoint_ready(path):
+                model = str(path)
                 print(f"using GAMUS checkpoint from {path}")
                 break
         if model is None:
-            model = "small"
+            p.error(CHECKPOINT_ERROR)
     elif model == "pretrained":
         model = "small"
+    elif (Path(model).is_absolute() or Path(model).exists()
+          or model.startswith(("models/", "models\\", "./", "../"))
+          or (len(model) > 1 and model[1] == ":")) and not _checkpoint_ready(model):
+        p.error(CHECKPOINT_ERROR)
 
     meta = run(a.image, a.out, dem=a.dem, gcp=a.gcp, reference=a.ref, model=model,
                scene=a.scene, fetch_dem=a.fetch_dem, dem_source=a.dem_source, assumed_gsd_m=a.gsd,

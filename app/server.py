@@ -32,6 +32,11 @@ WEB = ROOT / "web"
 JOBS = ROOT / "data" / "jobs"
 JOBS.mkdir(parents=True, exist_ok=True)
 TRAINING_ROOT = Path(os.environ.get("DEPTHWIZARD_TRAINING_ROOT", "D:/DepthWizard"))
+if not TRAINING_ROOT.is_dir():
+    TRAINING_ROOT = ROOT / "models"
+CHECKPOINT_ERROR = "Model checkpoint not found. Put it in models/da2-gamus-full or set DEPTHWIZARD_CHECKPOINT."
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+IMAGE_EXTENSIONS = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 
 app = FastAPI(title="DepthWizard")
 
@@ -53,16 +58,53 @@ _files_lock = threading.Lock()   # rewrites of scene files (rescale, missions, a
 _export_lock = threading.Lock()
 
 
+def _validate_upload(upload: UploadFile | None, role: str) -> None:
+    if upload is None or not upload.filename:
+        return
+    allowed = {".csv"} if role == "gcp" else IMAGE_EXTENSIONS
+    if Path(upload.filename).suffix.lower() not in allowed:
+        types = ".csv" if role == "gcp" else ".tif, .tiff, .png, .jpg, .jpeg"
+        raise HTTPException(400, f"Unsupported {role} file type. Allowed: {types}.")
+    if upload.size is not None and upload.size > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, f"{role} upload exceeds the 500 MB limit.")
+
+
+def _checkpoint_ready(path: Path) -> bool:
+    return (path / "config.json").is_file() and any(
+        (path / name).is_file() for name in ("model.safetensors", "pytorch_model.bin")
+    )
+
+
+def _validate_model(model: str) -> str:
+    if model == "pretrained":
+        return "small"
+    path = Path(model)
+    if (path.is_absolute() or path.exists() or model.startswith(("models/", "models\\", "./", "../"))
+            or (len(model) > 1 and model[1] == ":")) and not _checkpoint_ready(path):
+        raise HTTPException(400, CHECKPOINT_ERROR)
+    return model
+
+
 def _save(upload: UploadFile | None, folder: Path, role: str) -> str | None:
     if upload is None or not upload.filename:
         return None
+    _validate_upload(upload, role)
     # Keep the caller's basename for provenance, but isolate each input role.
     # An RGB, DEM and reference can all be named image.tif without colliding.
     role_folder = folder / role
     role_folder.mkdir(parents=True, exist_ok=True)
     dest = role_folder / Path(upload.filename).name
-    with dest.open("wb") as f:
-        shutil.copyfileobj(upload.file, f)
+    try:
+        with dest.open("wb") as f:
+            total = 0
+            while chunk := upload.file.read(1024 * 1024):
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(400, f"{role} upload exceeds the 500 MB limit.")
+                f.write(chunk)
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
     return str(dest)
 
 
@@ -157,6 +199,9 @@ async def process(image: UploadFile = File(...),
                   sun_elevation: str = Form(""),
                   sun_azimuth: str = Form(""),
                   name: str = Form("")):
+    for upload, role in ((image, "image"), (dem, "dem"), (reference, "reference"), (gcp, "gcp")):
+        _validate_upload(upload, role)
+    model = _validate_model(model)
     job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
     folder = JOBS / job_id
     inputs = folder / "inputs"
@@ -445,14 +490,14 @@ def health():
 @app.get("/api/local-model")
 def local_model():
     """Expose the optional GAMUS checkpoint and its local training stage."""
-    checkpoint = TRAINING_ROOT / "checkpoints" / "da2-gamus-full"
+    configured = os.environ.get("DEPTHWIZARD_CHECKPOINT")
+    checkpoint = (Path(configured) if configured else
+                  TRAINING_ROOT / "da2-gamus-full" if TRAINING_ROOT == ROOT / "models" else
+                  TRAINING_ROOT / "checkpoints" / "da2-gamus-full")
     bundled = ROOT / "models" / "da2-gamus-full"      # portable / packaged build
-    if not (checkpoint / "config.json").exists() and (bundled / "config.json").exists():
+    if not configured and not _checkpoint_ready(checkpoint) and _checkpoint_ready(bundled):
         checkpoint = bundled
-    ready = (checkpoint / "config.json").exists() and any(
-        (checkpoint / name).exists()
-        for name in ("model.safetensors", "pytorch_model.bin")
-    )
+    ready = _checkpoint_ready(checkpoint)
     status_path = TRAINING_ROOT / "training-status.json"
     stage = None
     if status_path.exists():
@@ -471,7 +516,7 @@ def local_model():
         except (OSError, ValueError, KeyError):
             pass
     return {"ready": ready, "path": str(checkpoint) if ready else None,
-            "stage": stage, "epochs_done": epochs_done}
+            "stage": stage, "epochs_done": epochs_done, "error": None if ready else CHECKPOINT_ERROR}
 
 
 @app.get("/api/scenes/{job_id}/buildings")
