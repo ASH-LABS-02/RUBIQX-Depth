@@ -10,7 +10,7 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-v3';
-import { createMissionUi } from './ui-v2.js?v=20261001-bold';
+import { createMissionUi } from './ui-v2.js?v=20261003-integrity';
 import { createDiorama } from './diorama.js?v=20261001-bold-r4';
 import { createBoldUi } from './ui-v3.js?v=20261001-bold-r4';
 import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261002-trees-scale-colour-c';
@@ -70,9 +70,9 @@ const RAMPS = {
   topo: [[0, [0.106, 0.220, 0.169]], [0.16, [0.235, 0.431, 0.259]], [0.33, [0.557, 0.627, 0.353]],
     [0.5, [0.847, 0.776, 0.537]], [0.67, [0.690, 0.537, 0.380]], [0.84, [0.600, 0.588, 0.576]], [1, [0.973, 0.976, 0.980]]],
 };
-const HAZARD = [{ max: 30, color: [0.133, 0.773, 0.369], label: 'Safe 0–30°' },
-  { max: 45, color: [0.918, 0.702, 0.031], label: 'Warning 30–45°' },
-  { max: 91, color: [0.937, 0.267, 0.267], label: 'High risk >45°' }];
+const HAZARD = [{ max: 30, color: [0.133, 0.773, 0.369], label: 'Slope 0–30°' },
+  { max: 45, color: [0.918, 0.702, 0.031], label: 'Slope 30–45°' },
+  { max: 91, color: [0.937, 0.267, 0.267], label: 'Slope >45°' }];
 const niceStep = (x) => { const p = 10 ** Math.floor(Math.log10(Math.max(x, 1e-9))), d = x / p; return (d < 1.5 ? 1 : d < 3.5 ? 2 : d < 7.5 ? 5 : 10) * p; };
 function ramp(name, t) {
   const r = RAMPS[name] || RAMPS.height; t = Math.min(1, Math.max(0, t));
@@ -462,8 +462,8 @@ function applyShading() {
       legend = { name, lo, hi, unit: S.meta?.units === 'metre' ? '°' : 'relative / m' };
     } else if (S.mode === 'confidence') {
       vals = S.confidence;
-      lo = 0.5; hi = 1.0;
-      legend = { name: 'confidence', lo: 50, hi: 100, unit: S.meta?.units === 'metre' ? '% · exp(−σ/2 m), σ = ensemble spread' : '% ensemble agreement' };
+      lo = 0; hi = 1.0;
+      legend = { name: 'Reliability index', lo: 0, hi: 100, unit: '% ensemble agreement · not accuracy probability' };
     } else if (S.mode === 'ndsm') {
       const dtmBase = S.dtm || S.renderH;
       for (let i = 0; i < n; i++) vals[i] = Math.max(0, S.h[i] - dtmBase[i]);
@@ -885,7 +885,7 @@ async function loadScene(id) {
     $('#swipe-toggle').title = demBase ? 'Swipe: actual input DEM (left) vs DepthWizard DSM (right) · S' : 'Swipe needs a georeferenced scene with an input DEM';
     $('#btn-error').disabled = !ref;
     $('#btn-hazard').disabled = meta.units !== 'metre';
-    $('#btn-hazard').title = meta.units === 'metre' ? 'Slope hazard: 0–30° safe, 30–45° warning, >45° high risk · 6' : 'Slope hazard needs a metric scene (degrees are meaningless in relative units)';
+    $('#btn-hazard').title = meta.units === 'metre' ? 'Slope screening: angle bands only, not a stability or safety assessment · 6' : 'Slope screening needs a metric scene (degrees are meaningless in relative units)';
     if (S.mode === 'hazard' && meta.units !== 'metre') setMode('optical');
     if (!ref && S.mode === 'error') setMode('optical');
     if (!demBase && S.mode === 'demdiff') setMode('optical');
@@ -913,8 +913,10 @@ async function loadScene(id) {
     const label = document.createElement('strong'); label.textContent = inputDem ? 'Input DEM (not estimated)' : meta.units === 'metre' ? (String(evidenceLevel).startsWith('provisional')?'Provisional evidence':provisional?'Approximate evidence':evidenceLevel?'Metric evidence':'Unverified evidence') : 'Relative scene';
     if (meta.units === 'metre' && cal.vertical_datum === 'same as input DEM')
       label.textContent = 'Datum: same as input DEM';
+    if (meta.backbone === 'heuristic-fallback') label.textContent = 'Prototype · heuristic output';
     badge.replaceChildren(label, document.createTextNode(` · ${cal.method || evidence}`));
     badge.title = `${evidence} · vertical datum: ${cal.vertical_datum || 'unspecified'}`;
+    if (meta.backbone === 'heuristic-fallback') badge.title = 'Heuristic prototype output; not representative of model accuracy';
     badge.dataset.evidence = evidenceLevel;
     badge.classList.remove('hidden');
 
@@ -1197,7 +1199,7 @@ function selectBuilding(mesh) {
     <b>Building #${b.id}</b><span>${fmt(b.height_m,3)} relative units</span>
     <b>Roof elevation</b><span>${fmt(b.roof_elevation_m,3)} relative units</span>
     <b>Ground elevation</b><span>${fmt(b.ground_elevation_m,3)} relative units</span>
-    <b>Reliability index</b><span>${Number.isFinite(b.confidence)?`${Math.round(b.confidence*100)}%`:'Unavailable'} · model ensemble agreement</span>
+    <b>Reliability index</b><span>${Number.isFinite(b.confidence)?`${Math.round(b.confidence*100)}%`:'Unavailable'} · ${escapeHtml(b.confidence_basis || 'basis unavailable')} · not accuracy probability</span>
     <b>Storeys / volume</b><span>Require metric height calibration</span>
     <b>Footprint area</b><span>Requires a georeferenced image</span>
   ` : `
@@ -1206,7 +1208,7 @@ function selectBuilding(mesh) {
     <b>Ground elevation</b><span>${fmt(b.ground_elevation_m, 1)} m</span>
     <b>Footprint area</b><span>${fmt(b.area_m2, 1)} m²</span>
     <b>Structural volume</b><span>${fmt(b.volume_m3, 0)} m³</span>
-    <b>Confidence</b><span>${Math.round(b.confidence * 100)}% <small class="muted">${escapeHtml(b.confidence_basis || b.source || 'LoD1')}</small></span>
+    <b>Reliability index</b><span>${Number.isFinite(b.confidence)?`${Math.round(b.confidence*100)}%`:'Unavailable'} <small class="muted">${escapeHtml(b.confidence_basis || 'basis unavailable')} · not accuracy probability</small></span>
     ${b.roof_fit ? `<b>Roof hypothesis</b><span>${escapeHtml(b.roof_fit.type)}${b.roof_fit.pitch_deg ? ` · ${fmt(b.roof_fit.pitch_deg, 1)}° pitch` : ''} · model-inferred</span>` : ''}
     ${b.pv_kwh_yr !== undefined ? `<b>Rooftop solar</b><span>${fmt(b.sunlit_fraction * 100, 0)}% sunlit · ≈ ${Math.round(b.pv_kwh_yr).toLocaleString()} kWh/yr</span>` : ''}
     ${S.floodMask ? (() => { const f = floodedBuildings(+$('#flood-level').value).find((x) => x.id === b.id); return f ? `<b>Flood depth at base</b><span class="worse">${fmt(f.depth, 2)} m</span>` : ''; })() : ''}
@@ -1944,6 +1946,7 @@ function renderMetrics() {
     ['Shadow check', cal.shadow_iou !== undefined && `IoU ${fmt(cal.shadow_iou, 2)} · sun az ${fmt(cal.sun_azimuth_deg, 0)}°`],
     ['Structure model', cal.structure_model],
     ['Rotation ensemble', S.meta?.tta ? `${S.meta.tta} passes` : null],
+    ['Uncertainty', S.meta?.uncertainty_status || (S.confidence ? 'Provisional; ensemble agreement is not accuracy probability' : 'Unavailable - no model ensemble')],
     ['Note', S.meta?.units==='metre'?cal.note:'Relative heights are uncalibrated. A learned display scale shapes the 3D view; surveyed GCPs are needed to establish metres.']].filter(([, v]) => v);
   const calHtml = `<h3 style="margin-top:16px">Calibration</h3><div class="kv">${calRows.map(([k, v]) => `<b>${escapeHtml(k)}</b><span>${escapeHtml(v)}</span>`).join('')}</div>`;
   const cop = m?.vs_copernicus_30m;
@@ -2566,7 +2569,7 @@ function updateSceneSummary(floodCount = 0) {
   const quality = conf == null ? 'unavailable' : conf >= 0.75 ? 'higher' : conf >= 0.5 ? 'moderate' : 'lower';
   const mode = S.meta.units === 'metre' ? 'metric DSM' : 'relative rDSM';
   const flood = S.floodActive ? ` · ${floodCount} buildings affected at ${fmt(+$('#flood-level').value, 1)} m` : '';
-  el.innerHTML = `<strong>Scene summary</strong> · ${list.length} buildings${list.length ? ` · tallest ${fmt(tallest, 1)} ${S.units}` : ''}${flood} · ${quality} building confidence · ${mode}`;
+  el.innerHTML = `<strong>Scene summary</strong> · ${list.length} buildings${list.length ? ` · tallest ${fmt(tallest, 1)} ${S.units}` : ''}${flood} · ${quality} building reliability · ${mode}`;
   el.classList.remove('hidden');
   updateMissionHud();
 }
@@ -3223,7 +3226,7 @@ function initMissionLayout() {
   $('#surface-group').insertAdjacentHTML('afterbegin','<button id="explore-compare" type="button" class="primary drawer-primary">Compare surfaces</button>');
   $('#explore-compare').onclick=()=>$('#compare-trigger').click();
   $('#surface-group label:has(#contours)').classList.add('hidden');
-  $('#flood-info').prepend($('#flood-group > p.note'));
+  $('#flood-info').before($('#flood-group > p.note'));
   $('#record-tour').textContent='Record 30 s flythrough';
   const exportGroups = [
     ['Raster & analysis', ['dsm','dtm','ndsm','uncertainty','heightmap']],

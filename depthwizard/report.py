@@ -422,7 +422,7 @@ def generate_html_report(scene_dir: Path) -> str:
   </div>
   <div class="card">
     <div class="v">{b_count}<small> candidates</small></div>
-    <div class="l">Model-detected footprints ({b_area} m²)</div>
+    <div class="l">Model-detected footprints{(' (' + b_area + ' m²)') if metric_scene else ' (area uncalibrated)'}</div>
   </div>
 </div>
 
@@ -430,6 +430,9 @@ def generate_html_report(scene_dir: Path) -> str:
 <p>{scene_summary}</p>
 <p>{validation_summary} {baseline_summary}</p>
 <p><strong>Automatic building-height anchors:</strong> {_text(anchor_summary)} {_text(anchor_note, '')}</p>
+<p><strong>Uncertainty:</strong> {_text(meta.get('uncertainty_status') or ('Provisional error model fitted on two DC urban scenes; other domains unvalidated.' if metric_scene and meta.get('tta', 0) > 1 and meta.get('backbone') != 'heuristic-fallback' else 'No validated error estimate available.'))} Reliability scores describe ensemble agreement or roof-height consistency, not accuracy probabilities.</p>
+<p><strong>Use limits:</strong> Meshes and point clouds are sampled display products; use the DSM GeoTIFF for the full raster grid. Relative surfaces are unitless. Flood and rainfall scenarios omit drainage and upstream catchments; routes and shelters require field checks. Landslide runout omits material dynamics; relay coverage is line of sight only.</p>
+{"<p><strong>Prototype only:</strong> This scene used a heuristic fallback; it does not establish model accuracy.</p>" if meta.get('backbone') == 'heuristic-fallback' else ''}
 
 <div class="grid-2">
   <div>
@@ -507,7 +510,7 @@ def generate_html_report(scene_dir: Path) -> str:
   <tbody>
     <tr>
       <td><strong>{b_count}</strong></td>
-      <td>{b_area} m²</td>
+      <td>{b_area + ' m²' if metric_scene else 'Requires metric footprint calibration'}</td>
       <td>{fmt(sum(heights) / len(heights)) if metric_scene and heights else '–'}{' m' if metric_scene and heights else ''}</td>
       <td>{fmt(sum(_finite(b.get('storeys')) or 0 for b in building_list if isinstance(b, dict)) / b_count, 1) if metric_scene and b_count and any(isinstance(b, dict) and _finite(b.get('storeys')) is not None for b in building_list) else '–'}</td>
       <td>{fmt(sum(_finite(b.get('volume_m3')) or 0 for b in building_list if isinstance(b, dict))) if metric_scene and any(isinstance(b, dict) and _finite(b.get('volume_m3')) is not None for b in building_list) else '–'}{' m³' if metric_scene and any(isinstance(b, dict) and _finite(b.get('volume_m3')) is not None for b in building_list) else ''}</td>

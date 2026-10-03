@@ -34,14 +34,14 @@
         <button type="button" data-export="all" role="menuitem">Everything (ZIP) <small>All GeoTIFFs, CityJSON, PLY, GLB, report</small></button>
         <button type="button" data-export="report" role="menuitem">Evidence Report PDF <small>Technical validation dossier</small></button>
         <button type="button" data-export="dsm" role="menuitem">DSM GeoTIFF <small>Original estimated grid</small></button>
-        <button type="button" data-export="glb" role="menuitem">Textured terrain GLB <small>Portable 3D asset</small></button>
-        <button type="button" data-export="obj" role="menuitem">Textured terrain OBJ <small>ZIP with texture</small></button>
+        <button type="button" data-export="glb" role="menuitem">Textured terrain GLB <small>256 grid · display mesh, not full DSM</small></button>
+        <button type="button" data-export="obj" role="menuitem">Textured terrain OBJ <small>256 grid · texture ZIP, not full DSM</small></button>
         <button type="button" data-export="dtm" role="menuitem">Bare-ground DTM <small>GeoTIFF · metric scenes</small></button>
         <button type="button" data-export="ndsm" role="menuitem">Above-ground nDSM <small>Building and tree heights</small></button>
-        <button type="button" data-export="uncertainty" role="menuitem">Uncertainty map <small>Per-pixel 1σ from the rotation ensemble</small></button>
+        <button type="button" data-export="uncertainty" role="menuitem">Uncertainty map <small>Provisional · requires multiple model passes</small></button>
         <button type="button" data-export="cityjson" role="menuitem">Buildings CityJSON <small>LoD1 with inferred pitched roofs where supported</small></button>
         <button type="button" data-export="heightmap" role="menuitem">Heightmap PNG <small>16-bit greyscale for Blender / game engines</small></button>
-        <button type="button" data-export="ply" role="menuitem">Point cloud PLY <small>Coloured surface points</small></button>
+        <button type="button" data-export="ply" role="menuitem">Point cloud PLY <small>Sampled surface points · use GeoTIFF for full grid</small></button>
         <button type="button" data-export="evidence" role="menuitem">Evidence Passport JSON <small>SHA-256 provenance bundle</small></button>
         <button type="button" data-export="shot" role="menuitem">Viewer screenshot <small>Current camera and layer</small></button>
       </div>
@@ -186,8 +186,8 @@
           <button data-mode="topogray" title="Topo in greyscale">Topo B/W</button>
           <button data-mode="height">Height</button>
           <button data-mode="slope">Slope</button>
-          <button data-mode="hazard" id="btn-hazard" title="Slope hazard: 0–30° safe, 30–45° warning, >45° high risk · 6">Hazard</button>
-          <button data-mode="confidence" id="btn-conf">Confidence</button>
+          <button data-mode="hazard" id="btn-hazard" title="Slope screening: angle bands only, not a stability or safety assessment · 6">Hazard</button>
+          <button data-mode="confidence" id="btn-conf" title="Ensemble agreement, not accuracy probability">Reliability</button>
           <button data-mode="ndsm" id="btn-ndsm">nDSM</button>
           <button data-mode="curvature">Curvature</button>
           <button data-mode="error" id="btn-error" disabled title="Signed DSM error against an uploaded reference: blue is low, red is high">Truth</button>
@@ -290,7 +290,7 @@
 
       <!-- Disaster & Flood Simulation -->
       <div class="group" id="flood-group">
-        <div class="group-heading"><h3>Connected Flood Scenario</h3><span class="experimental">DISASTER SIM</span></div>
+        <div class="group-heading"><h3>Connected Flood Scenario</h3><span class="experimental">SCREENING</span></div>
         <label class="row">Water elevation <output id="flood-v">—</output>
           <input type="range" id="flood-level" min="0" max="1" step="0.1" value="0"></label>
         <div class="seg" id="flood-source" aria-label="Water source">
@@ -326,6 +326,7 @@
 
       <div class="group" id="disaster-group">
         <div class="group-heading"><h3>Mission planning</h3><span class="experimental">SCREENING TOOLS</span></div>
+        <p class="note">Terrain routes and refuges are candidates, not verified evacuation plans. Access, building safety and ground conditions need field checks. Runout omits material dynamics; relay coverage models line of sight only.</p>
         <div class="mission-actions">
           <button id="route-tool" type="button" title="Click a start location in the 3D scene">Evacuation route</button>
           <button id="shelter-tool" type="button">Vertical shelters</button>
@@ -400,7 +401,7 @@
           <label>Depth backbone<select name="model"><option value="small">Depth Anything V2 Small · pretrained baseline</option><option value="base">Depth Anything V2 Base · pretrained baseline</option><option value="large">Depth Anything V2 Large · pretrained baseline (slow)</option></select></label>
           <p class="note" id="local-model-status">Checking local fine-tuned model…</p>
           <label>Fine-tuned checkpoint (optional)<input type="text" name="custom_model" placeholder="D:\DepthWizard\checkpoints\da2-gamus-full"></label>
-          <label>Rotation ensemble<select name="tta"><option value="4" selected>4 passes · accuracy + confidence map</option><option value="8">8 passes · best</option><option value="1">1 pass · fastest</option></select></label>
+          <label>Rotation ensemble<select name="tta"><option value="4" selected>4 passes · ensemble reliability</option><option value="8">8 passes · more ensemble views</option><option value="1">1 pass · faster, no reliability map</option></select></label>
           <label>DEM type<select name="dem_kind"><option value="auto">Auto-detect</option><option value="surface">Surface model (Copernicus / SRTM – includes buildings)</option><option value="terrain">Bare-earth terrain (DTM)</option></select></label>
           <label class="row check"><input type="checkbox" name="match_dem_30m" value="true" checked> Match a surface DEM exactly at its own 30 m cells</label>
           <div class="two-col"><label>Sun elevation (°)<input type="number" name="sun_elevation" step="any" min="1" max="89" placeholder="from metadata"></label>
@@ -430,6 +431,6 @@
     <button id="help-close" class="primary">Got it</button>
   </div>
 </div>
-<script type="module" src="app.js?v=20261003-grid"></script>
+<script type="module" src="app.js?v=20261003-integrity"></script>
 </body>
 </html>

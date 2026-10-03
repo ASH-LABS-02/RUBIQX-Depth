@@ -217,7 +217,9 @@ export function createMissionUi(ctx) {
     const badge=s.meta?.calibration?.method==='input-dem'?'Input DEM (not estimated)':metric?'Metric elevation':'Relative heights';
     $('#minimap').title=`${badge} · click to move camera`;
     $('#export-menu [data-export="dsm"] small').textContent=s.meta?.calibration?.method==='input-dem'?'Original input grid · not estimated':metric?'Original estimated grid':'Relative surface grid · unitless';
-    $('#export-menu [data-export="uncertainty"]').disabled=!s.confidence;
+    $('#export-menu [data-export="dsm"]').firstChild.textContent=metric?'DSM GeoTIFF ':'rDSM GeoTIFF ';
+    $('#export-menu [data-export="uncertainty"]').disabled=!s.confidence||s.meta?.has_uncertainty===false;
+    $('#export-menu [data-export="uncertainty"] small').textContent=metric?'Provisional σ · two-scene calibration':'Unitless ensemble spread · not an error bar';
     $('#export-menu [data-export="ndsm"]').disabled=!metric||s.meta?.calibration?.method==='input-dem';
     if(!openingPlayed&&!reducedMotion()){
       openingPlayed=true;

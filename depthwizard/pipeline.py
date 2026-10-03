@@ -289,6 +289,8 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
                 b[key] = round(b[key] / f, 4)
             b.pop("storeys", None)
             b["volume_m3"] = None
+            b["confidence_basis"] = ("relative ensemble agreement" if ensemble_available
+                                     else "relative roof-height consistency")
     log(f"  detected {buildings['count']} buildings (footprint {buildings['total_footprint_m2']} m²)")
     meta["buildings_count"] = buildings["count"]
     meta["total_footprint_m2"] = buildings["total_footprint_m2"]

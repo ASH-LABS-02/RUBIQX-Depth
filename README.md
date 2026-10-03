@@ -272,7 +272,7 @@ The app opens into **Terrain Mission Control**: a full-bleed 3D scene, a compact
 
 - `data/jobs/` and `samples/*/evaluation/` contain processed demo scenes (GeoTIFFs and viewer `.bin` files) on purpose: the gallery, the live demo and the validation panel open instantly without a GPU, and every reported number can be checked against the stored outputs. New jobs you create are git-ignored.
 - Model and dataset locations are settings, not hard-coded paths: put the checkpoint in `models/da2-gamus-full` or set `DEPTHWIZARD_CHECKPOINT`; set `DEPTHWIZARD_GAMUS_ROOT` for the GAMUS evaluation and `DEPTHWIZARD_TRAINING_ROOT` for training outputs.
-- `pytest -q tests` runs 28 tests covering calibration, anchors, rescaling, the job queue, disaster tools, uncertainty calibration and the GAMUS scoring modes.
+- `pytest -q tests` covers calibration, anchors, rescaling, the job queue, disaster tools, uncertainty availability and calibration, model failure handling, report limits and the GAMUS scoring modes.
 
 ## Test data
 

@@ -432,9 +432,14 @@ def download_all(job_id: str):
             notes.append(f"report skipped: {exc}")
         readme = ("DepthWizard / RUBIQX-Depth export for scene " + job_id + "\n\n"
                   "dsm/rdsm: surface heights (rdsm = relative units)\n"
-                  "dtm: bare earth · ndsm: height above ground · uncertainty: 1-sigma ensemble spread\n"
+                  "dtm: bare earth · ndsm: height above ground\n"
+                  "uncertainty: provisional calibrated sigma for metric scenes (two DC scenes); unitless ensemble spread for relative scenes\n"
+                  "ensemble_spread: raw metric rotation spread, not an error bar; reliability is not accuracy probability\n"
                   "buildings.city.json: LoD1 buildings (CityJSON 1.1) · points.ply: coloured point cloud\n"
-                  "terrain.glb: textured mesh · report.html: open in a browser, print to PDF\n"
+                  "terrain.glb: textured display mesh (256 grid); sampled meshes/points do not replace full-resolution GeoTIFFs\n"
+                  "Relative mesh heights are display-normalized, not metric measurements\n"
+                  "Disaster tools are simplified screening scenarios, not operational forecasts or verified evacuation plans\n"
+                  "report.html: open in a browser, print to PDF\n"
                   "meta.json: calibration method, evidence level, datum and file hashes\n")
         if notes:
             readme += "\nNotes:\n" + "\n".join(notes) + "\n"
