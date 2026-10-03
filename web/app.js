@@ -13,7 +13,10 @@ import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg
 import { createMissionUi } from './ui-v2.js?v=20261003-scene-polish';
 import { createDiorama } from './diorama.js?v=20261001-bold-r4';
 import { createBoldUi } from './ui-v3.js?v=20261003-scene-polish';
-import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261003-scene-polish';
+import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats, updateTreeLod, getTreeLodDiagnostics } from './trees.js?v=20261003-navigation-budget';
+import { createWalkController } from './walk.js?v=20261003-navigation-budget';
+import { createRenderProfiler } from './render-profile.js?v=20261003-navigation-budget';
+import { createDialogManager } from './dialogs.js?v=20261003-navigation-budget';
 import { cinematicPath } from './cinematic.js?v=20261003-cinematic';
 import { coordinateAt, coordinateFrame, coordinateGrid } from './coordinates.js?v=20261003-grid';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
@@ -21,7 +24,7 @@ const FLOOR_AREA_PER_PERSON_M2 = 30;
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
-let missionUi = null, boldUi = null, sceneGeneration = 0, sceneAbort = null, loadingSceneId = null;
+let missionUi = null, boldUi = null, dialogManager = null, renderProfiler = null, sceneGeneration = 0, sceneAbort = null, loadingSceneId = null;
 
 async function apiFetch(url, options = {}) {
   try {
@@ -342,6 +345,7 @@ function syncTreeLayer(flattenedCells = 0) {
   if (S.treeGroup) {
     scene.add(S.treeGroup);
     S.treeGroup.visible = true;
+    updateTreeLod(S.treeGroup, camera, { quality: S.quality, viewportHeight: canvas.clientHeight, force: true });
   }
   logTreeStats(S.id || 'scene', flattenedCells, canopy, built);
   requestRender();
@@ -1460,10 +1464,26 @@ function setViewGeometry(mode) {
 }
 
 // ------------------------------------------------------------------ navigation
+let walkController = null, walkBuildings = null, walkScene = null;
+function prepareWalk() {
+  if (!walkController || walkBuildings !== S.buildings || walkScene !== S.id) {
+    walkController = createWalkController({ W: S.W, H: S.H, groundWm: S.meta.ground_w_m, groundHm: S.meta.ground_h_m,
+      groundAt: (x, z) => sampleGrid(S.renderH || S.h, x, z),
+      polygons: (S.buildings?.buildings || []).map(b => b.polygon_world) });
+    walkBuildings = S.buildings; walkScene = S.id;
+  }
+  return walkController;
+}
 function setNav(mode) {
   if (mode === 'walk' && (!S.mesh || S.meta?.units !== 'metre')) return;
   if (!S.mesh && mode === 'tour') return;
   if (mode === S.nav && mode !== 'tour') return;
+  if (mode === 'walk') {
+    const hit = raycastFrom(new THREE.Vector2(0, 0));
+    const spawn = prepareWalk().spawn(hit?.point.x ?? camera.position.x, hit?.point.z ?? camera.position.z);
+    if (!spawn) { toast('No clear ground with a suitable slope was found for Walk in this scene.', 'error'); return; }
+    camera.position.set(spawn.x, worldY(spawn.ground + 1.7), spawn.z);
+  }
   if (S.nav === 'fly' || S.nav === 'walk') fly.unlock();
   if (mode !== 'orbit') camera.up.set(0, 1, 0);
   S.nav = mode;
@@ -1504,26 +1524,38 @@ function setNav(mode) {
 const clock = new THREE.Clock();
 function updateNavigationHint() {
   $('#fly-hint').textContent = `${fly.isLocked ? '' : 'Click to look around · '}${S.nav === 'walk'
-    ? 'WASD walk · follows display surface' : 'WASD fly · Q/E down/up'} · Shift fast · Esc release`;
+    ? 'WASD walk · footprint barriers · slope limits' : 'WASD fly · Q/E down/up'} · Shift fast · Esc release`;
 }
 function updateFly(dt) {
-  if (!fly.isLocked) return;
+  if (S.nav === 'walk') clampCamera();
+  if (!fly.isLocked || dialogManager?.isOpen()) return;
   const walking = S.nav === 'walk';
+  const diagonal = walking && (Boolean(S.keys.KeyW) !== Boolean(S.keys.KeyS))
+    && (Boolean(S.keys.KeyA) !== Boolean(S.keys.KeyD));
   const speed = (walking ? 1.8 * S.W / (S.meta.ground_w_m || S.W) : S.extent / 12)
-    * (S.keys.ShiftLeft || S.keys.ShiftRight ? (walking ? 2 : 4) : 1) * dt;
+    * (S.keys.ShiftLeft || S.keys.ShiftRight ? (walking ? 2 : 4) : 1) * dt / (diagonal ? Math.SQRT2 : 1);
+  const priorX = camera.position.x, priorZ = camera.position.z;
   if (S.keys.KeyW) fly.moveForward(speed);
   if (S.keys.KeyS) fly.moveForward(-speed);
   if (S.keys.KeyD) fly.moveRight(speed);
   if (S.keys.KeyA) fly.moveRight(-speed);
   if (!walking && (S.keys.KeyE || S.keys.Space)) camera.position.y += speed;
   if (!walking && S.keys.KeyQ) camera.position.y -= speed;
+  if (walking) {
+    const next = prepareWalk().move(priorX, priorZ, camera.position.x - priorX, camera.position.z - priorZ);
+    camera.position.set(next.x, worldY(next.ground + 1.7), next.z);
+  }
   clampCamera();
 }
 function clampCamera() {
   if (S.nav === 'walk') {
-    camera.position.x = THREE.MathUtils.clamp(camera.position.x, -S.W * .499, S.W * .499);
-    camera.position.z = THREE.MathUtils.clamp(camera.position.z, -S.H * .499, S.H * .499);
-    camera.position.y = terrainY(camera.position.x, camera.position.z) + worldY(S.base + 1.7) - worldY(S.base);
+    const controller = prepareWalk();
+    if (!controller.valid(camera.position.x, camera.position.z)) {
+      const spawn = controller.spawn(camera.position.x, camera.position.z);
+      if (!spawn) { setNav('orbit'); toast('Walk stopped: clear ground is unavailable.', 'error'); return; }
+      camera.position.x = spawn.x; camera.position.z = spawn.z;
+    }
+    camera.position.y = worldY(controller.groundAt(camera.position.x, camera.position.z) + 1.7);
     return;
   }
   // Constrain first-person travel, not the orbit dolly or the diorama framing.
@@ -2084,12 +2116,12 @@ function busy(on, text) { $('#busy').classList.toggle('hidden', !on); $('#stage'
 function showTab(t) {
   if (t === 'upload') {
     $('#help').classList.add('hidden');
-    $('#upload-modal').classList.remove('hidden');
-    $('#upload-close').focus();
+    dialogManager.open('upload-modal');
     refreshLocalModel();
     return;
   }
   $('#upload-modal').classList.add('hidden');
+  dialogManager?.sync();
   $$('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === t));
   $$('.panel').forEach((p) => p.classList.toggle('hidden', p.id !== 'tab-' + t));
 }
@@ -2169,6 +2201,7 @@ function applyQuality(q) {
   resize();
   if (S.mesh) setSun(+$('#sun').value);
   updateCinematicScene();
+  if (S.treeGroup) updateTreeLod(S.treeGroup, camera, { quality: q, viewportHeight: canvas.clientHeight, force: true });
   try { localStorage.setItem('dw-quality', q); } catch {}
 }
 { let q = 'balanced'; try { q = localStorage.getItem('dw-quality') || q; } catch {} $('#quality').value = q; S.quality = q; setTimeout(() => applyQuality(q), 0); }
@@ -2190,7 +2223,8 @@ $('#fullscreen').onclick = async () => {
   requestAnimationFrame(resize);
 };
 document.addEventListener('fullscreenchange', () => requestAnimationFrame(resize));
-$('#help-btn').onclick = () => $('#help').classList.toggle('hidden');
+function toggleHelp() { if (dialogManager.isOpen('help')) dialogManager.close('help'); else dialogManager.open('help'); }
+$('#help-btn').onclick = toggleHelp;
 $('#help-close').onclick = () => $('#help').classList.add('hidden');
 $('#dl-dsm').onclick = () => S.id && (location.href = `api/scenes/${S.id}/dsm`);
 $('#dl-report').onclick = () => S.id && window.open(`api/scenes/${S.id}/report`, '_blank');
@@ -2264,6 +2298,7 @@ fly.addEventListener('lock', updateNavigationHint);
 fly.addEventListener('unlock', () => { S.keys = {}; updateNavigationHint(); });
 
 addEventListener('keydown', (e) => {
+  if (dialogManager?.isOpen()) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openCommandPalette(); return; }
   if (e.target.matches('input, select, textarea')) return;
   if (e.shiftKey && e.code === 'KeyG') {
@@ -2285,7 +2320,7 @@ addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (k === 'o') setNav('orbit'); else if (k === 'f') setNav('fly'); else if (k === 't') setNav('tour');
   else if (k === 'd') topDownView(); else if (k === 'v') setComparison($('#comparison').classList.contains('hidden'));
-  else if (k === 'r' && S.mesh) resetView(); else if (k === 'h') $('#help').classList.toggle('hidden');
+  else if (k === 'r' && S.mesh) resetView(); else if (k === 'h') toggleHelp();
   else if (k === 'c' && S.mesh) setViewGeometry(S.viewGeometry === 'city' ? 'surface' : 'city');
   else if (k === 's' && S.mesh) $('#swipe-toggle').click();
   else if (k === 'e') $('#dl-dsm-header').click();
@@ -2382,10 +2417,14 @@ new ResizeObserver(resize).observe(canvas);
 let frames = 0, fpsT = 0, mmT = 0;
 let idleSkip = 0;
 renderer.setAnimationLoop(() => {
+  const frameStarted = performance.now();
+  const modalOpen = dialogManager?.isOpen();
   const busyAnim = S.nav !== 'orbit' || S.riseStart || S.cameraFlight || S.floodAnimating || S.missionOverlay
-    || swipeDragging || S.recording || S.floodMesh || S.waterAnim;
-  const idleRotation=boldUi?.tick(busyAnim || performance.now()-lastActivity<1500);
-  missionUi?.tick(busyAnim || performance.now()-lastActivity<1500);
+    || swipeDragging || S.recording || S.floodMesh || S.waterAnim || renderProfiler?.active;
+  const suspendIdle = modalOpen || renderProfiler?.active;
+  const idleRotation=suspendIdle ? false : boldUi?.tick(busyAnim || performance.now()-lastActivity<1500);
+  if (suspendIdle) orbit.autoRotate = false;
+  else missionUi?.tick(busyAnim || performance.now()-lastActivity<1500);
   if (!busyAnim && !idleRotation && performance.now() - lastActivity > 1500 && (idleSkip++ % 15) !== 0) { clock.getDelta(); return; }
   const dt = Math.min(clock.getDelta(), 0.1);
   if (S.mesh) {
@@ -2403,9 +2442,11 @@ renderer.setAnimationLoop(() => {
       orbit.update();
       if (t >= 1) S.cameraFlight = null;
     }
-    if (S.nav === 'orbit') { orbit.update(dt); clampCamera(); }
-    else if (S.nav === 'fly' || S.nav === 'walk') updateFly(dt);
-    else if (S.nav === 'tour') updateTour(dt);
+    if (!modalOpen) {
+      if (S.nav === 'orbit') { orbit.update(dt); clampCamera(); }
+      else if (S.nav === 'fly' || S.nav === 'walk') updateFly(dt);
+      else if (S.nav === 'tour') updateTour(dt);
+    }
     updateCoordinateLabels();
     if (S.nav !== 'orbit') {
       if (Math.abs(camera.position.x) <= S.W / 2 && Math.abs(camera.position.z) <= S.H / 2) updateCoordinateReadout(camera.position.x, camera.position.z);
@@ -2445,6 +2486,9 @@ renderer.setAnimationLoop(() => {
     }else{text.textContent='Scale unavailable';line.style.width='0';}
 
   }
+  if (updateTreeLod(S.treeGroup, camera, { quality: S.quality === 'balanced' && S.aoEnabled === false ? 'performance' : S.quality,
+    now: frameStarted, viewportHeight: canvas.clientHeight })) renderer.shadowMap.needsUpdate = true;
+  renderer.info.autoReset = false; renderer.info.reset();
   if (S.swipeActive && S.baseMesh && S.mesh) {
     const w = canvas.clientWidth, h = canvas.clientHeight, split = Math.round(w * S.swipeX);
     const hideCity = S.buildingGroup?.visible;
@@ -2461,6 +2505,8 @@ renderer.setAnimationLoop(() => {
     renderer.setScissorTest(false);
   } else if (S.quality !== 'performance' && S.aoEnabled !== false && post.composer && !S.recording) post.composer.render(dt);
   else renderer.render(scene, camera);
+  renderProfiler?.record({ now: frameStarted, submissionMs: performance.now() - frameStarted,
+    calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, lod: getTreeLodDiagnostics(S.treeGroup) });
   if (S.floodMesh) waterUniforms.uTime.value = performance.now() / 1000;
   frames++; fpsT += dt;
   if (fpsT > 1) { $('#hud-fps').textContent = `${Math.round(frames / fpsT)} fps`; frames = 0; fpsT = 0; }
@@ -3046,11 +3092,16 @@ $('#gcp-reset').onclick = async () => {
 
 // first-run demo gallery
 async function openGallery() {
+  const trigger = document.activeElement;
   if ($('#gallery').classList.contains('hidden')) {
     S.galleryPrevNav = S.nav;
-    if (S.mesh && !matchMedia('(prefers-reduced-motion: reduce)').matches) setNav('tour');
   }
-  const list = await fetchSceneList(false);
+  dialogManager.open('gallery', trigger); $('#app').classList.add('gallery-open');
+  $('#gallery-grid').textContent = 'Loading scenes…';
+  let list;
+  try { list = await fetchSceneList(false); }
+  catch (error) { if (dialogManager.isOpen('gallery')) $('#gallery-grid').textContent = 'Scenes could not be loaded. Close this gallery and try again.'; throw error; }
+  if (!dialogManager.isOpen('gallery')) return;
   const grid = $('#gallery-grid'); grid.innerHTML = '';
   const featured = ['dc-glover-park','dc-capitol-hill','quesenbank-south-calibrated-v2','gamus-nyc','dc-glover-post','forest-north'];
   const picks = featured.map((id) => list.find((sc) => sc.id === id)).filter(Boolean);
@@ -3075,10 +3126,11 @@ async function openGallery() {
     card.onclick = () => { closeGallery(); loadScene(sc.id); };
     grid.appendChild(card);
   }
-  $('#gallery').classList.remove('hidden'); $('#app').classList.add('gallery-open');
+  dialogManager.sync();
 }
 function closeGallery() {
   $('#gallery').classList.add('hidden'); $('#app').classList.remove('gallery-open');
+  dialogManager?.sync();
   if (S.mesh && S.galleryPrevNav) setNav(S.galleryPrevNav);
   S.galleryPrevNav = null;
 }
@@ -3240,10 +3292,10 @@ function renderLayerPreviews() {
 }
 function refreshImportPreview() { return missionUi?.inspectInput(); }
 function openCommandPalette() {
-  $('#command-palette').classList.remove('hidden'); $('#command-input').value = '';
+  dialogManager.open('command-palette'); $('#command-input').value = '';
   renderCommandResults(''); $('#command-input').focus();
 }
-function closeCommandPalette() { $('#command-palette').classList.add('hidden'); }
+function closeCommandPalette() { $('#command-palette').classList.add('hidden'); dialogManager?.sync(); }
 function renderCommandResults(query) {
   const q = query.trim().toLowerCase(), choices = [];
   for (const [id, label] of [['explore','Explore terrain'],['measure','Measure heights and slopes'],['disaster','Flood and response'],['buildings','Buildings'],['calibrate','Calibrate scale'],['validate','Validate against reference']])
@@ -3341,6 +3393,7 @@ function initMissionLayout() {
   $('#rail-import').onclick=()=>$('#import-btn').click();
   $$('#mode-rail [data-workspace]').forEach((b)=>b.onclick=()=>setWorkspace(b.dataset.workspace));
   addEventListener('keydown',(e)=>{
+    if (dialogManager?.isOpen()) return;
     if(e.key==='Escape'){
       $('#app').classList.add('drawer-collapsed');
       closeCommandPalette();closeExportMenu();$('#compare-popover').classList.add('hidden');$('#help').classList.add('hidden');
@@ -3354,6 +3407,26 @@ function initMissionLayout() {
 initMissionLayout();
 missionUi = createMissionUi({ getState: () => S, camera, orbit, requestRender, setWorkspace, loadScene, resetView, setNav, setMode, toast });
 boldUi = createBoldUi({getState:()=>S,orbit,canvas,requestRender});
+dialogManager = createDialogManager({
+  onOpen: () => { S.keys = {}; fly.unlock(); S.cameraFlight = null; orbit.enabled = false; orbit.autoRotate = false;
+    if (renderProfiler?.active) renderProfiler.cancel('Capture cancelled: a dialog opened.'); },
+  onClose: () => { S.keys = {}; orbit.enabled = S.nav === 'orbit' && !dialogManager.isOpen(); requestRender(); },
+  onCommand: openCommandPalette,
+});
+const glContext = renderer.getContext(), gpuInfo = glContext.getExtension('WEBGL_debug_renderer_info');
+renderProfiler = createRenderProfiler({ getContext: () => ({ scene: S.id, view: S.viewGeometry, layer: S.mode,
+  quality: S.quality, navigation: S.nav, grid: [S.gw, S.gh], viewport: [canvas.clientWidth, canvas.clientHeight],
+  pixelRatio: renderer.getPixelRatio(), userAgent: navigator.userAgent,
+  renderer: gpuInfo ? glContext.getParameter(gpuInfo.UNMASKED_RENDERER_WEBGL) : glContext.getParameter(glContext.RENDERER),
+  hardwareNote: $('#profile-hardware').value.trim(), treeCandidates: getTreeLodDiagnostics(S.treeGroup)?.instanceCount ?? 0 }),
+  onStatus: message => { $('#render-profile-status').textContent = message; if (!renderProfiler?.active) $('#render-profile-start').disabled = false; },
+  onComplete: report => { $('#render-profile-start').disabled = false; $('#render-profile-download').disabled = false;
+    $('#render-profile-json').textContent = JSON.stringify(report, null, 2); $('#render-profile-json').classList.remove('hidden');
+    $('#render-profile-status').textContent = `${fmt(report.fps, 1)} fps · P95 ${fmt(report.frameP95Ms, 1)} ms · ${report.samples} frames. Download includes renderer and quality changes.`; },
+});
+$('#render-profile-start').onclick = () => { if (!S.mesh) { toast('Load a scene before recording performance.'); return; }
+  renderProfiler.start(); $('#render-profile-start').disabled = true; requestRender(); };
+$('#render-profile-download').onclick = () => renderProfiler.download();
 // Catch rejected async UI actions at their event boundary. Network errors already
 // have a retry toast; synchronous exceptions remain visible for debugging.
 for (const el of $$('button,a,input,select,.brand')) {

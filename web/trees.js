@@ -7,6 +7,9 @@ export const CANOPY_MIN_AGL_M = 2.5;
 const MAX_INSTANCES = 30000;
 const TARGET_SPACING_M = 6;
 const TRUNK_BROWN = 0x5c4033;
+const TREE_LOD_STATE = new WeakMap();
+const TREE_LOD_MIN_PIXELS = { performance: 38, balanced: 24, cinematic: 15 };
+const ignoreTreeRaycast = () => {};
 
 function hash01(n) {
   let h = (n * 2654435761) >>> 0;
@@ -131,10 +134,122 @@ export function flattenCanopyHeights(src, canopy) {
 
 export function disposeTreeGroup(group) {
   if (!group) return;
+  const geometries = new Set(), materials = new Set();
   group.traverse((c) => {
-    if (c.geometry) c.geometry.dispose();
-    if (c.material) c.material.dispose();
+    if (c.geometry) geometries.add(c.geometry);
+    if (Array.isArray(c.material)) c.material.forEach((m) => materials.add(m));
+    else if (c.material) materials.add(c.material);
+    // Instance buffers belong to each mesh, while geometry/materials are
+    // shared by every spatial chunk and must be released only once.
+    if (c.isInstancedMesh) c.dispose?.();
   });
+  geometries.forEach((g) => g.dispose());
+  materials.forEach((m) => m.dispose());
+  TREE_LOD_STATE.delete(group);
+}
+
+/** Counts describe the active representation before renderer frustum culling. */
+export function getTreeLodDiagnostics(group) {
+  const state = group && TREE_LOD_STATE.get(group);
+  if (!state) return null;
+  let nearTrees = 0, distantTrees = 0, crownInstances = 0, branchInstances = 0;
+  let estimatedTriangles = 0, estimatedDrawCalls = 0;
+  for (const chunk of state.chunks) {
+    if (chunk.near) {
+      nearTrees += chunk.count;
+      crownInstances += chunk.crowns;
+      branchInstances += chunk.count * 4;
+      estimatedTriangles += chunk.nearTriangles;
+      estimatedDrawCalls += 3;
+    } else {
+      distantTrees += chunk.count;
+      crownInstances += chunk.count;
+      estimatedTriangles += chunk.distantTriangles;
+      estimatedDrawCalls += 2;
+    }
+  }
+  return {
+    quality: state.quality,
+    instanceCount: state.count,
+    nearTrees,
+    distantTrees,
+    chunkCount: state.chunks.length,
+    crownInstances,
+    branchInstances,
+    trunkInstances: state.count,
+    estimatedTriangles,
+    estimatedDrawCalls,
+    detailedTriangles: state.detailedTriangles,
+    nearShadowTrees: state.quality === 'performance' ? 0 : nearTrees,
+    visible: group.visible,
+    updates: state.updates,
+  };
+}
+
+/**
+ * Switch static chunk representations; no per-frame instance matrix uploads.
+ * Screen size combines camera distance, lens, viewport and metric tree scale.
+ * `force` is useful immediately after rebuilding or changing quality.
+ * @returns {boolean} Whether any mesh visibility/shadow setting changed.
+ */
+export function updateTreeLod(group, camera, {
+  quality = 'balanced', viewportHeight = 720, now = performance.now(),
+  force = false, updateIntervalMs = 180,
+} = {}) {
+  const state = group && TREE_LOD_STATE.get(group);
+  if (!state || !camera || (!group.visible && !force)) return false;
+  quality = Object.hasOwn(TREE_LOD_MIN_PIXELS, quality) ? quality : 'balanced';
+  viewportHeight = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 720;
+  const qualityChanged = quality !== state.quality;
+  if (!force && !qualityChanged && now - state.lastUpdate < Math.max(0, updateIntervalMs)) return false;
+
+  camera.getWorldPosition(state.cameraWorld);
+  group.updateWorldMatrix(true, false);
+  state.inverse.copy(group.matrixWorld).invert();
+  state.cameraLocal.copy(state.cameraWorld).applyMatrix4(state.inverse);
+  const lens = camera.isOrthographicCamera
+    ? (camera.top - camera.bottom) / (camera.zoom || 1)
+    : camera.getEffectiveFOV?.() || camera.fov || 55;
+  const viewChanged = state.lastViewportHeight !== viewportHeight || state.lastLens !== lens;
+  if (!force && !qualityChanged && !viewChanged &&
+      state.cameraLocal.distanceToSquared(state.lastCamera) < 1e-8) return false;
+  state.lastUpdate = now;
+  state.lastCamera.copy(state.cameraLocal);
+  state.lastViewportHeight = viewportHeight;
+  state.lastLens = lens;
+  state.quality = quality;
+  state.updates++;
+  const focalPixels = camera.isOrthographicCamera ? viewportHeight / Math.max(1e-6, lens)
+    : viewportHeight / (2 * Math.tan(THREE.MathUtils.degToRad(lens / 2)));
+  const minPixels = TREE_LOD_MIN_PIXELS[quality];
+  // Account for a transformed parent without changing any tree dimensions.
+  const matrix = group.matrixWorld.elements;
+  const groupScale = Math.max(Math.hypot(matrix[0], matrix[1], matrix[2]),
+    Math.hypot(matrix[4], matrix[5], matrix[6]), Math.hypot(matrix[8], matrix[9], matrix[10]));
+  let changed = false;
+  for (const chunk of state.chunks) {
+    const distance = Math.max(1e-6, chunk.bounds.distanceToPoint(state.cameraLocal));
+    const pixels = camera.isOrthographicCamera ? chunk.crownSize * groupScale * focalPixels
+      : chunk.crownSize * focalPixels / distance;
+    // A 30% dead band avoids flicker when orbiting around a chunk boundary.
+    const near = pixels >= minPixels * (chunk.near ? .85 : 1.15);
+    if (near !== chunk.near) {
+      chunk.near = near;
+      chunk.detailed.visible = near;
+      chunk.distant.visible = !near;
+      changed = true;
+    }
+    const shadows = quality !== 'performance';
+    if (chunk.shadowEnabled !== shadows) {
+      chunk.shadowEnabled = shadows;
+      for (const mesh of chunk.detailed.children) {
+        mesh.castShadow = shadows;
+        mesh.receiveShadow = shadows;
+      }
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 function crownColor(seed) {
@@ -235,80 +350,161 @@ export function buildTreeGroup({ h, dtm, buildingMask, gw, gh, W, H, groundWm = 
   // Instanced colours are independent of geometry vertex colours. This
   // geometry has no colour attribute, so vertexColors must remain disabled.
   const crownMat = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
+  const distantTrunkGeo = new THREE.CylinderGeometry(0.7, 1, 1, 4);
+  distantTrunkGeo.translate(0, .5, 0);
+  const distantCrownGeo = new THREE.IcosahedronGeometry(1, 0);
+  distantCrownGeo.computeBoundingBox();
+  const distantMinY = distantCrownGeo.boundingBox.min.y;
+  const distantMaxY = distantCrownGeo.boundingBox.max.y;
 
-  const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, trees.length);
-  const branchMesh = new THREE.InstancedMesh(branchGeo, trunkMat.clone(), trees.length * 4);
-  const crownMesh = new THREE.InstancedMesh(crownGeo, crownMat, trees.reduce((n, t) => n + t.blobs, 0));
-  trunkMesh.name = 'treeTrunks'; branchMesh.name = 'treeBranches'; crownMesh.name = 'treeFoliage';
-  trunkMesh.castShadow = branchMesh.castShadow = crownMesh.castShadow = true;
-  trunkMesh.receiveShadow = branchMesh.receiveShadow = crownMesh.receiveShadow = true;
-  const up = new THREE.Vector3(0, 1, 0), branchDirection = new THREE.Vector3();
-
-  let crownIndex = 0;
-  for (let n = 0; n < trees.length; n++) {
-    const t = trees[n];
-    const rot = hash01(t.seed * 13) * Math.PI * 2;
-    const crownR = Math.min(7, Math.max(1.5, (0.3 + hash01(t.seed * 17) * 0.1) * t.agl));
-    const trunkR = trunkRadiusFor(t.agl);
-    const groundY = worldY(t.ground);
-    const trunkH = worldY(t.ground + t.agl * 0.3) - groundY;
-
-    dummy.position.set(t.x, groundY, t.z);
-    dummy.rotation.set(0, rot, 0);
-    dummy.scale.set(trunkR * scaleX, trunkH, trunkR * scaleZ);
-    dummy.updateMatrix();
-    trunkMesh.setMatrixAt(n, dummy.matrix);
-
-    // A short exposed trunk forks into a central leader and three tapered
-    // limbs. Everything stays in the same metric/exaggerated frame as the DSM.
-    for (let b = 0; b < 4; b++) {
-      const angle = rot + b * 2.399963;
-      const reachM = b === 0 ? 0 : crownR * 0.47;
-      const baseY = worldY(t.ground + t.agl * (b === 0 ? 0.3 : 0.25));
-      const tipY = worldY(t.ground + t.agl * (b === 0 ? 0.72 : 0.61 + hash01(t.seed + b) * 0.07));
-      branchDirection.set(Math.cos(angle) * reachM * scaleX, tipY - baseY,
-        Math.sin(angle) * reachM * scaleZ);
-      const length = branchDirection.length();
-      dummy.position.set(t.x, baseY, t.z);
-      dummy.quaternion.setFromUnitVectors(up, branchDirection.normalize());
-      dummy.scale.set(trunkR * 0.65 * scaleX, length, trunkR * 0.65 * scaleZ);
-      dummy.updateMatrix();
-      branchMesh.setMatrixAt(n * 4 + b, dummy.matrix);
-    }
-
-    for (let b = 0; b < t.blobs; b++) {
-      const seed = t.seed * 37 + b * 101;
-      const main = b === 0;
-      const lower = b > 0 && b <= 3;
-      const angle = rot + b * 2.399963;
-      const spread = t.form === 0 ? 1.12 : t.form === 1 ? .68 : 1;
-      const offsetM = main ? 0 : crownR * spread * (lower ? .40 + hash01(seed * 3) * .16 : .30);
-      const radiusM = crownR * spread * (main ? .68 : lower ? .38 + hash01(seed * 5) * .10 : .38);
-      const bottomY = worldY(t.ground + t.agl * (main ? (t.form === 1 ? .40 : .55) : lower ? .35 + hash01(seed) * .10 : .54));
-      const topY = worldY(t.ground + t.agl * (main ? 1 : lower ? 0.74 + hash01(seed * 7) * 0.10 : 0.88 + hash01(seed * 7) * 0.08));
-      const radiusY = (topY - bottomY) / (crownMaxY - crownMinY);
-      dummy.position.set(t.x + Math.cos(angle) * offsetM * scaleX,
-        topY - crownMaxY * radiusY, t.z + Math.sin(angle) * offsetM * scaleZ);
-      dummy.rotation.set(0, rot + b, 0);
-      const width = .78 + hash01(t.seed * 41) * .38;
-      dummy.scale.set(radiusM * width * scaleX, radiusY, radiusM * (0.85 + hash01(seed * 11) * 0.20) * scaleZ);
-      dummy.updateMatrix();
-      crownMesh.setMatrixAt(crownIndex, dummy.matrix);
-      // Keep each tree's palette coherent; nearby trees still vary naturally.
-      const color = crownColor(t.seed);
-      color.offsetHSL((hash01(seed * 19) - .5) * .015, 0, (hash01(seed * 23) - .5) * .025);
-      crownMesh.setColorAt(crownIndex++, color);
-    }
+  // Bound the number of spatial chunks by candidate count. Empty bins create
+  // no meshes; all candidates retain their original coordinates and seed.
+  const targetChunks = Math.min(128, Math.max(1, Math.ceil(trees.length / 256)));
+  const aspect = THREE.MathUtils.clamp(groundWm / groundHm, 1 / 16, 16);
+  const columns = Math.min(targetChunks, Math.max(1, Math.ceil(Math.sqrt(targetChunks * aspect))));
+  const rows = Math.max(1, Math.floor(targetChunks / columns));
+  const buckets = new Map();
+  for (const tree of trees) {
+    const c = THREE.MathUtils.clamp(Math.floor((tree.x / W + .5) * columns), 0, columns - 1);
+    const r = THREE.MathUtils.clamp(Math.floor((tree.z / H + .5) * rows), 0, rows - 1);
+    const key = r * columns + c;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(tree);
   }
-
-  trunkMesh.instanceMatrix.needsUpdate = true;
-  branchMesh.instanceMatrix.needsUpdate = true;
-  crownMesh.instanceMatrix.needsUpdate = true;
-  if (crownMesh.instanceColor) crownMesh.instanceColor.needsUpdate = true;
-
   const group = new THREE.Group();
   group.name = 'treeInstances';
-  group.add(trunkMesh, branchMesh, crownMesh);
+  const state = {
+    count: trees.length, chunks: [], quality: 'balanced', updates: 0, lastUpdate: -Infinity,
+    detailedTriangles: 0, lastViewportHeight: 0, lastLens: 0,
+    cameraWorld: new THREE.Vector3(), cameraLocal: new THREE.Vector3(),
+    lastCamera: new THREE.Vector3(Infinity, Infinity, Infinity), inverse: new THREE.Matrix4(),
+  };
+  const triangleCount = (geo) => (geo.index?.count ?? geo.attributes.position.count) / 3;
+  for (const [key, chunkTrees] of buckets) {
+    const chunkCrowns = chunkTrees.reduce((n, t) => n + t.blobs, 0);
+    const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, chunkTrees.length);
+    const branchMesh = new THREE.InstancedMesh(branchGeo, trunkMat, chunkTrees.length * 4);
+    const crownMesh = new THREE.InstancedMesh(crownGeo, crownMat, chunkCrowns);
+    const distantTrunkMesh = new THREE.InstancedMesh(distantTrunkGeo, trunkMat, chunkTrees.length);
+    const distantCrownMesh = new THREE.InstancedMesh(distantCrownGeo, crownMat, chunkTrees.length);
+    trunkMesh.name = 'treeTrunks'; branchMesh.name = 'treeBranches'; crownMesh.name = 'treeFoliage';
+    distantTrunkMesh.name = 'distantTreeTrunks'; distantCrownMesh.name = 'distantTreeFoliage';
+    trunkMesh.castShadow = branchMesh.castShadow = crownMesh.castShadow = true;
+    trunkMesh.receiveShadow = branchMesh.receiveShadow = crownMesh.receiveShadow = true;
+    // The distant layer remains unshadowed at every quality setting.
+    distantTrunkMesh.castShadow = distantCrownMesh.castShadow = false;
+    distantTrunkMesh.receiveShadow = distantCrownMesh.receiveShadow = false;
+    for (const mesh of [trunkMesh, branchMesh, crownMesh, distantTrunkMesh, distantCrownMesh]) {
+      mesh.raycast = ignoreTreeRaycast;
+    }
+    const up = new THREE.Vector3(0, 1, 0), branchDirection = new THREE.Vector3();
+
+    let crownIndex = 0, crownSizeSum = 0;
+    for (let n = 0; n < chunkTrees.length; n++) {
+      const t = chunkTrees[n];
+      const rot = hash01(t.seed * 13) * Math.PI * 2;
+      const crownR = Math.min(7, Math.max(1.5, (0.3 + hash01(t.seed * 17) * 0.1) * t.agl));
+      const trunkR = trunkRadiusFor(t.agl);
+      const groundY = worldY(t.ground);
+      const trunkH = worldY(t.ground + t.agl * 0.3) - groundY;
+
+      dummy.position.set(t.x, groundY, t.z);
+      dummy.rotation.set(0, rot, 0);
+      dummy.scale.set(trunkR * scaleX, trunkH, trunkR * scaleZ);
+      dummy.updateMatrix();
+      trunkMesh.setMatrixAt(n, dummy.matrix);
+
+      // A short exposed trunk forks into a central leader and three tapered
+      // limbs. Everything stays in the same metric/exaggerated frame as the DSM.
+      for (let b = 0; b < 4; b++) {
+        const angle = rot + b * 2.399963;
+        const reachM = b === 0 ? 0 : crownR * 0.47;
+        const baseY = worldY(t.ground + t.agl * (b === 0 ? 0.3 : 0.25));
+        const tipY = worldY(t.ground + t.agl * (b === 0 ? 0.72 : 0.61 + hash01(t.seed + b) * 0.07));
+        branchDirection.set(Math.cos(angle) * reachM * scaleX, tipY - baseY,
+          Math.sin(angle) * reachM * scaleZ);
+        const length = branchDirection.length();
+        dummy.position.set(t.x, baseY, t.z);
+        dummy.quaternion.setFromUnitVectors(up, branchDirection.normalize());
+        dummy.scale.set(trunkR * 0.65 * scaleX, length, trunkR * 0.65 * scaleZ);
+        dummy.updateMatrix();
+        branchMesh.setMatrixAt(n * 4 + b, dummy.matrix);
+      }
+
+      for (let b = 0; b < t.blobs; b++) {
+        const seed = t.seed * 37 + b * 101;
+        const main = b === 0;
+        const lower = b > 0 && b <= 3;
+        const angle = rot + b * 2.399963;
+        const spread = t.form === 0 ? 1.12 : t.form === 1 ? .68 : 1;
+        const offsetM = main ? 0 : crownR * spread * (lower ? .40 + hash01(seed * 3) * .16 : .30);
+        const radiusM = crownR * spread * (main ? .68 : lower ? .38 + hash01(seed * 5) * .10 : .38);
+        const bottomY = worldY(t.ground + t.agl * (main ? (t.form === 1 ? .40 : .55) : lower ? .35 + hash01(seed) * .10 : .54));
+        const topY = worldY(t.ground + t.agl * (main ? 1 : lower ? 0.74 + hash01(seed * 7) * 0.10 : 0.88 + hash01(seed * 7) * 0.08));
+        const radiusY = (topY - bottomY) / (crownMaxY - crownMinY);
+        dummy.position.set(t.x + Math.cos(angle) * offsetM * scaleX,
+          topY - crownMaxY * radiusY, t.z + Math.sin(angle) * offsetM * scaleZ);
+        dummy.rotation.set(0, rot + b, 0);
+        const width = .78 + hash01(t.seed * 41) * .38;
+        dummy.scale.set(radiusM * width * scaleX, radiusY, radiusM * (0.85 + hash01(seed * 11) * 0.20) * scaleZ);
+        dummy.updateMatrix();
+        crownMesh.setMatrixAt(crownIndex, dummy.matrix);
+        // Keep each tree's palette coherent; nearby trees still vary naturally.
+        const color = crownColor(t.seed);
+        color.offsetHSL((hash01(seed * 19) - .5) * .015, 0, (hash01(seed * 23) - .5) * .025);
+        crownMesh.setColorAt(crownIndex++, color);
+      }
+
+      // A coarse crown uses the existing metric canopy radius and touches the
+      // identical measured top elevation. A slightly longer trunk replaces the
+      // hidden branch network without introducing a gap beneath the foliage.
+      dummy.position.set(t.x, groundY, t.z);
+      dummy.rotation.set(0, rot, 0);
+      dummy.scale.set(trunkR * scaleX, worldY(t.ground + t.agl * .42) - groundY, trunkR * scaleZ);
+      dummy.updateMatrix();
+      distantTrunkMesh.setMatrixAt(n, dummy.matrix);
+      const spread = t.form === 0 ? 1.12 : t.form === 1 ? .68 : 1;
+      const width = .78 + hash01(t.seed * 41) * .38;
+      const topY = worldY(t.ground + t.agl);
+      const bottomY = worldY(t.ground + t.agl * (t.form === 1 ? .40 : .35));
+      const radiusY = (topY - bottomY) / (distantMaxY - distantMinY);
+      const radiusX = crownR * spread * .94 * width * scaleX;
+      const radiusZ = crownR * spread * .91 * scaleZ;
+      dummy.position.set(t.x, topY - distantMaxY * radiusY, t.z);
+      dummy.rotation.set(0, rot, 0);
+      dummy.scale.set(radiusX, radiusY, radiusZ);
+      dummy.updateMatrix();
+      distantCrownMesh.setMatrixAt(n, dummy.matrix);
+      distantCrownMesh.setColorAt(n, crownColor(t.seed));
+      crownSizeSum += Math.max(topY - bottomY, radiusX * 2, radiusZ * 2);
+    }
+
+    const bounds = new THREE.Box3();
+    for (const mesh of [trunkMesh, branchMesh, crownMesh, distantTrunkMesh, distantCrownMesh]) {
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.computeBoundingBox();
+      mesh.computeBoundingSphere();
+      bounds.union(mesh.boundingBox);
+    }
+    const detailed = new THREE.Group(), distant = new THREE.Group();
+    detailed.name = `treeDetailChunk${key}`; distant.name = `treeDistantChunk${key}`;
+    detailed.add(trunkMesh, branchMesh, crownMesh);
+    distant.add(distantTrunkMesh, distantCrownMesh);
+    detailed.visible = false;
+    group.add(detailed, distant);
+    const nearTriangles = chunkTrees.length * (triangleCount(trunkGeo) + 4 * triangleCount(branchGeo))
+      + chunkCrowns * triangleCount(crownGeo);
+    state.detailedTriangles += nearTriangles;
+    state.chunks.push({ count: chunkTrees.length, crowns: chunkCrowns,
+      bounds, crownSize: crownSizeSum / chunkTrees.length, detailed, distant,
+      near: false, shadowEnabled: true, nearTriangles,
+      distantTriangles: chunkTrees.length * (triangleCount(distantTrunkGeo) + triangleCount(distantCrownGeo)),
+    });
+  }
+  TREE_LOD_STATE.set(group, state);
+  stats.lodChunkCount = state.chunks.length;
+  stats.detailedTriangles = state.detailedTriangles;
   return { group, instanceCount: trees.length, stats };
 }
 

@@ -1,0 +1,80 @@
+{
+  "schema": "depthwizard-render-profile-v1",
+  "capturedAt": "2026-10-03T16:33:13.842Z",
+  "initialContext": {
+    "scene": "dc-glover-park",
+    "view": "city",
+    "layer": "optical",
+    "quality": "balanced",
+    "navigation": "orbit",
+    "grid": [
+      512,
+      512
+    ],
+    "viewport": [
+      1280,
+      720
+    ],
+    "pixelRatio": 1.25,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "renderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A78B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "hardwareNote": "Codex in-app browser preview; reported renderer in JSON",
+    "treeCandidates": 3069
+  },
+  "finalContext": {
+    "scene": "dc-glover-park",
+    "view": "city",
+    "layer": "optical",
+    "quality": "balanced",
+    "navigation": "orbit",
+    "grid": [
+      512,
+      512
+    ],
+    "viewport": [
+      1280,
+      720
+    ],
+    "pixelRatio": 1.25,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "renderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A78B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "hardwareNote": "Codex in-app browser preview; reported renderer in JSON",
+    "treeCandidates": 3069
+  },
+  "samples": 914,
+  "measuredSeconds": 29.974800000071525,
+  "fps": 30.492280181946803,
+  "frameMedianMs": 31.199999928474426,
+  "frameP95Ms": 53,
+  "frameP99Ms": 67.89999997615814,
+  "cpuSubmissionMedianMs": 15.399999976158142,
+  "cpuSubmissionP95Ms": 28.899999976158142,
+  "framesOver33Ms": 354,
+  "peakDrawCalls": 449,
+  "peakTriangles": 651226,
+  "qualityModes": [
+    "balanced"
+  ],
+  "treeLodAtEnd": {
+    "quality": "performance",
+    "instanceCount": 3069,
+    "nearTrees": 0,
+    "distantTrees": 3069,
+    "chunkCount": 12,
+    "crownInstances": 3069,
+    "branchInstances": 0,
+    "trunkInstances": 3069,
+    "estimatedTriangles": 110484,
+    "estimatedDrawCalls": 24,
+    "detailedTriangles": 1544936,
+    "nearShadowTrees": 0,
+    "visible": true,
+    "updates": 18
+  },
+  "notes": [
+    "The viewer continuously rendered during capture; 2 s warmup excluded.",
+    "Frame intervals include browser scheduling and rendering workload. CPU submission excludes GPU completion.",
+    "Draw calls/triangles include shadow and postprocessing passes. Results apply only to the reported browser, viewport and renderer.",
+    "This is a performance report, not a height-accuracy evaluation."
+  ]
+}

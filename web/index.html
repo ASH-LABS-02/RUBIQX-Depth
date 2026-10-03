@@ -153,7 +153,7 @@
       <div class="comparison-foot"><span id="compare-readout">Move across either image to inspect aligned pixels</span><span id="compare-range"></span></div>
     </section>
     <div id="fly-hint" class="hidden">Click to look around · WASD move · Q/E down/up · Shift fast · Esc release</div>
-    <section id="gallery" class="gallery hidden" aria-label="Demo scenes">
+    <section id="gallery" class="gallery hidden" role="dialog" aria-modal="true" tabindex="-1" aria-label="Demo scenes">
       <div class="gallery-head"><div><strong>One satellite image. A navigable 3D surface.</strong><span>Open a terrain mission or build a new one from optical imagery.</span></div>
         <button id="gallery-close" class="icon-btn" aria-label="Close gallery">×</button></div>
       <div id="gallery-grid" class="gallery-grid"></div>
@@ -222,6 +222,12 @@
             <option value="512" selected>Standard (512)</option>
             <option value="1024">High (1024)</option>
           </select></label>
+        <details id="render-profile-panel"><summary>Measure rendering performance</summary>
+          <label>Hardware note (optional)<input id="profile-hardware" type="text" maxlength="120" placeholder="Laptop model / GPU / power mode"></label>
+          <div class="btns"><button id="render-profile-start" type="button">Record 30 s</button><button id="render-profile-download" type="button" disabled>Download JSON</button></div>
+          <p id="render-profile-status" class="note" role="status">Includes frame pacing, CPU submission time, draw calls and tree LOD. Keep this tab visible.</p>
+          <pre id="render-profile-json" class="hidden" aria-label="Rendering performance report" style="max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px"></pre>
+        </details>
       </div>
 
       <div class="group" id="measure-group">
@@ -371,12 +377,12 @@
   </aside>
   <button id="drawer-reopen" type="button" aria-label="Open context drawer" title="Open tools">‹</button>
 
-  <div id="command-palette" class="command-palette hidden" role="dialog" aria-modal="true" aria-label="Search actions">
+  <div id="command-palette" class="command-palette hidden" role="dialog" aria-modal="true" tabindex="-1" aria-label="Search actions">
     <div class="command-backdrop" data-close-command></div>
     <div class="command-box"><div class="command-input-row"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg><input id="command-input" type="search" placeholder="Search actions, scenes, exports…" autocomplete="off" aria-label="Search actions"><kbd>Esc</kbd></div><div id="command-results" role="listbox"></div><p>Try “flood”, “topo”, “export GLB” or a scene name.</p></div>
   </div>
 
-  <div id="upload-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="upload-title">
+  <div id="upload-modal" class="modal hidden" role="dialog" aria-modal="true" tabindex="-1" aria-labelledby="upload-title">
     <div class="modal-backdrop" data-close-upload></div>
     <section class="upload-dialog" id="tab-upload">
       <div class="modal-heading"><div><h2 id="upload-title">Create a DSM</h2><p>Start with a single-view optical satellite image.</p></div><button id="upload-close" class="icon-btn" aria-label="Close import">×</button></div>
@@ -418,11 +424,11 @@
     </section>
   </div>
 
-  <div id="help" class="hidden">
-    <h2>Controls</h2>
+  <div id="help" class="hidden" role="dialog" aria-modal="true" tabindex="-1" aria-labelledby="help-title">
+    <h2 id="help-title">Controls</h2>
     <table><tr><td>Orbit</td><td>Left-drag rotate · Right-drag pan · Wheel zoom · Click to probe</td></tr>
       <tr><td>Fly</td><td>Click to capture mouse · WASD move · Q/E down/up · Shift ×4 speed · Esc exit</td></tr>
-      <tr><td>Walk</td><td>Click to look around · WASD move over the displayed surface · Shift fast · Esc release. Metric scenes only; no building collision simulation.</td></tr>
+      <tr><td>Walk</td><td>Click to look around · WASD move · Shift fast · Esc release. Metric scenes only; estimated footprints act as barriers, with 35° slope and 0.45 m step limits. These are camera controls, not verified walking routes.</td></tr>
       <tr><td>Tour</td><td>Automatic circling flythrough for demos</td></tr>
       <tr><td>Compare</td><td>Optical and height maps share a cursor and 3D probe</td></tr>
       <tr><td>2D map</td><td>Open beside a georeferenced scene; click inside the footprint to fly there</td></tr>
@@ -433,6 +439,6 @@
     <button id="help-close" class="primary">Got it</button>
   </div>
 </div>
-<script type="module" src="app.js?v=20261003-scene-polish"></script>
+<script type="module" src="app.js?v=20261003-navigation-budget"></script>
 </body>
 </html>
