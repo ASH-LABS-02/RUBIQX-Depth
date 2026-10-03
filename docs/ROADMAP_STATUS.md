@@ -1,121 +1,133 @@
-# DepthWizard vs the 11-part "no time limit" roadmap
+# DepthWizard implementation and evidence status
 
-Status as of 30 Sep 2026. ✅ done and tested · 🟡 partial / prototype · ⬜ not started.
-Competitor columns summarise what their public material shows (see
-`COMPETITOR_ANALYSIS_AND_UPGRADE_PLAN.txt`).
+Status as of **3 October 2026**. ✅ implemented in the current source ·
+🟡 partial, experimental or awaiting validation · ⬜ no implementation documented.
+These labels describe implementation scope; they do not certify accuracy,
+performance, hardware compatibility or release readiness. Historical checks
+and pending work are distinguished in [release readiness](release-readiness.md).
 
 ## 1. Data
+
 | Item | Status | Notes |
 |---|---|---|
-| Cartosat-1 stereo pseudo-labels | ⬜ | needs ISRO stereo pairs; top training priority once available |
-| Multi-dataset training set | 🟡 | GAMUS train/val (≈40 GB) used; Vaihingen/Potsdam/DFC not yet |
-| Indian validation sites | ⬜ | DC LiDAR + Quesenbank forest used meanwhile (`docs/BENCHMARKS.md`) |
-| Cartosat input handling | 🟡 | any-bit-depth GeoTIFF stretch, CRS/GSD, sun angles as inputs; no pansharpening yet |
-| Indian-condition augmentation | 🟡 | colour/rotation/flip augmentation; no haze/cloud-shadow model |
+| Cartosat-1 stereo pseudo-labels | ⬜ | Requires suitable stereo pairs and source/licence/split provenance |
+| Multi-dataset training set | ✅ | GAMUS plus Urban 3D satellite data in v5/v6a; Vaihingen/Potsdam/DFC integration remains future work |
+| Indian validation sites | ⬜ | No independent Indian/Cartosat height benchmark; historical DC and Quesenbank results have the evidence limits in [BENCHMARKS](BENCHMARKS.md) |
+| Cartosat input handling | 🟡 | GeoTIFF stretch, CRS/GSD and sun-angle inputs; simulated panchromatic checks exist, actual Cartosat validation and pansharpening remain pending |
+| Indian-condition augmentation | 🟡 | Blur/downsampling, haze/noise, colour/rotation/flip and panchromatic augmentation exist; transfer to Indian conditions is unvalidated |
 
 ## 2. Model
+
 | Item | Status | Notes |
 |---|---|---|
-| Overhead fine-tuned backbone | ✅ | DA-V2-Base on GAMUS + Urban 3D satellite (v5): 2.61 m RMSE on 30 GAMUS tiles, 1.66 m on 159 WorldView tiles (v6a), 2.76 m panchromatic, no per-tile fitting |
-| Multi-task / EO foundation model | ⬜ | |
-| Metric height output | 🟡 | learned pixel-footprint scale (±40 %), resolution-matched tiling |
+| Overhead fine-tuned backbone | ✅ | Current documented v6a: DA-V2-Base on GAMUS + Urban 3D; recorded RMSE 2.61 m on 30 GAMUS colour tiles at 0.33 m, 1.66 m on 159 Urban 3D tiles, 2.76 m on GAMUS simulated panchromatic at 0.6 m; no per-tile height fitting |
+| Multi-task / EO foundation model | 🟡 | Optional semantic checkpoint experiment exists; licensing and independent building/canopy validation remain unresolved ([prototype](semantic-prototype.md)) |
+| Metric height output | ✅ | v2 and later use metric training with resolution-matched tiling; the ±40 % v1 learned-scale description is historical |
 | Diffusion refinement | ⬜ | |
-| Physical cues (shadow / view geometry) | 🟡 | shadow-consistency scale check (experimental, guarded) + sun-matched rendering |
-| Ensembles + TTA | ✅ | 1/4/8-pass rotation ensemble, uncertainty map |
-| Calibrated uncertainty | 🟡 | coverage measured: σ ranks error well but is 9–16× too small (BENCHMARKS §5); treat as relative |
-| Distilled / fast model | 🟡 | ONNX export script; model kept loaded between jobs; batched ensemble passes; fp16 opt-in (`DEPTHWIZARD_FP16=1`) |
+| Physical cues / automatic anchors | 🟡 | Shadow geometry requires known solar elevation; OSM height/levels cues and guarded rescaling exist. Anchors remain calibration inputs, with provisional provenance, not independent validation |
+| Ensembles + TTA | ✅ | 1/4/8-pass rotation inference; single-pass/heuristic outputs do not provide pixel uncertainty/reliability maps |
+| Calibrated uncertainty | 🟡 | Provisional `sqrt(4.0² + (5.5 × spread)²)` m error model fitted on two historically inspected DC scenes; their references cannot independently validate the final fit. Other domains/routes unvalidated ([§5](BENCHMARKS.md)) |
+| Distilled / fast model | 🟡 | ONNX export script, model caching, batched ensemble passes and opt-in fp16 exist; a measured fast-model acceptance result is pending |
 
 ## 3. Calibration and geodesy
+
 | Item | Status | Notes |
 |---|---|---|
-| DEM fusion | ✅ | automatic surface-vs-bare-earth detection |
-| Vertical datum handling | 🟡 | datum recorded in GeoTIFF tags/metadata; auto-download sets EGM2008/EGM96; no grid conversion yet |
-| 30 m reference consistency | ✅ | only for surface DEMs (fixed a bug that pulled buildings down on bare-earth DEMs) |
-| Robust GCP fit | ✅ | Huber, leave-one-out error, spread check, provisional flag |
-| Active-learning GCP suggestions | 🟡 | interactive GCP pins with live R²/RMSE/LOO; suggestions not yet |
+| DEM fusion | ✅ | Surface/bare-earth detection; auto-fetched Copernicus uses a terrain proxy for fine imagery and surface consistency for coarse imagery. Terrain proxy is approximate |
+| Vertical datum handling | 🟡 | Datum metadata, ellipsoidal GCP → EGM2008 and explicit [raster conversion](vertical-datum.md) among ellipsoidal/EGM96/EGM2008 exist. Real local PROJ grids are required; missing grids fail. Numerical/geodetic validation and arbitrary datum reconciliation remain pending |
+| 30 m reference consistency | ✅ | Surface DEM native-cell agreement is calibration consistency, not independent accuracy |
+| Robust GCP fit | ✅ | Robust fit, leave-one-out diagnostics, spread checks and provisional evidence labels |
+| Active-learning GCP suggestions | 🟡 | Interactive pins and fit diagnostics exist; automatic suggestions remain pending |
 | Stereo/multi-date photogrammetry | ⬜ | |
 
 ## 4. Post-processing
+
 | Item | Status | Notes |
 |---|---|---|
-| Water flattening | ✅ | conservative large-smooth-water mask |
-| Shadow pits | ✅ | above-ground structure is non-negative by construction |
-| Land-cover rules | 🟡 | vegetation excluded from buildings (excess-green) |
-| LoD1 buildings | ✅ | vector footprints, robust flat roofs, storeys, volume, confidence basis |
-| LoD2 roofs / CityGML | 🟡 | CityJSON LoD1 export (convertible to CityGML); no roof shapes |
-| DSM / DTM / nDSM separation | ✅ | all three exported as GeoTIFF |
+| Water flattening | ✅ | Conservative large-smooth-water mask; errors in water identification remain possible |
+| Shadow pits | ✅ | Nonnegative above-ground structure; this does not establish shadow-height accuracy |
+| Land-cover rules | 🟡 | Height/RGB vegetation rejection by default; optional semantic building/canopy masks remain a research prototype |
+| LoD1 buildings | ✅ | Vector candidates, robust roof height, storeys, volume and confidence basis; detected footprints/heights require independent validation |
+| Roof shapes / CityGML | 🟡 | Flat/plane/gable shape hypotheses and CityJSON LoD1/LoD2.0 output exist; unsupported roofs fall back to flat. Shapes are inferred, not surveyed; native CityGML remains pending |
+| DSM / DTM / nDSM separation | ✅ | GeoTIFF products retain metric/relative units; the estimated DTM is not a surveyed terrain model |
 | Off-nadir lean correction | ⬜ | |
 
 ## 5. Validation
+
 | Item | Status | Notes |
 |---|---|---|
-| Full metric set | ✅ | RMSE, MAE, NMAD, bias, r, within 1/2/5 m, 30 m aggregate, per-building |
-| Per landscape + DEM baseline | ✅ | always shown in app and report |
-| Ablations | ✅ | previous build vs current, TTA passes (`docs/BENCHMARKS.md`) |
-| Public benchmark / paper | ⬜ | |
+| Full metric set | ✅ | RMSE, MAE, NMAD, bias, r, within 1/2/5 m, 30 m aggregate and per-building metrics when usable references are supplied |
+| Per landscape + DEM baseline | ✅ | Supported metrics appear in app/report for referenced scenes; calibration-DEM agreement is labelled separately |
+| Ablations | ✅ | Versioned historical model/pipeline/TTA experiments in [BENCHMARKS](BENCHMARKS.md); existing DC results are related-domain diagnostics |
+| Independent future benchmark | 🟡 | [Manifest and evaluation workflow](independent-benchmark.md) implemented; one frozen [NRW diagnostic](nrw-cologne-diagnostic.md) scored with unresolved temporal/training provenance. Untouched scene-disjoint test sites and independent class labels remain pending |
+| Public benchmark / paper | ⬜ | Broad validation and competitor superiority are not established by the current evidence |
 
 ## 6. Visualisation
+
 | Item | Status | Notes |
 |---|---|---|
-| Textured LoD1 buildings | ✅ | fixed mirrored/downward extrusion; roofs textured, stand on DTM |
-| AI facades / Gaussian splatting | 🟡 | procedural floors/windows on walls; no AI facades |
-| LOD tiles / globe mode | 🟡 | 512 / 1024 mesh detail toggle; globe mode not started |
-| Lighting | ✅ | ACES tone mapping, fitted soft shadows, normal-map hillshade, Cinematic mode (GTAO + SMAA + sky) |
-| DEM vs DSM swipe | ✅ | geometric: left half really renders the input DEM |
-| Uncertainty overlay | ✅ | confidence layer (exp(−σ/2 m)) |
-| Recorded flythrough | ✅ | one-click 20 s WebM recording of the cinematic tour |
-| VR / collaboration | ⬜ | |
+| Textured City buildings | ✅ | Inferred flat/plane/gable overlays stand on displayed terrain; optional canopy trees are a display layer |
+| AI facades / Gaussian splatting | 🟡 | Procedural floors/windows exist; AI facades and Gaussian splatting remain pending |
+| LOD / globe mode | 🟡 | Mesh detail controls and spatial tree chunks with detailed/simplified representations exist; quality-dependent tree shadows and screen-size switching are display only. Both tree representations consume memory; globe/terrain tile streaming remain pending |
+| Lighting | ✅ | ACES, soft shadows, normal-map hillshade, GTAO + SMAA + sky; quality/device limits still need measured checks |
+| DEM vs DSM swipe | ✅ | Input DEM and DSM geometry comparison |
+| Reliability overlay | ✅ | Ensemble agreement, not an accuracy probability; unavailable without a valid ensemble |
+| Recorded flythrough | ✅ | 30 s cinematic recording when canvas capture/MediaRecorder are supported; browser/codec compatibility needs release checks |
+| Walk navigation | 🟡 | Metric scenes only; clear-ground spawning, estimated footprint barriers and slope/step limits. Uses displayed terrain and does not establish pedestrian access or safety |
+| VR / collaboration | 🟡 | WebXR immersive session support is implemented, gated on secure context/browser/headset support. Hardware acceptance remains pending; collaboration is not implemented |
 
 ## 7. Analysis tools
-| Item | Status |
-|---|---|
-| Probe, profile, slope, aspect, curvature, 3D distance | ✅ |
-| Cut / fill vs reference | ✅ |
-| Connected flood (edge / clicked source / plane), depth, volume, buildings affected | ✅ |
-| Landslide susceptibility screening layer | ✅ |
-| Viewshed / line of sight | ✅ |
-| Building statistics | ✅ |
-| Rooftop solar potential | ✅ (indicative) |
-| Height-limit / density checks | 🟡 height-limit check in the viewer |
 
-## 8. Disaster management
 | Item | Status | Notes |
 |---|---|---|
-| Change detection pre/post | ✅ | height-loss map, volumes, collapsed-roof list (11/12 on simulated test) |
-| Rapid response | 🟡 | image → DSM + hazard layers in one run (≈20 s per 1024² on a laptop GPU) |
-| Offline field kit | 🟡 | offline web app; PyInstaller build script; DEM cache not bundled |
-| Damage report | ✅ | HTML report (print to PDF) + evidence JSON |
-| Bhuvan / NDMA integration | ⬜ | REST API ready (`/docs`) |
+| Probe, profile, slope, aspect, curvature, 3D distance | ✅ | Measurements inherit source-grid, calibration and unit limitations |
+| Cut / fill vs reference | ✅ | Requires compatible reference elevations/datum |
+| Connected flood, depth, volume, buildings affected | ✅ | Screening assumptions are exposed; not a validated hydraulic model |
+| Landslide susceptibility layer | ✅ | Screening index, not a probability or verified hazard assessment |
+| Viewshed / line of sight | ✅ | Model-based visibility; does not establish communications service |
+| Building statistics | ✅ | Candidate footprints/heights, not census or surveyed inventory |
+| Rooftop solar potential | ✅ | Indicative assumptions only |
+| Height-limit / density checks | 🟡 | Viewer height-limit check implemented; regulatory/field validation remains external |
+
+## 8. Disaster management
+
+| Item | Status | Notes |
+|---|---|---|
+| Change detection pre/post | ✅ | Height-loss map, volumes and roof-loss candidates; 11/12 historical simulated test is not real-event validation |
+| Rapid response | 🟡 | Image → DSM + screening layers pipeline exists; current end-to-end timing on target hardware remains unmeasured |
+| Offline field kit | 🟡 | Local app and PyInstaller build script; model files, DEM/geoid caches and clean-machine packaging need release checks |
+| Damage report | ✅ | Report PDF/HTML and evidence JSON preserve estimate/provenance caveats |
+| Bhuvan / NDMA integration | ⬜ | REST API exists; service integration is not demonstrated |
 
 ## 9. Time series and scale
-⬜ multi-date series, national tiling and automatic ingestion are not started.
+
+Pairwise change comparison exists. Multi-date series, national tiling and
+automatic ingestion have no implementation documented.
 
 ## 10. Engineering
-| Item | Status |
-|---|---|
-| One-file desktop app | 🟡 `packaging/build_windows.bat` + spec (not yet built on a clean PC) |
-| ONNX / TensorRT | 🟡 export script |
-| Large scenes | ✅ tiled inference; automatic downsampling above 64 MP (`DEPTHWIZARD_MAX_MP`); viewer downsamples |
-| REST API + docs | ✅ FastAPI `/docs`, product, CityJSON, PLY, change endpoints |
-| Exports | ✅ GeoTIFF (DSM/DTM/nDSM/σ), GLB, OBJ, PLY, CityJSON, one-click export-all ZIP |
-| Tests / CI | ✅ 28 pytest tests, GitHub Actions workflow |
-| Model card / reproducibility | ✅ `docs/MODEL_CARD.md`, `docs/BENCHMARKS.md` |
-| Security | 🟡 local-only processing; no auth (single-user app) |
+
+| Item | Status | Notes |
+|---|---|---|
+| One-file desktop app | 🟡 | Build script/spec exist; clean-machine build, installation and soak checks remain pending |
+| ONNX / TensorRT | 🟡 | ONNX export script exists; TensorRT acceptance is not demonstrated |
+| Large scenes | 🟡 | Tiled inference, 64 MP input limit/downsampling and sampled viewer grids; target-device memory/performance acceptance remains pending |
+| REST API + docs | ✅ | FastAPI `/docs`, products, CityJSON, PLY and change endpoints |
+| Exports | ✅ | GeoTIFF, GLB, OBJ, PLY, CityJSON and export-all ZIP; sampled meshes/points are distinguished from full-grid DSM |
+| Tests / CI | 🟡 | GitHub Actions workflow exists. The earlier 3 Oct semantic-prototype check recorded 72 pytest passes; this is not a fresh run for the latest LOD/modal/Walk changes |
+| Model card / reproducibility | ✅ | [MODEL_CARD](MODEL_CARD.md), [BENCHMARKS](BENCHMARKS.md), raw historical results and future independent benchmark workflow |
+| Modal accessibility | 🟡 | Upload/search/gallery/help focus containment, trigger restoration, topmost Escape and background interaction suspension implemented; browser/assistive-technology checks pending |
+| Render profiling | 🟡 | Browser frame pacing, CPU submission and renderer counts can be exported with context. No measured FPS gain or GPU completion timing is claimed |
+| Security / deployment scope | 🟡 | Single-user local app without authentication; broader deployment readiness is unestablished |
 
 ## 11. Product
-| Item | Status |
-|---|---|
-| Role-based interfaces | ⬜ |
-| Docs and sample data | ✅ README, TRAINING, BENCHMARKS, MODEL_CARD, samples |
-| Correction → retraining loop | ⬜ |
 
-## Where this leaves us against the competitors
-* **Accuracy:** only team with a train/test-separated fine-tune, blind absolute
-  scores against a DEM baseline, per-building LiDAR validation and an
-  ablation. The biggest remaining gap is Cartosat/Indian test data.
-* **3D and UX:** matches or exceeds every competitor feature seen (LoD1 city,
-  flood with buildings affected, swipe, measurement, exports, report) and adds
-  connected flood, viewshed, landslide, solar, change detection and video
-  recording that none of them show.
-* **Deployment:** amogh-hub still leads on a signed, soak-tested installer;
-  building and testing our Windows package on a clean machine is the next step.
+| Item | Status | Notes |
+|---|---|---|
+| Role-based interfaces | ⬜ | |
+| Docs and sample data | ✅ | README, TRAINING, BENCHMARKS, MODEL_CARD and versioned examples |
+| Correction → retraining loop | ⬜ | Interactive calibration exists; automated retraining loop remains pending |
+
+Next evidence work is new independent data and frozen evaluation settings.
+Next release work is measured rendering/navigation, keyboard/assistive checks
+and clean-machine packaging. Public competitor feature descriptions alone
+cannot establish comparative accuracy, performance or overall superiority.

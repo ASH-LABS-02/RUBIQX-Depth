@@ -5,7 +5,7 @@ Smart India Hackathon 2026 · Problem Statement 26175 (ISRO / SAC) · Team RUBIQ
 
 ![DepthWizard: current city UI with fitted roofs, branching trees and a coordinate grid](docs/images/city-current.jpg)
 
-| Absolute height, 30 held-out GAMUS tiles | Reference-held-out DC LiDAR check (2 scenes) | Runs offline |
+| Absolute height, 30 held-out GAMUS tiles | Related-domain DC LiDAR diagnostic (2 scenes) | Runs offline |
 |---|---|---|
 | **2.61 m RMSE / 1.47 m MAE, r 0.84** – single image, **no per-tile fitting**, bias ≈ 0; panchromatic (Cartosat-style) **2.76 m** at 0.6 m; real **WorldView satellite** test tiles (Urban 3D) **1.66 m, r 0.94** (first model 3.46 m; pretrained shape-aligned: 4.76 m, r 0.41) | **3.64 m RMSE / 2.62 m MAE, r 0.87** vs **9.04 m / 6.92 m** for the input DTM alone (first model 5.07 m) | one laptop, no cloud, open formats; [live demo](http://16.170.173.94/) |
 
@@ -17,7 +17,7 @@ mixed-evidence pipeline check, not an independent accuracy result.
 
 ## Live demo
 
-**http://16.170.173.94/** – hosted on AWS EC2 (CPU only). The demo scenes in the gallery open instantly; a new upload takes a few minutes to process because the server has no GPU. Use plain `http://`.
+**http://16.170.173.94/** – AWS EC2 demo endpoint (CPU only; use plain `http://`). On 3 October the root and health endpoint timed out from the development environment; availability and the deployed revision are currently unverified. The local application remains usable. See the [release checks](docs/release-readiness.md) before claiming a current live deployment.
 
 ## Try it yourself – test and validation files
 
@@ -25,13 +25,13 @@ Every file below is in this repository, so you can download it, upload it throug
 
 | # | What it tests | Satellite image | Low-resolution DEM | Reference (scoring only) | Settings | What to expect |
 |---|---|---|---|---|---|---|
-| 1 | Urban scene, blind LiDAR check | `samples/dc_lidar/glover_park/rgb.tif` | `samples/dc_lidar/glover_park/dtm_2018_32m.tif` | `samples/dc_lidar/glover_park/lidar_dsm_2024.tif` | GAMUS model, scene prior *urban* | ~4.3 m RMSE vs ~10.1 m for the DEM alone (Validate panel) |
-| 2 | Surface-DEM calibration path | `samples/dc_lidar/capitol_hill_east/rgb.tif` | `samples/dc_lidar/capitol_hill_east/sim_cop30_surface.tif` | `samples/dc_lidar/capitol_hill_east/lidar_dsm_2024.tif` | GAMUS, *urban* | calibration method `dem-surface-fit`. The surface DEM is **simulated from the reference LiDAR**, so this checks the code path, not independent accuracy |
+| 1 | Urban scene, historical LiDAR diagnostic | `samples/dc_lidar/glover_park/rgb.tif` | `samples/dc_lidar/glover_park/dtm_2018_32m.tif` | `samples/dc_lidar/glover_park/lidar_dsm_2024.tif` | GAMUS model, scene prior *urban* | ~4.3 m RMSE vs ~10.1 m for the DEM alone (recorded Validate panel snapshot; use frozen versions for comparison) |
+| 2 | Second urban site, terrain calibration | `samples/dc_lidar/capitol_hill_east/rgb.tif` | `samples/dc_lidar/capitol_hill_east/dtm_2018_32m.tif` | `samples/dc_lidar/capitol_hill_east/lidar_dsm_2024.tif` | GAMUS, *urban*, DEM kind *terrain* | Related-domain diagnostic; reserve the 2024 DSM for scoring and do not use reference-derived simulated DEMs to tune the current model |
 | 3 | Change detection (simulated event) | `samples/dc_lidar/glover_park/rgb_post_simulated.tif` | `samples/dc_lidar/glover_park/dtm_2018_32m.tif` | – | GAMUS, *urban*; then **Disaster → Change detection**, pick the Glover Park scene as the before-event scene | height-loss patches where 12 roofs were removed from the image (the post-event image is **simulated**) |
 | 4 | Forest / vegetation | `samples/quesenbank/forest_south_rgb.tif` | `samples/quesenbank/forest_south_dem_30m.tif` | `samples/quesenbank/forest_south_reference_dsm.tif` | GAMUS, scene prior *forest* | canopy DSM with error scored against the UAV reference. Always pair *north* files with *north* and *south* with *south* |
 | 5 | Ground control points | `samples/synthetic/scene_rgb.tif` | `samples/synthetic/srtm_like.tif` | `samples/synthetic/truth_dsm.tif` | add `samples/synthetic/gcps.csv` as GCPs | calibration uses the GCP fit (synthetic scene with known truth) |
 | 6 | Plain PNG, no georeference | `samples/gamus/NYC_00735_rgb.png` | – | – | horizontal pixel size **0.33** | relative heights only, clearly labelled as not metric |
-| 7 | Existing elevation file | `samples/dc_lidar/glover_park/lidar_dsm_2024.tif` (as the image) | – | – | – | shown directly as *Input DEM (not estimated)*; no model runs |
+| 7 | Existing elevation file | `samples/synthetic/srtm_like.tif` (as the image) | – | – | – | shown directly as *Input DEM (not estimated)*; no model runs |
 
 Tips: tick **Auto-download DEM** instead of giving a DEM file to fetch Copernicus/SRTM automatically (needs internet). A DEM must cover at least 90% of the image or the run stops with a clear message instead of guessing. On any scene, **Buildings → Known height → Add as anchor**, then **Calibrate → Scale Anchors → Apply**, rescales the whole scene from one supplied building height; if that height comes from the reference file, the result is no longer a blind test.
 
@@ -91,16 +91,34 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 - **Optional semantic prototype:** overhead SegFormer masks refine building/canopy separation and City tree placement. The current candidate is research-only and disabled by default; three cached-scene comparisons show mask changes, not a measured accuracy gain. DSM pixels are unchanged by classification. See the [comparison, checkpoint and validation protocol](docs/semantic-prototype.md).
 - **Workspace polish:** visible workspace names and labelled layer tabs, higher-contrast inspectors and import dialogs, shorter camera tooltips, and a scrollable mobile navigation bar. Hover readouts avoid the header and coordinate panel. Foliage uses deeper greens; the City screenshot above shows the updated layout.
-- **Scene framing and navigation:** scenes open at a closer, lower inspection angle fitted to their bounds. The summary expands through **Details**, generic image names become readable scene names, and the datum badge keeps full provenance in its tooltip. Labelled **Orbit / Fly / Walk / Tour** controls stay visible; Walk follows the displayed metric surface at eye level, without building collision simulation. Subtle roof and wall outlines clarify existing geometry.
+- **Scene framing and navigation:** scenes open at a closer, lower inspection angle fitted to their bounds. The summary expands through **Details**, generic image names become readable scene names, and the datum badge keeps full provenance in its tooltip. Labelled **Orbit / Fly / Walk / Tour** controls stay visible. Walk now finds nearby clear ground, respects estimated footprint barriers and slope/step limits, and normalizes diagonal speed. It remains a camera tool based on estimated geometry. Subtle roof and wall outlines clarify existing geometry.
 - **Tree rendering:** Roof-fit City now uses branching trunks and 4–6 foliage clusters per tree, with broad, slender and irregular silhouettes and darker green variation. Trees are illustrative instances placed from canopy candidates, not individually surveyed trees or classified species. Ground and canopy-top elevations retain the existing DSM/DTM estimates; exported rasters and accuracy scores are unchanged. Trees remain off for relative scenes.
+- **Tree detail and performance:** spatial chunks switch between detailed nearby crowns/branches and simple distant crowns, with quality-dependent shadows and hysteresis. **Explore → Measure rendering performance** records 30 seconds of frame times and renderer context. A [local Intel UHD preview](docs/performance/glover-park-city-intel-preview.json) recorded 30.5 FPS (P95 frame time 53.0 ms); this is one measured setup, not an FPS improvement or RTX 4060 result. See [rendering and navigation scope](docs/rendering-budget.md).
+- **Keyboard dialogs:** Import, Gallery, Help and the command palette contain keyboard focus, restore their trigger, and close the topmost dialog with Escape. Nested Ctrl+K works while background camera shortcuts and pointer lock are suspended. Local keyboard checks and a 390 × 844 import preview passed; assistive-technology and other-browser checks remain pending.
+- **Datum and benchmark controls:** an explicit [offline raster datum converter](docs/vertical-datum.md) supports ellipsoidal, EGM96 and EGM2008 elevations using actual local PROJ grids. Missing grids or contradictory height metadata cause an error. CLI `--vertical-datum` declares metadata only; `--no-auto-anchors` disables external automatic cues for controlled runs. nDSM anchor exports retain differential height semantics.
+- **Frozen evaluation:** a [manifest/scoring workflow](docs/independent-benchmark.md) checks source licences, dates, grids, datums, hashes and declared geographic exclusions. Reserved DC LiDAR remains scoring-only. A new Cologne diagnostic uses official NRW RGB/DSM/DTM data and frozen v6a settings; it is separately labelled because acquisition dates and base-model training overlap remain unresolved. No new training or reference fitting was performed.
 - **Model failures:** processing stops with a clear error when inference fails. Web uploads never silently substitute a heuristic; CLI prototype runs can explicitly use `--allow-fallback`, with results labelled unsuitable for accuracy evaluation.
 - **Reliability and uncertainty:** single-pass and heuristic runs produce no pixel reliability or uncertainty maps. Metric uncertainty is provisional and calibrated on two DC scenes; relative output is unitless ensemble spread. Building scores distinguish ensemble agreement from roof-height consistency. Scores are not accuracy probabilities.
 - **Export clarity:** menus and reports distinguish full-grid GeoTIFFs from sampled display meshes and point clouds. The complete ZIP includes raw metric ensemble spread when available, alongside the provisional error map and provenance.
 - **Disaster tools:** flood assumptions remain visible with details collapsed. Slope bands describe angles rather than safety, and routes, refuge candidates, runout and relay coverage state their screening limits.
-- **Robustness:** switching between City and Surface while a scene is loading no longer attempts to rebuild an absent height grid. The earlier semantic-prototype verification passed **72 pytest tests** and included a real pipeline run. This latest UI polish passed JavaScript syntax and whitespace checks; the City layout, expandable summary and Walk entry were previewed locally with no browser warnings or errors. Pytest was not rerun for this display-only update.
+- **Robustness:** switching between City and Surface while a scene is loading no longer attempts to rebuild an absent height grid. The earlier semantic-prototype verification passed **72 pytest tests** and included a real pipeline run. The latest changes passed JavaScript/Python syntax and whitespace checks and local viewer checks, with no browser warnings or errors. Pytest was not rerun for this update; the earlier test result does not cover the new code.
 
 The rendering and reporting fixes do not establish improved height accuracy. See
 [completed limitation fixes and remaining evidence gaps](docs/limitation-fixes.md).
+
+The new [Cologne diagnostic](docs/nrw-cologne-diagnostic.md) scored **6.29 m
+DSM RMSE** with supplied high-resolution terrain; the fixed truth-AGL ≥15 m
+slice scored **16.49 m RMSE**, bias **−14.46 m**. It confirms a tall-object
+weakness outside the existing US examples. Unresolved acquisition dates,
+pretraining overlap and shared terrain/surface survey lineage prevent an
+independent validation claim. Predictions were frozen before scoring, and no
+weights, scale or settings were fitted to this reference.
+
+![City preview with adaptive tree detail and labelled navigation](docs/images/navigation-budget-current.png)
+
+This preview uses the default Glover Park scene (139 building candidates), not
+the optional semantic classifier. Building and tree heights retain the existing
+estimates; better display geometry does not imply better measured accuracy.
 
 ### Experimental building / canopy separation
 
