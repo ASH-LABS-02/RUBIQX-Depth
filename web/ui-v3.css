@@ -81,3 +81,124 @@ button,input,select,textarea{border-radius:12px}button{background:transparent;bo
 @media(max-width:1500px){#scene-hero,#app.drawer-collapsed #scene-hero{left:88px;bottom:152px;max-width:calc(100% - 560px)}#layer-dock,#app.drawer-collapsed #layer-dock{max-width:calc(100% - 384px)}}
 @media(max-width:1000px){#app-header{gap:8px;max-width:calc(100% - 32px);padding:0 8px}.brand b{font-size:15px!important}#library-toggle.scene-picker{max-width:200px}#scene-badge.scene-badge{max-width:160px}#inspector{right:80px;width:320px}#scene-hero,#app.drawer-collapsed #scene-hero{left:88px;max-width:calc(100% - 112px);bottom:136px}#hero-stats{gap:16px}#hero-stats .hero-stat b{font-size:24px}#minimap-shell{width:128px;height:128px}#minimap{width:110px;height:110px}#north-arrow{bottom:96px}#layer-dock,#app.drawer-collapsed #layer-dock{left:88px;transform:none;max-width:calc(100% - 240px)}#layer-legend,#app.drawer-collapsed #layer-legend{left:88px;transform:none;max-width:calc(100% - 240px)}#shade-mode{gap:4px}}
 @media(max-width:700px){#app-header{height:44px;top:8px;width:calc(100% - 16px);max-width:none;gap:8px}#app-header .brand-mark{display:none}#scene-badge.scene-badge{display:inline-flex!important;max-width:120px;font-size:0}#scene-badge.scene-badge strong{font-size:12px}#library-toggle.scene-picker{flex:1;max-width:160px}.header-actions #command-open{display:none}#app-header .header-actions #dl-dsm-header span{display:none}#mode-rail{left:8px;width:48px;padding:4px;gap:12px}#mode-rail button{width:38px;height:40px;min-height:40px}#toolbar,#app.drawer-collapsed #toolbar{right:8px;top:72px;width:48px;max-width:48px}#view-pill{width:48px;padding:4px;max-width:48px;max-height:calc(100dvh - 230px);overflow-y:auto;overflow-x:visible}#view-pill button{width:38px;min-width:38px;height:32px;padding:4px}#view-pill #fullscreen,#view-pill #vr-toggle{display:grid}#inspector{left:64px;right:64px;top:72px;bottom:144px;width:auto;height:auto;max-height:none}#app.drawer-collapsed #inspector{transform:translateX(24px)}#drawer-head,#inspector .panel{padding:16px}#drawer-title{font-size:18px}#minimap-shell{display:none}#scale-bar-container{right:16px;bottom:8px}#north-arrow{position:static;margin-right:12px}#layer-dock,#app.drawer-collapsed #layer-dock{left:64px;bottom:28px;max-width:calc(100% - 128px);overflow-x:auto;padding:8px 8px 24px;border-radius:24px}#layer-legend,#app.drawer-collapsed #layer-legend{left:64px;bottom:124px;max-width:calc(100% - 128px)}#hero-stats{display:flex;gap:12px}#hero-stats .hero-stat b{font-size:18px}#hero-stats .hero-stat span{font-size:10px}#hero-stats .hero-stat:nth-child(n+3){display:none}#scene-hero,#app.drawer-collapsed #scene-hero{left:64px;bottom:176px;max-width:calc(100% - 128px);padding:12px}#hero-caption{font-size:10px}#hero-title{font-size:12px!important;max-width:100%}#welcome-card{left:64px;right:64px;top:72px;width:auto;padding:16px}#welcome-card h2{font-size:18px}#welcome-card ol{display:block}#welcome-card li{margin:8px 0}#welcome-demos,#welcome-card .welcome-actions{flex-direction:column}#compare-popover,#exag-popover{position:fixed;right:64px;top:72px;width:220px}#swipe-label-left{left:64px;top:72px;font-size:10px;max-width:calc(50% - 72px)}#swipe-label-right{right:64px;top:72px;font-size:10px;max-width:calc(50% - 72px)}.model-compare-note{left:64px;top:120px;max-width:calc(100% - 128px);font-size:12px}#fly-hint,#stage:has(#model-compare-note:not(.hidden)) #fly-hint{left:64px;bottom:300px;max-width:calc(100% - 128px)}.comparison{left:64px;right:64px;top:72px;bottom:220px}}
+
+/* Keep controls legible over both bright imagery and shaded terrain. */
+:root { --panel-glass: rgba(12, 20, 32, .95); --glass-edge: rgba(178, 203, 225, .16); }
+[data-theme="light"] { --panel-glass: rgba(244, 248, 251, .97); }
+#inspector, #upload-modal .upload-dialog, #export-menu.export-menu, .command-box,
+#help, #gallery, #evidence-popover, #compare-popover, #exag-popover, .hover-hud {
+  background: var(--panel-glass);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .18);
+}
+#mode-rail { width: 140px; padding: 8px; border-radius: 18px; gap: 16px; }
+#mode-rail button {
+  width: 122px; display: flex; align-items: center; justify-content: flex-start;
+  gap: 10px; padding: 10px; color: var(--ink-2);
+}
+#mode-rail button span { display: inline; font-size: 12px; font-weight: 500; }
+#mode-rail button.active { color: var(--cyan); border: 1px solid rgba(56, 211, 245, .3); }
+#mode-rail button::after { display: none !important; }
+#mode-rail .rail-bottom { border-top: 1px solid var(--glass-edge); padding-top: 12px; }
+#coordinate-readout { left: 176px; }
+#inspector { bottom: 112px; }
+#drawer-head { padding: 20px; gap: 12px; }
+#drawer-title { font-size: 22px; letter-spacing: -.025em; }
+#drawer-toggle { width: 32px; height: 32px; min-width: 32px; }
+#inspector .panel { padding: 20px; }
+#inspector .group { padding-bottom: 20px; margin-bottom: 20px; }
+#inspector .group h3 { font-size: 16px; line-height: 1.35; }
+#inspector .group label { color: var(--ink-1); }
+#inspector .note { color: var(--ink-2); }
+#inspector button:not(.tab) { min-height: 36px; }
+#inspector input:not([type="range"]):not([type="checkbox"]), #inspector select {
+  background: var(--bg-0); border-color: var(--glass-edge); min-height: 36px;
+}
+#view-pill { gap: 2px; }
+#view-pill .v3-tool-label { max-width: 180px; white-space: normal; width: max-content; }
+#layer-dock, #app.drawer-collapsed #layer-dock {
+  left: 176px; transform: none; bottom: 20px; max-width: calc(100% - 632px);
+  padding: 6px; border-radius: 16px; gap: 6px;
+}
+#app.drawer-collapsed #layer-dock { max-width: calc(100% - 376px); }
+#layer-dock-actions { min-width: 0; flex: 0 1 auto; overflow-x: auto; scrollbar-width: thin; }
+#shade-mode { gap: 4px; }
+#layer-dock #shade-mode button {
+  width: 72px; min-width: 72px; height: 62px; padding: 6px 3px;
+  border-radius: 10px !important; gap: 4px; justify-content: center;
+}
+#layer-dock .layer-thumb { width: 28px; height: 28px; border-radius: 7px; }
+#layer-dock #shade-mode button .layer-label,
+#layer-dock #shade-mode button:not(.active):hover .layer-label,
+#layer-dock #shade-mode button:focus-visible .layer-label {
+  display: block; position: static; padding: 0; font-size: 11px;
+  background: transparent; text-shadow: none; line-height: 1.25;
+}
+#layer-dock #shade-mode button.active { background: rgba(56, 211, 245, .12); }
+#dock-more { flex: 0 0 36px; align-self: center; }
+#layer-legend, #app.drawer-collapsed #layer-legend {
+  left: 176px; transform: none; bottom: 106px; max-width: calc(100% - 632px);
+  padding: 10px 14px; background: var(--panel-glass);
+}
+#app.drawer-collapsed #layer-legend { max-width: calc(100% - 376px); }
+#scene-hero, #app.drawer-collapsed #scene-hero {
+  left: 176px; bottom: 196px; max-width: min(440px, calc(100% - 656px)); padding: 14px 18px;
+  background: var(--panel-glass);
+}
+#hero-title { margin-bottom: 8px; }
+#hero-stats { gap: 18px; }
+#hero-stats .hero-stat b { color: var(--ink-1); font-size: 22px; font-weight: 500; }
+#hero-stats .hero-stat span { font-size: 10px; letter-spacing: .025em; }
+#hero-caption { font-size: 11px; margin-top: 10px; }
+#fly-hint, #stage:has(#model-compare-note:not(.hidden)) #fly-hint { left: 176px; bottom: 340px; }
+#swipe-label-left { left: 176px; }
+.model-compare-note { left: 176px; max-width: calc(100% - 264px); }
+.comparison { left: 176px; }
+@media (max-height: 720px) and (min-width: 701px) {
+  #view-pill #vr-toggle:disabled { display: none; }
+  #minimap-shell { width: 128px; height: 128px; }
+  #minimap-shell #minimap { width: 110px !important; height: 110px !important; }
+}
+@media (max-width: 1000px) and (min-width: 701px) {
+  #mode-rail { width: 116px; }
+  #mode-rail button { width: 98px; gap: 8px; padding: 8px; }
+  #coordinate-readout, #layer-dock, #app.drawer-collapsed #layer-dock,
+  #layer-legend, #app.drawer-collapsed #layer-legend { left: 144px; }
+  #layer-dock, #layer-legend { max-width: calc(100% - 568px); }
+  #app.drawer-collapsed #layer-dock, #app.drawer-collapsed #layer-legend { max-width: calc(100% - 288px); }
+  #scene-hero, #app.drawer-collapsed #scene-hero { left: 144px; max-width: calc(100% - 568px); }
+  #hero-stats { flex-wrap: wrap; gap: 12px; }
+  #hero-stats .hero-stat b { font-size: 18px; }
+}
+@media (max-width: 700px) {
+  #scene-badge.scene-badge { display: none !important; }
+  #app-header .header-actions { flex: none; }
+  #app-header .brand { flex: none; }
+  #library-toggle.scene-picker { max-width: none; }
+  #mode-rail {
+    left: 8px; right: 8px; top: auto; bottom: 8px; transform: none; width: auto;
+    display: flex; flex-direction: row; padding: 4px; gap: 8px; overflow-x: auto;
+    border-radius: 16px; background: var(--panel-glass); scrollbar-width: thin;
+  }
+  #mode-rail .rail-main, #mode-rail .rail-bottom { display: flex; flex-direction: row; gap: 2px; flex: none; }
+  #mode-rail .rail-bottom { border-top: 0; border-left: 1px solid var(--glass-edge); padding: 0 0 0 8px; }
+  #mode-rail button { width: 54px; min-width: 54px; height: 54px; padding: 5px 2px; flex-direction: column; gap: 4px; justify-content: center; }
+  #mode-rail button svg { width: 18px; height: 18px; }
+  #mode-rail button span { font-size: 9px; }
+  #inspector { left: 12px; right: 68px; top: 68px; bottom: 170px; width: auto; max-height: none; }
+  #drawer-head, #inspector .panel { padding: 16px; }
+  #drawer-title { font-size: 20px; }
+  #app:not(.drawer-collapsed) #scene-hero, #app:not(.drawer-collapsed) #layer-legend { display: none; }
+  #coordinate-readout { left: 12px; top: 64px; max-width: calc(100% - 80px); }
+  #layer-dock, #app.drawer-collapsed #layer-dock { left: 12px; bottom: 84px; max-width: calc(100% - 80px); padding: 5px; overflow: visible; }
+  #layer-dock #shade-mode button { width: 62px; min-width: 62px; }
+  #layer-legend, #app.drawer-collapsed #layer-legend { left: 12px; bottom: 172px; max-width: calc(100% - 80px); }
+  #scene-hero, #app.drawer-collapsed #scene-hero { left: 12px; bottom: 256px; max-width: calc(100% - 80px); padding: 12px; }
+  #hero-stats .hero-stat b { font-size: 20px; }
+  #scale-bar-container { bottom: 78px; }
+  #welcome-card { left: 12px; right: 68px; }
+  #fly-hint, #stage:has(#model-compare-note:not(.hidden)) #fly-hint { left: 12px; bottom: 390px; max-width: calc(100% - 80px); }
+  #swipe-label-left { left: 12px; max-width: calc(50% - 20px); }
+  #swipe-label-right { right: 68px; max-width: calc(50% - 76px); }
+  .model-compare-note { left: 12px; max-width: calc(100% - 80px); }
+  .comparison { left: 12px; right: 68px; }
+}

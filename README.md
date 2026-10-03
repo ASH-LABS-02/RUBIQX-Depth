@@ -89,6 +89,7 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 ## Latest updates · 3 October 2026
 
+- **Workspace polish:** visible workspace names and labelled layer tabs, higher-contrast inspectors and import dialogs, shorter camera tooltips, and a scrollable mobile navigation bar. Hover readouts avoid the header and coordinate panel. Foliage uses deeper greens; the City screenshot above shows the updated layout.
 - **Tree rendering:** Roof-fit City now uses branching trunks and 5–6 irregular foliage clusters per tree, varied silhouettes and subdued green shades. Trees are illustrative instances placed from canopy candidates, not individually surveyed trees or classified species. Ground and canopy-top elevations retain the existing DSM/DTM estimates; exported rasters and accuracy scores are unchanged. Trees remain off for relative scenes.
 - **Model failures:** processing stops with a clear error when inference fails. Web uploads never silently substitute a heuristic; CLI prototype runs can explicitly use `--allow-fallback`, with results labelled unsuitable for accuracy evaluation.
 - **Reliability and uncertainty:** single-pass and heuristic runs produce no pixel reliability or uncertainty maps. Metric uncertainty is provisional and calibrated on two DC scenes; relative output is unitless ensemble spread. Building scores distinguish ensemble agreement from roof-height consistency. Scores are not accuracy probabilities.

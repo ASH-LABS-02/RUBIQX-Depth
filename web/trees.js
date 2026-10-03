@@ -136,7 +136,7 @@ function crownColor(seed) {
   return new THREE.Color().setHSL(
     0.28 + hash01(seed * 19) * 0.06,
     0.32 + hash01(seed * 23) * 0.20,
-    0.24 + hash01(seed * 29) * 0.12,
+    0.20 + hash01(seed * 29) * 0.10,
   );
 }
 

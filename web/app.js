@@ -12,8 +12,8 @@ import { Sky } from 'three/addons/objects/Sky.js';
 import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-v3';
 import { createMissionUi } from './ui-v2.js?v=20261003-integrity';
 import { createDiorama } from './diorama.js?v=20261001-bold-r4';
-import { createBoldUi } from './ui-v3.js?v=20261001-bold-r4';
-import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261003-branched-crowns';
+import { createBoldUi } from './ui-v3.js?v=20261003-ux-polish';
+import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261003-deeper-green';
 import { cinematicPath } from './cinematic.js?v=20261003-cinematic';
 import { coordinateAt, coordinateFrame, coordinateGrid } from './coordinates.js?v=20261003-grid';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
@@ -1593,7 +1593,7 @@ function placeHoverHud(hud, pointerX, pointerY) {
   hud.classList.remove('hidden');
   const width = hud.offsetWidth || 250, height = hud.offsetHeight || 170, pad = 10;
   const clamp = (n, max) => Math.max(pad, Math.min(n, Math.max(pad, max - pad)));
-  const obstacles = ['#mode-rail', '#scene-hero', '#layer-dock', '#toolbar', '#layer-legend',
+  const obstacles = ['#app-header', '#coordinate-readout', '#mode-rail', '#scene-hero', '#layer-dock', '#toolbar', '#layer-legend',
     '#model-compare-note', '#swipe-label-left', '#swipe-label-right', '#inspector', '#welcome-card', '#minimap', '#scale-bar-container', '#exaggeration-note']
     .map((selector) => $(selector)?.getBoundingClientRect())
     .filter((r) => r && r.width && r.height)

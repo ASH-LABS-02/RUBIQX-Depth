@@ -11,7 +11,7 @@ export function createBoldUi({getState,orbit,canvas,requestRender}){
   for(const [button,key,name]of tools){
     button.setAttribute('aria-label',name);button.dataset.v3='true';
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');svg.innerHTML=paths[key]||paths.orbit;
-    const tip=document.createElement('span');tip.className='v3-tool-label';tip.textContent=button.title||name;button.replaceChildren(svg,tip);
+    const tip=document.createElement('span');tip.className='v3-tool-label';tip.textContent=name;button.replaceChildren(svg,tip);
   }
   $('#drawer-toggle').textContent='×';$('#drawer-toggle').setAttribute('aria-label','Close inspector');
   $('#exposure').value='1.08';$('#exposure-v').textContent='1.08';
