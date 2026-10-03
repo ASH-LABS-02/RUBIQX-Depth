@@ -3,7 +3,7 @@
 **One ordinary satellite image → a calibrated 3D surface model and a disaster-ready digital twin.**
 Smart India Hackathon 2026 · Problem Statement 26175 (ISRO / SAC) · Team RUBIQX
 
-![DepthWizard: 3D city from a single satellite image](docs/images/present.jpg)
+![DepthWizard: current city UI with fitted roofs, grounded tree crowns and a coordinate grid](docs/images/city-current.jpg)
 
 | Absolute height, 30 held-out GAMUS tiles | Reference-held-out DC LiDAR check (2 scenes) | Runs offline |
 |---|---|---|
@@ -51,9 +51,9 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 ## Gallery
 
-| **Buildings** – 131 fitted buildings with height, storeys, volume, estimated solar; supplied heights can recalibrate the scene | **Topo** – hypsometric tint + index contours + hillshade |
+| **City** – 139 fitted building candidates, grounded tree crowns and a CRS coordinate grid | **Bengaluru** – 10 m imagery opens with Topo at 3× vertical exaggeration |
 |---|---|
-| ![buildings](docs/images/city.jpg) | ![topo](docs/images/topo.jpg) |
+| ![Current city viewer](docs/images/city-current.jpg) | ![Bengaluru terrain overview](docs/images/bengaluru-current.jpg) |
 | **Slope hazard** (true slope, 0–30° / 30–45° / >45°) | **Flood & response** – connected flood, buildings and people exposed, mission planning |
 | ![hazard](docs/images/hazard.jpg) | ![flood](docs/images/flood.jpg) |
 | **Model Compare** – pretrained Depth Anything V2 vs our GAMUS fine-tuned model, same image | **Validate** – blind LiDAR check: 38.5% lower RMSE than the input DEM |
@@ -246,16 +246,17 @@ The app opens into **Terrain Mission Control**: a full-bleed 3D scene, a compact
 
 | Feature | Details |
 |---|---|
-| Navigation | **Orbit**; **Fly** (first-person, pointer-lock, WASD/QE/Shift, never drops below the terrain); **Tour** (automatic flythrough); **Top down** and **Fullscreen**; a minimap you can click to jump |
+| Navigation | **Orbit**; **Fly** (first-person, pointer-lock, WASD/QE/Shift, never drops below the terrain); **Tour** (30 s cinematic pass, Shift+C; Esc stops); **Top down** and **Fullscreen**; a minimap you can click to jump |
 | Surfaces | Optical drape, height colour ramp, slope (° for metric DSMs; relative gradient otherwise), curvature, error vs a metric reference; contour lines; wireframe |
 | Controls | Vertical exaggeration; display-only mesh smoothing; sun azimuth and illustrative time of day |
 | Comparison | Linked source RGB and height maps with a shared cursor; clicking a pixel sets the 3D height probe |
 | Probe | Estimated height, reference height, error, slope, aspect, and map coordinates (E/N) for georeferenced scenes |
+| Coordinates | Source-affine E/N grid and live readout (Shift+G toggles); geographic CRS uses degrees, projected coordinates retain native CRS units; corner-interpolated lat/lon is labelled approximate; plain images show pixels |
 | Profile | Two clicks draw an elevation cross-section: estimate vs reference, length, Δh, grade, profile RMSE |
 | Analysis | Connected flood scenarios from the lowest scene edge or a clicked source, a separate level-plane option, rainfall playback, estimated building and population exposure, route and refuge screening, landslide runout, and relay line of sight. Mission analysis requires an aligned DTM and local projected metre CRS. With a metric reference DSM, cut/fill volumes compare the estimated and reference surfaces. |
 | Validate mode | RMSE/MAE/r cards, a DEM baseline comparison, estimated-versus-reference plots, and expandable per-landscape, height-band, edge-gradient, and calibration details |
 | Export | Grouped raster, 3D, and evidence actions: GeoTIFF, textured GLB/OBJ, CityJSON, PLY, report, a complete ZIP, and a provenance-stamped viewer screenshot |
-| Keyboard | 1–6 workspaces; Shift+1–9 surface layers; O/F/T/D/V/R for navigation; G gallery; E export; Ctrl+K action search; H help |
+| Keyboard | 1–6 workspaces; Shift+1–9 surface layers; Shift+C cinematic; Esc stops; Shift+G coordinate grid; O/F/T/D/V/R for navigation; G gallery; E export; Ctrl+K action search; H help |
 
 ## Deployment
 
