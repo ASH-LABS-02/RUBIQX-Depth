@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="studio.css?v=20260930-mission-studio-v2">
 <link rel="stylesheet" href="mission.css?v=20260930-v9">
 <link rel="stylesheet" href="ui-v2.css?v=20261001-v1">
-<link rel="stylesheet" href="ui-v3.css?v=20261003-cinematic">
+<link rel="stylesheet" href="ui-v3.css?v=20261003-grid">
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
 </script>
@@ -72,6 +72,8 @@
     <div id="hover-hud" class="hover-hud hidden" aria-live="off"></div>
     <div id="toast-host" class="toast-host" aria-live="polite"></div>
     <canvas id="gl"></canvas>
+    <div id="coordinate-labels" aria-hidden="true"></div>
+    <div id="coordinate-readout"><div><b id="coordinate-crs">Image pixels</b><button id="coordinate-grid-toggle" type="button" aria-pressed="false" title="Coordinate grid (Shift+G)">Grid</button></div><span id="coordinate-value">Move over terrain to inspect</span><small id="coordinate-lonlat"></small></div>
     <div id="toolbar">
       <div id="view-pill"></div>
       <div id="compare-popover" class="hidden"><h3>Compare surfaces</h3><p>Choose one view at a time.</p><div id="compare-actions"></div></div>
@@ -423,11 +425,11 @@
       <tr><td>2D map</td><td>Open beside a georeferenced scene; click inside the footprint to fly there</td></tr>
       <tr><td>Mission</td><td>Choose a flood source and level, then click to plan a route or place a relay</td></tr>
       <tr><td>Time / VR</td><td>Time slider previews lighting; VR needs a compatible headset and secure browser</td></tr>
-      <tr><td>Keys</td><td>1–6 workspaces · Shift+1–9 layers · O orbit · F fly · Shift+C cinematic · Esc stop · T tour · D top down · V compare · R reset · G gallery · E export · Ctrl+K search · H help</td></tr></table>
+      <tr><td>Keys</td><td>1–6 workspaces · Shift+1–9 layers · O orbit · F fly · Shift+C cinematic · Esc stop · Shift+G grid · T tour · D top down · V compare · R reset · G gallery · E export · Ctrl+K search · H help</td></tr></table>
     <p class="muted">The camera stays above terrain in Fly mode.</p>
     <button id="help-close" class="primary">Got it</button>
   </div>
 </div>
-<script type="module" src="app.js?v=20261003-cinematic"></script>
+<script type="module" src="app.js?v=20261003-grid"></script>
 </body>
 </html>

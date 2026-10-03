@@ -15,6 +15,7 @@ import { createDiorama } from './diorama.js?v=20261001-bold-r4';
 import { createBoldUi } from './ui-v3.js?v=20261001-bold-r4';
 import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261002-trees-scale-colour-c';
 import { cinematicPath } from './cinematic.js?v=20261003-cinematic';
+import { coordinateAt, coordinateFrame, coordinateGrid } from './coordinates.js?v=20261003-grid';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
 const FLOOR_AREA_PER_PERSON_M2 = 30;
 
@@ -409,6 +410,7 @@ function applyHeights() {
   if (S.profilePts.length === 2) drawProfileLine();
   if (S.water) S.water.position.y = worldY(+$('#flood-level').value);
   if (S.gcpPins?.length) drawGcpPins();
+  rebuildCoordinateGrid();
 }
 
 function applyShading() {
@@ -949,6 +951,8 @@ async function loadScene(id) {
       $(selector)?.closest('.metric-box')?.classList.toggle('hidden', terrainOverview);
     }
     if (terrainOverview) setMode('topo');
+    setCoordinateGrid(Boolean(meta.georeferenced));
+    updateCoordinateReadout();
     updateCinematicScene();
     missionUi?.sceneLoaded();
     boldUi?.sceneLoaded();
@@ -1486,10 +1490,65 @@ function raycastFrom(ndc) {
 }
 function toGrid(x, z) { return { r: Math.round((z / S.H + 0.5) * (S.gh - 1)), c: Math.round((x / S.W + 0.5) * (S.gw - 1)) }; }
 function mapCoords(x, z) {
-  const t = S.meta.transform; if (!t) return null;
-  const col = (x / S.W + 0.5) * S.meta.src_w, row = (z / S.H + 0.5) * S.meta.src_h;
-  return { E: t[0] * col + t[1] * row + t[2], N: t[3] * col + t[4] * row + t[5] };
+  if (!S.meta?.georeferenced || !S.meta.transform) return null;
+  return coordinateAt(S.meta, x / S.W + 0.5, z / S.H + 0.5);
 }
+
+let coordinateLines = null, coordinateLabels = [], gridVisible = false;
+function setCoordinateGrid(on) {
+  gridVisible = on;
+  $('#coordinate-grid-toggle').setAttribute('aria-pressed', String(on));
+  $('#coordinate-grid-toggle').classList.toggle('active', on);
+  rebuildCoordinateGrid(); requestRender();
+}
+function rebuildCoordinateGrid() {
+  if (coordinateLines) { scene.remove(coordinateLines); coordinateLines.geometry.dispose(); coordinateLines.material.dispose(); coordinateLines = null; }
+  $('#coordinate-labels').replaceChildren(); coordinateLabels = [];
+  if (!gridVisible || !S.mesh || !S.meta) return;
+  const positions = [], offset = S.extent * 0.001;
+  const pointAt = ([u, v]) => {
+    const x = (u - 0.5) * S.W, z = (v - 0.5) * S.H;
+    return new THREE.Vector3(x, terrainY(x, z) + offset, z);
+  };
+  for (const line of coordinateGrid(S.meta)) {
+    const [p, q] = line.uv;
+    let prior = pointAt(p);
+    const steps = Math.min(512, Math.max(S.gw, S.gh));
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps, next = pointAt([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+      positions.push(...prior.toArray(), ...next.toArray()); prior = next;
+    }
+    const label = document.createElement('span'); label.textContent = line.label;
+    $('#coordinate-labels').append(label); coordinateLabels.push({ label, point: pointAt(q) });
+  }
+  const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  coordinateLines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: 0x7acbd5, transparent: true, opacity: 0.28, depthWrite: false }));
+  scene.add(coordinateLines);
+}
+function updateCoordinateLabels() {
+  const rect = canvas.getBoundingClientRect();
+  const blockers = ['#toolbar', '#scene-hero', '#layer-dock', '#layer-legend', '#minimap-shell', '#coordinate-readout', '#inspector', '#app-header']
+    .map(s => $(s)).filter(el => el && el.getClientRects().length).map(el => el.getBoundingClientRect());
+  for (const { label, point } of coordinateLabels) {
+    const p = point.clone().project(camera), x = (p.x + 1) * rect.width / 2, y = (1 - p.y) * rect.height / 2;
+    label.style.left = `${x}px`; label.style.top = `${y}px`;
+    const covered = blockers.some(b => x + rect.left > b.left - 60 && x + rect.left < b.right + 60 && y + rect.top > b.top - 10 && y + rect.top < b.bottom + 10);
+    label.hidden = S.presentation || S.swipeActive || covered || p.z < -1 || p.z > 1 || x < 60 || x > rect.width - 60 || y < 70 || y > rect.height - 35;
+  }
+  if (coordinateLines) coordinateLines.visible = !S.swipeActive;
+}
+function updateCoordinateReadout(x, z) {
+  if (!S.meta) return;
+  const frame = coordinateFrame(S.meta);
+  $('#coordinate-crs').textContent = frame.crs;
+  $('#coordinate-readout').title = frame.georeferenced ? 'Native input CRS coordinates from the source affine; projected CRS units are unchanged. Lat/lon ≈ uses corner interpolation.' : 'Local image pixel coordinates; no geographic position is available.';
+  if (!Number.isFinite(x) || !Number.isFinite(z)) { $('#coordinate-value').textContent = 'Move over terrain to inspect'; $('#coordinate-lonlat').textContent = ''; return; }
+  const p = coordinateAt(S.meta, x / S.W + 0.5, z / S.H + 0.5), d = frame.geographic ? 6 : 1;
+  $('#coordinate-value').textContent = frame.geographic ? `Lon ${p.E.toFixed(d)}° · Lat ${p.N.toFixed(d)}°`
+    : `${frame.georeferenced ? 'E' : 'Col'} ${p.E.toFixed(d)} · ${frame.georeferenced ? 'N' : 'Row'} ${p.N.toFixed(d)}${frame.georeferenced ? '' : ' px'}`;
+  $('#coordinate-lonlat').textContent = p.ll && !frame.geographic ? `≈ Lat ${p.ll[1].toFixed(5)}° · Lon ${p.ll[0].toFixed(5)}°` : '';
+}
+$('#coordinate-grid-toggle').onclick = () => setCoordinateGrid(!gridVisible);
 
 function placeMarker(x, z) {
   if (!S.marker) {
@@ -1665,17 +1724,16 @@ canvas.addEventListener('pointerup', (e) => {
 });
 
 let hoverPending = null;
-canvas.addEventListener('pointerleave', () => { if (!S.hudPinned) $('#hover-hud').classList.add('hidden'); });
+canvas.addEventListener('pointerleave', () => { if (!S.hudPinned) $('#hover-hud').classList.add('hidden'); updateCoordinateReadout(); });
 canvas.addEventListener('pointermove', (e) => {
   const sr = $('#stage').getBoundingClientRect(); S.lastPointer = { x: e.clientX - sr.left + 16, y: e.clientY - sr.top + 16 };
-  if (S.hudPinned) return;
   if (!S.mesh) return;
   if (hoverPending) { hoverPending = e; return; }       // one raycast per frame at most
   hoverPending = e;
   requestAnimationFrame(() => { const ev = hoverPending; hoverPending = null; hoverUpdate(ev); });
 });
 function hoverUpdate(e) {
-  if (!S.mesh || !e || S.hudPinned) return;
+  if (!S.mesh || !e) return;
   const rect = canvas.getBoundingClientRect();
   const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
   const hit = raycastFrom(ndc);
@@ -1688,6 +1746,8 @@ function hoverUpdate(e) {
     const sa = slopeAt(r, c);
     const confVal = S.confidence ? sampleGrid(S.confidence, x, z) : null;
     const mc = mapCoords(x, z);
+    updateCoordinateReadout(x, z);
+    if (S.hudPinned) return;
     
     const cEl = $('#hud-coords'); if (cEl) cEl.textContent = mc ? `${mc.E.toFixed(1)}, ${mc.N.toFixed(1)}` : `${x.toFixed(1)}, ${z.toFixed(1)}`;
     const px = Math.round(((x / S.W) + 0.5) * (S.meta?.src_w || S.gw));
@@ -1721,7 +1781,7 @@ function hoverUpdate(e) {
       const sr = $('#stage').getBoundingClientRect();
       placeHoverHud(hud, e.clientX - sr.left, e.clientY - sr.top);
     } else hud.classList.add('hidden');
-  } else $('#hover-hud').classList.add('hidden');
+  } else { if (!S.hudPinned) $('#hover-hud').classList.add('hidden'); updateCoordinateReadout(); }
 }
 
 // double-click: smooth fly-to the clicked point
@@ -2126,6 +2186,10 @@ fly.addEventListener('unlock', () => $('#fly-hint').textContent = 'Click to look
 addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openCommandPalette(); return; }
   if (e.target.matches('input, select, textarea')) return;
+  if (e.shiftKey && e.code === 'KeyG') {
+    if (!e.repeat) setCoordinateGrid(!gridVisible);
+    e.preventDefault(); return;
+  }
   if (e.shiftKey && e.code === 'KeyC') {
     if (!e.repeat) setNav(S.nav === 'tour' ? 'orbit' : 'tour');
     e.preventDefault(); return;
@@ -2261,6 +2325,11 @@ renderer.setAnimationLoop(() => {
     if (S.nav === 'orbit') { orbit.update(dt); clampCamera(); }
     else if (S.nav === 'fly') updateFly(dt);
     else if (S.nav === 'tour') updateTour(dt);
+    updateCoordinateLabels();
+    if (S.nav !== 'orbit') {
+      if (Math.abs(camera.position.x) <= S.W / 2 && Math.abs(camera.position.z) <= S.H / 2) updateCoordinateReadout(camera.position.x, camera.position.z);
+      else updateCoordinateReadout();
+    }
     const agl = camera.position.y - (Math.abs(camera.position.x) < S.W / 2 && Math.abs(camera.position.z) < S.H / 2 ? terrainY(camera.position.x, camera.position.z) : 0);
     $('#hud-cam').textContent = S.meta.units === 'metre' ? `alt ${(agl / S.exag).toFixed(0)} m above surface` : 'relative vertical scale';
     if ((mmT += dt) > 0.1) { drawMinimap(); if ($('#stage').classList.contains('map-open')) drawMap(); mmT = 0; }
