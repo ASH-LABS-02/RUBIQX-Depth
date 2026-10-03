@@ -34,12 +34,15 @@ def main(argv=None):
                    help="fit above-ground height scale to Copernicus, fetching it even with a terrain DEM")
     p.add_argument("--no-cop-scale", dest="cop_scale", action="store_false",
                    help="skip Copernicus above-ground height-scale correction")
+    p.add_argument("--no-auto-anchors", dest="auto_anchors", action="store_false", default=True,
+                   help="disable automatic OSM/shadow anchors for a controlled benchmark")
     p.add_argument("--dem-source", default=None, choices=["COP30", "SRTMGL1"],
                    help="identify a supplied DEM; SRTM also enables OpenTopography fallback")
     p.add_argument("--gcp", help="CSV of ground control points (x,y,z or easting,northing,z)")
     p.add_argument("--gcp-height-type", default="orthometric",
                    choices=["orthometric", "ellipsoidal"],
                    help="GCP z datum; raw WGS84 GNSS heights convert to EGM2008")
+    p.add_argument("--vertical-datum", help="declare the supplied height datum; does not transform raster heights")
     p.add_argument("--ref", help="reference DSM/LiDAR raster for validation")
     p.add_argument("--model", default=None,
                    help="pretrained | small | base | large | HF id | local fine-tuned checkpoint")
@@ -102,7 +105,8 @@ def main(argv=None):
                allow_fallback=a.allow_fallback, device=a.device, tta=a.tta,
                dem_kind=a.dem_kind, match_dem_30m=not a.no_consistency,
                sun_elevation=a.sun_elevation, sun_azimuth=a.sun_azimuth, anchors=anchors,
-               gcp_height_type=a.gcp_height_type, cop_scale=a.cop_scale, semantic_model=a.semantic_model)
+               gcp_height_type=a.gcp_height_type, vertical_datum=a.vertical_datum,
+               cop_scale=a.cop_scale, semantic_model=a.semantic_model, auto_anchors=a.auto_anchors)
     if "metrics" in meta:
         print(json.dumps(meta["metrics"], indent=2))
 

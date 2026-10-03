@@ -49,7 +49,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         relative_display_height_m=None, device=None, dem_source="COP30",
         match_dem_30m=True, tta=4, dem_kind="auto", sun_elevation=None, sun_azimuth=None,
         vertical_datum=None, gcp_height_type="orthometric", anchors=None,
-        max_pixels=None, cop_scale=False, semantic_model=None, log=print) -> dict:
+        max_pixels=None, cop_scale=False, semantic_model=None, auto_anchors=True, log=print) -> dict:
     t0 = time.time()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -322,12 +322,16 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     # Only a consistent group may change metric scale; all candidates/rejections
     # remain visible in metadata for audit and manual review.
     auto_applied = False
+    if not auto_anchors:
+        log("  automatic height anchors disabled by request")
+        meta["auto_anchors"] = {"anchors": [], "applied": False, "enabled": False,
+                                "diagnostics": {"reason": "disabled by request"}}
     # Keep the optional segmentation experiment separate from automatic scale
     # fitting: changing candidate IDs must not silently select new scale cues.
     if semantic_labels is not None:
         log("  automatic height anchors skipped for the segmentation experiment; supplied anchors remain explicit")
         meta["semantic_segmentation"]["automatic_anchors"] = "skipped to isolate mask changes"
-    if semantic_labels is None and units == "metre" and cal.ndsm is not None and cal.dtm is not None and labels is not None and buildings["count"] and not anchors:
+    if auto_anchors and semantic_labels is None and units == "metre" and cal.ndsm is not None and cal.dtm is not None and labels is not None and buildings["count"] and not anchors:
         try:
             from .auto_anchors import automatic_height_anchors
             candidates, diagnostics = automatic_height_anchors(
@@ -408,7 +412,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
                 unc_units = unc_units * s
                 
             dio.write_dsm(out / "dsm.tif", dsm, img, units="metre", description=f"DepthWizard height-anchor ({backbone})", vertical_datum=datum)
-            dio.write_dsm(out / "ndsm.tif", cal.ndsm, img, units="metre", description=f"DepthWizard above-ground heights nDSM ({backbone})", vertical_datum=datum)
+            dio.write_dsm(out / "ndsm.tif", cal.ndsm, img, units="metre", description=f"DepthWizard above-ground heights nDSM ({backbone})", vertical_datum=datum, compound_vertical=False)
             if unc_units is not None:
                 from .uncertainty import calibrated_sigma
                 dio.write_dsm(out / "ensemble_spread.tif", unc_units, img, units="metre",
