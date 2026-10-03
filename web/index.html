@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="studio.css?v=20260930-mission-studio-v2">
 <link rel="stylesheet" href="mission.css?v=20260930-v9">
 <link rel="stylesheet" href="ui-v2.css?v=20261001-v1">
-<link rel="stylesheet" href="ui-v3.css?v=20261001-bold-r5">
+<link rel="stylesheet" href="ui-v3.css?v=20261003-cinematic">
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
 </script>
@@ -82,9 +82,9 @@
       <div class="seg" id="nav-mode" aria-label="Navigation mode">
         <button data-nav="orbit" class="active" title="Orbit (O)">Orbit</button>
         <button data-nav="fly" title="First-person fly (F)">Fly</button>
-        <button data-nav="tour" title="Automatic flythrough (T)">Tour</button>
+        <button data-nav="tour" title="30 s cinematic flythrough (Shift+C or T)">Tour</button>
       </div>
-      <button id="record-tour" title="Record a 20 s cinematic flythrough as a video file">● Record</button>
+      <button id="record-tour" title="Record a 30 s cinematic flythrough as a video file">● Record</button>
       <button id="topdown" title="Top-down view (D)">Top down</button>
       <button id="reset" class="icon-btn" title="Reset view (R)" aria-label="Reset view">↺</button>
       <button id="swipe-toggle" title="Swipe compare DSM vs coarse DEM baseline (S)" aria-pressed="false">3D Swipe</button>
@@ -96,6 +96,7 @@
       <button id="present-btn" title="Presentation mode: full-screen scene, big labels, automatic tour (P)">Present</button>
       <button id="fullscreen" class="icon-btn" title="Fullscreen viewer" aria-label="Fullscreen viewer">⛶</button>
     </div>
+    <div id="cinematic-status" class="hidden"><span id="cinematic-progress">Cinematic · 30s</span><button id="cinematic-stop" type="button" title="Stop cinematic (Esc)">Stop · Esc</button></div>
     <div id="layer-dock"><div id="layer-legend"></div><div id="layer-dock-actions"></div><button id="dock-more" type="button" title="More surface layers" aria-label="More surface layers">···</button><div id="layer-more-menu"></div></div>
     <div id="scene-hero" class="scene-hero"><h2 id="hero-title">Choose a scene</h2><div id="hero-stats"></div><span id="hero-caption">Single image → 3D surface</span></div>
     <div id="hud">
@@ -422,11 +423,11 @@
       <tr><td>2D map</td><td>Open beside a georeferenced scene; click inside the footprint to fly there</td></tr>
       <tr><td>Mission</td><td>Choose a flood source and level, then click to plan a route or place a relay</td></tr>
       <tr><td>Time / VR</td><td>Time slider previews lighting; VR needs a compatible headset and secure browser</td></tr>
-      <tr><td>Keys</td><td>1–6 workspaces · Shift+1–9 layers · O orbit · F fly · T tour · D top down · V compare · R reset · G gallery · E export · Ctrl+K search · H help</td></tr></table>
+      <tr><td>Keys</td><td>1–6 workspaces · Shift+1–9 layers · O orbit · F fly · Shift+C cinematic · Esc stop · T tour · D top down · V compare · R reset · G gallery · E export · Ctrl+K search · H help</td></tr></table>
     <p class="muted">The camera stays above terrain in Fly mode.</p>
     <button id="help-close" class="primary">Got it</button>
   </div>
 </div>
-<script type="module" src="app.js?v=20261003-terrain-overview-v6a-r"></script>
+<script type="module" src="app.js?v=20261003-cinematic"></script>
 </body>
 </html>

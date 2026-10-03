@@ -32,6 +32,7 @@
 #view-pill button.active{background:rgba(56,211,245,.12);color:var(--cyan)}#view-pill svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 #view-pill .v3-tool-label{position:absolute;right:60px;top:4px;white-space:nowrap;padding:8px 12px;border-radius:12px;background:rgba(10,16,28,.94);border:1px solid var(--glass-edge);font-size:12px;display:none}#view-pill button:hover .v3-tool-label,#view-pill button:focus-visible .v3-tool-label{display:block}
 #view-pill .sep{width:24px;height:1px;background:var(--glass-edge);margin:4px}
+#cinematic-status{position:absolute;top:80px;left:50%;transform:translateX(-50%);z-index:16;display:flex;align-items:center;gap:16px;padding:8px 12px;border:1px solid var(--glass-edge);border-radius:12px;background:var(--glass);color:var(--cyan);font:12px var(--mono);white-space:nowrap}#cinematic-status button{padding:4px 8px;font-size:12px}#app.presentation #cinematic-status{display:none}
 #compare-popover,#exag-popover{top:0;right:68px;bottom:auto;width:240px;padding:16px;z-index:22}
 #exag-control{position:relative}#exag-trigger::after{content:attr(data-value);position:absolute;bottom:1px;right:1px;font:9px var(--mono);color:var(--cyan)}
 #layer-dock,#app.drawer-collapsed #layer-dock{left:50%;right:auto;transform:translateX(-50%);bottom:24px;max-width:calc(100% - 384px);padding:8px;gap:4px;border-radius:40px;overflow:visible;width:max-content}

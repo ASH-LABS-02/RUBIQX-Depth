@@ -14,6 +14,7 @@ import { createMissionUi } from './ui-v2.js?v=20261001-bold';
 import { createDiorama } from './diorama.js?v=20261001-bold-r4';
 import { createBoldUi } from './ui-v3.js?v=20261001-bold-r4';
 import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261002-trees-scale-colour-c';
+import { cinematicPath } from './cinematic.js?v=20261003-cinematic';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
 const FLOOR_AREA_PER_PERSON_M2 = 30;
 
@@ -184,7 +185,7 @@ const S = {
   swipeActive: false, swipeKind: 'dem', swipeX: 0.5, modelBaseline: null, floodAnimating: false,
   riseStart: 0, riseDuration: 1050, missionAction: null, missionOverlay: null,
   cameraFlight: null, mapTiles: new Map(), mapView: null,
-  keys: {}, tourT: 0, extent: 1,
+  keys: {}, tourT: 0, cinematic: null, extent: 1,
 };
 const uniforms = {
   uContourOn: { value: 0 },
@@ -1220,7 +1221,8 @@ function selectBuilding(mesh) {
 }
 
 // ------------------------------------------------------------------ cinematic flythrough recording
-async function recordTour(seconds = 20) {
+async function recordTour(seconds = 30) {
+  if (S.recording) return;
   if (!S.mesh || !canvas.captureStream || typeof MediaRecorder === 'undefined') { toast('Video recording is not supported in this browser.', 'error'); return; }
   const btn = $('#record-tour');
   const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
@@ -1232,12 +1234,13 @@ async function recordTour(seconds = 20) {
     a.href = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
     a.download = `depthwizard_${S.id}_flythrough.webm`; a.click();
     btn.textContent = '● Record'; btn.classList.remove('active');
+    S.recording = false;
   };
-  setNav('tour'); rec.start();
+  setNav('tour'); rec.start(); S.recording = true;
   let left = seconds; btn.classList.add('active'); btn.textContent = `■ ${left}s`;
   const t = setInterval(() => { left--; btn.textContent = `■ ${left}s`; if (left <= 0) { clearInterval(t); rec.stop(); setNav('orbit'); } }, 1000);
 }
-$('#record-tour').onclick = () => recordTour(20);
+$('#record-tour').onclick = () => recordTour(30);
 
 // ------------------------------------------------------------------ viewshed (line of sight)
 function computeViewshed(point, observerH = 10) {
@@ -1400,10 +1403,13 @@ function setViewGeometry(mode) {
 
 // ------------------------------------------------------------------ navigation
 function setNav(mode) {
+  if (!S.mesh && mode === 'tour') return;
   if (mode === S.nav && mode !== 'tour') return;
   if (S.nav === 'fly') fly.unlock();
   if (mode !== 'orbit') camera.up.set(0, 1, 0);
   S.nav = mode;
+  S.cinematic = null;
+  $('#cinematic-status').classList.toggle('hidden', mode !== 'tour' || S.presentation);
   missionUi?.navigationChanged(mode);
   orbit.enabled = mode === 'orbit';
   $('#fly-hint').classList.toggle('hidden', mode !== 'fly');
@@ -1414,7 +1420,15 @@ function setNav(mode) {
     if (hit) orbit.target.copy(hit.point);
     orbit.update();
   }
-  if (mode === 'tour') S.tourT = Math.atan2(camera.position.x, camera.position.z);
+  if (mode === 'tour') {
+    S.cameraFlight = null;
+    $('#hover-hud').classList.add('hidden');
+    S.tourT = Math.atan2(camera.position.x, camera.position.z);
+    S.cinematic = { elapsed: 0, duration: 30, from: camera.position.clone(),
+      fromTarget: orbit.target.clone(), ...cinematicPath({ W: S.W, H: S.H, extent: S.extent,
+        top: worldY(S.hmax), centreY: worldY((S.hmin + S.hmax) / 2), angle: S.tourT, terrainY }) };
+    requestRender();
+  }
 }
 
 const clock = new THREE.Clock();
@@ -1447,15 +1461,21 @@ function updateTour(dt) {
     camera.position.set(Math.sin(S.tourT) * radius, cy + S.extent * 0.65, Math.cos(S.tourT) * radius);
     camera.lookAt(0, cy, 0); return;
   }
-  const r = S.extent * (0.32 + 0.08 * Math.sin(S.tourT * 2.3));
-  const x = Math.sin(S.tourT) * r, z = Math.cos(S.tourT) * r;
-  const top = worldY(S.hmax);
-  const y = Math.max(terrainY(x, z), 0) + (top - Math.max(terrainY(x, z), 0)) * 0.5 + S.extent * (0.06 + 0.03 * Math.sin(S.tourT * 1.7));
-  camera.position.lerp(new THREE.Vector3(x, y, z), Math.min(1, dt * 2));
-  const ahead = S.tourT + 0.6;
-  const lx = Math.sin(ahead) * r * 0.35, lz = Math.cos(ahead) * r * 0.35;
-  camera.lookAt(lx, Math.max(terrainY(lx, lz), 0), lz);
+  const tour = S.cinematic; if (!tour) return;
+  tour.elapsed += dt;
+  const t = Math.min(1, tour.elapsed / tour.duration), ease = t * t * (3 - 2 * t);
+  const blend = Math.min(1, tour.elapsed / 2), entry = blend * blend * (3 - 2 * blend);
+  camera.position.lerpVectors(tour.from, tour.position.getPoint(ease), entry);
+  const inside = Math.abs(camera.position.x) <= S.W / 2 && Math.abs(camera.position.z) <= S.H / 2;
+  if (inside) camera.position.y = Math.max(camera.position.y,
+    terrainY(camera.position.x, camera.position.z) + S.extent * 0.04, worldY(S.hmax) + S.extent * 0.02);
+  orbit.target.lerpVectors(tour.fromTarget, tour.target.getPoint(ease), entry);
+  camera.lookAt(orbit.target);
+  $('#cinematic-progress').textContent = `Cinematic · ${Math.ceil(tour.duration - tour.elapsed)}s`;
+  if (t >= 1) setNav('orbit');
 }
+
+$('#cinematic-stop').onclick = () => setNav('orbit');
 
 // ------------------------------------------------------------------ picking & tools
 const raycaster = new THREE.Raycaster();
@@ -1971,7 +1991,7 @@ $$('#shade-mode button').forEach((b) => b.onclick = () => setMode(b.dataset.mode
 $$('#tool button').forEach((b) => b.onclick = () => {
   S.tool = b.dataset.tool; $$('#tool button').forEach((x) => x.classList.toggle('active', x === b)); clearTools();
 });
-$$('#nav-mode button').forEach((b) => b.onclick = () => setNav(b.dataset.nav));
+$$('#nav-mode button').forEach((b) => b.onclick = () => setNav(b.dataset.nav === 'tour' && S.nav === 'tour' ? 'orbit' : b.dataset.nav));
 $('#exag').oninput = (e) => {
   S.exag = +e.target.value; $('#exag-v').textContent = S.exag.toFixed(1) + '×';
   if (S.mesh) {
@@ -2106,6 +2126,11 @@ fly.addEventListener('unlock', () => $('#fly-hint').textContent = 'Click to look
 addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openCommandPalette(); return; }
   if (e.target.matches('input, select, textarea')) return;
+  if (e.shiftKey && e.code === 'KeyC') {
+    if (!e.repeat) setNav(S.nav === 'tour' ? 'orbit' : 'tour');
+    e.preventDefault(); return;
+  }
+  if (e.key === 'Escape' && S.nav === 'tour' && !S.presentation) { setNav('orbit'); return; }
   if (e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
     const m = ['optical', 'topo', 'height', 'hazard', 'ndsm', 'confidence', 'landslide', 'change', 'error'][Number(e.code.slice(-1)) - 1];
     const b = $(`#layer-dock button[data-mode="${m}"]`); if (b && !b.disabled && !b.classList.contains('layer-unavailable')) setMode(m);
@@ -3130,7 +3155,7 @@ function initMissionLayout() {
   $('#explore-compare').onclick=()=>$('#compare-trigger').click();
   $('#surface-group label:has(#contours)').classList.add('hidden');
   $('#flood-info').prepend($('#flood-group > p.note'));
-  $('#record-tour').textContent='Record 20 s flythrough';
+  $('#record-tour').textContent='Record 30 s flythrough';
   const exportGroups = [
     ['Raster & analysis', ['dsm','dtm','ndsm','uncertainty','heightmap']],
     ['3D assets', ['glb','obj','cityjson','ply']],
