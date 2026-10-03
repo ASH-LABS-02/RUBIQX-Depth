@@ -61,7 +61,7 @@ function greennessAt(pixels, gw, gh, c, r, skipGreen) {
   return G > R + margin && G > B + margin;
 }
 
-export function analyzeCanopy({ h, dtm, buildingMask, texImg, gw, gh }) {
+export function analyzeCanopy({ h, dtm, buildingMask, semanticLabels, texImg, gw, gh }) {
   const mask = new Uint8Array(gw * gh);
   const elevated = new Uint8Array(mask.length);
   const pixels = readTexturePixels(texImg);
@@ -72,11 +72,15 @@ export function analyzeCanopy({ h, dtm, buildingMask, texImg, gw, gh }) {
     if (buildingMask?.[i]) continue;
     const agl = h[i] - dtm[i];
     if (!Number.isFinite(agl) || agl < CANOPY_MIN_AGL_M) continue;
+    // Canonical labels: unknown=0, building=1, tree/forest=2,
+    // ground=3, water=4, road=5. Unknown retains the RGB heuristic.
+    const semantic = semanticLabels?.[i] || 0;
+    if (semantic && semantic !== 2) continue;
     elevated[i] = 1;
     aglCells++;
     const r = (i / gw) | 0;
     const c = i - r * gw;
-    if (!greennessAt(pixels, gw, gh, c, r, skipGreen)) continue;
+    if (semantic !== 2 && !greennessAt(pixels, gw, gh, c, r, skipGreen)) continue;
     greenKept++;
     mask[i] = 1;
   }
@@ -92,7 +96,8 @@ export function analyzeCanopy({ h, dtm, buildingMask, texImg, gw, gh }) {
       const rr = r + dr, cc = c + dc;
       if (rr < 0 || rr >= gh || cc < 0 || cc >= gw) continue;
       const j = rr * gw + cc;
-      if (!buildingMask?.[j] && Number.isFinite(dtm[j])) flattenMask[j] = 1;
+      if (!buildingMask?.[j] && Number.isFinite(dtm[j]) &&
+          (!semanticLabels?.[j] || semanticLabels[j] === 2)) flattenMask[j] = 1;
     }
   }
   return {

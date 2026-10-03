@@ -13,7 +13,7 @@ import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg
 import { createMissionUi } from './ui-v2.js?v=20261003-integrity';
 import { createDiorama } from './diorama.js?v=20261001-bold-r4';
 import { createBoldUi } from './ui-v3.js?v=20261003-ux-polish';
-import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261003-deeper-green';
+import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261003-semantic-prototype';
 import { cinematicPath } from './cinematic.js?v=20261003-cinematic';
 import { coordinateAt, coordinateFrame, coordinateGrid } from './coordinates.js?v=20261003-grid';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
@@ -292,7 +292,7 @@ function updateRenderHeight(rebuild = true) {
       }
     }
     if (treesActive()) {
-      S.canopyCache = analyzeCanopy({ h: S.h, dtm: S.dtm, buildingMask: m, texImg: S.texImg, gw: S.gw, gh: S.gh });
+      S.canopyCache = analyzeCanopy({ h: S.h, dtm: S.dtm, buildingMask: m, semanticLabels: S.semanticLabels, texImg: S.texImg, gw: S.gw, gh: S.gh });
       S.canopyCache.dtm = S.dtm;
       flattened = flattenCanopyHeights(src, S.canopyCache);
     }
@@ -320,7 +320,7 @@ function syncTreeLayer(flattenedCells = 0) {
   }
   if (!treesActive()) return;
   const mask = buildingMaskGrid();
-  const canopy = S.canopyCache || analyzeCanopy({ h: S.h, dtm: S.dtm, buildingMask: mask, texImg: S.texImg, gw: S.gw, gh: S.gh });
+  const canopy = S.canopyCache || analyzeCanopy({ h: S.h, dtm: S.dtm, buildingMask: mask, semanticLabels: S.semanticLabels, texImg: S.texImg, gw: S.gw, gh: S.gh });
   canopy.dtm = S.dtm;
   const built = buildTreeGroup({
     h: S.h, dtm: S.dtm, buildingMask: mask, gw: S.gw, gh: S.gh, W: S.W, H: S.H,
@@ -777,7 +777,7 @@ async function loadScene(id) {
       try {
         const res = await apiFetch(base + name, {signal, silent:true});
         if (!res.ok) return null;
-        return type === 'json' ? await res.json() : new Float32Array(await res.arrayBuffer());
+        return type === 'json' ? await res.json() : type === 'labels' ? new Uint8Array(await res.arrayBuffer()) : new Float32Array(await res.arrayBuffer());
       } catch (error) {
         if (error.name === 'AbortError') throw error;
         if(error.status!==404)toast(`Could not load ${name}: ${error.message}`,'error',9000,()=>loadScene(id));
@@ -785,14 +785,19 @@ async function loadScene(id) {
       }
     };
 
-    let [dtm, confidence, buildings, susc, change, demBase] = await Promise.all([
+    let [dtm, confidence, buildings, susc, change, demBase, semanticLabels] = await Promise.all([
       meta.has_dtm !== false ? fetchLayer('dtm.bin') : Promise.resolve(null),
       meta.has_confidence !== false && meta.tta !== 1 && meta.backbone !== 'heuristic-fallback' ? fetchLayer('confidence.bin') : Promise.resolve(null),
       meta.buildings_count !== 0 ? fetchLayer('buildings.json', 'json') : Promise.resolve(null),
       meta.layers?.susc ? fetchLayer('susc.bin') : Promise.resolve(null),
       meta.layers?.change ? fetchLayer('change.bin') : Promise.resolve(null),
-      meta.layers?.base ? fetchLayer('base.bin') : Promise.resolve(null)
+      meta.layers?.base ? fetchLayer('base.bin') : Promise.resolve(null),
+      meta.layers?.semantic ? fetchLayer('semantic.bin', 'labels') : Promise.resolve(null)
     ]);
+    if (semanticLabels && semanticLabels.length !== meta.grid_w * meta.grid_h) {
+      semanticLabels = null;
+      toast('Semantic mask has the wrong grid size; using existing tree placement.');
+    }
 
     // High mesh detail: real 1024 heights from the full-resolution rasters; other layers upsampled
     let hArr = new Float32Array(hBuf);
@@ -805,6 +810,15 @@ async function loadScene(id) {
           let dtmHi = null;
           if (dtm) { const rd = await apiFetch(`api/scenes/${id}/grid/dtm.bin?size=1024`, {signal, silent:true}); dtmHi = new Float32Array(await rd.arrayBuffer()); }
           hArr = new Float32Array(await r.arrayBuffer());
+          if (semanticLabels) {
+            const oldW = meta.grid_w, oldH = meta.grid_h, oldLabels = semanticLabels;
+            semanticLabels = new Uint8Array(nw * nh);
+            for (let y = 0; y < nh; y++) for (let x = 0; x < nw; x++) {
+              const sx = Math.round(x * (oldW - 1) / Math.max(1, nw - 1));
+              const sy = Math.round(y * (oldH - 1) / Math.max(1, nh - 1));
+              semanticLabels[y * nw + x] = oldLabels[sy * oldW + sx];
+            }
+          }
           ref = up(ref); confidence = up(confidence); susc = up(susc); change = up(change); demBase = up(demBase); dtm = dtmHi;
           meta = { ...meta, grid_w: nw, grid_h: nh };
         }
@@ -833,7 +847,7 @@ async function loadScene(id) {
     Object.assign(S, { demBase, modelBaseline: null, susc, change, viewshed: null, floodMask: null,
       floodSeed: null, floodSource: S.floodSource || 'edge', missionAction: null });
     Object.assign(S, { id, meta, gw: meta.grid_w, gh: meta.grid_h, W: meta.ground_w_m, H: meta.ground_h_m,
-      h: hArr, dtm, confidence, buildings, ref, tex, texImg: tex.image, units: meta.units === 'metre' ? 'm' : 'relative units',
+      h: hArr, dtm, confidence, buildings, ref, tex, texImg: tex.image, semanticLabels, units: meta.units === 'metre' ? 'm' : 'relative units',
       viewGeometry: 'surface' });
     const terrainOverview = Number(meta.gsd_m) >= 2.5 || !(buildings?.count > 0);
     S.buildingToolsAvailable = !terrainOverview;
@@ -3103,6 +3117,7 @@ function updateMissionHud() {
   values.forEach(([label, val, suffix], i) => setAnimatedStat($('#hero-stats').children[i]?.querySelector('b'), val, suffix, ['Pearson r','r²'].includes(label)?3:null));
   const level = S.meta.calibration?.evidence_level || (S.meta.units === 'relative' ? 'relative' : 'unverified');
   $('#hero-caption').textContent = `${S.meta.calibration?.method==='input-dem'?'Input DEM (not estimated)':S.meta.units === 'metre' ? 'Metric DSM' : 'Relative surface'} · ${level} evidence · ${S.meta.crs || 'local coordinates'}`;
+  if (S.meta.semantic_segmentation?.status === 'experimental') $('#hero-caption').textContent += ' · Experimental semantic masks';
   $$('#mode-rail [data-workspace="validate"]').forEach((b) => b.disabled = false);
 }
 function renderBuildingList() {

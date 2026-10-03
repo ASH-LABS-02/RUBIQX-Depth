@@ -146,7 +146,8 @@ def export_viewer_assets(out_dir: str | Path, image: InputImage, dsm: np.ndarray
                          mesh_max: int = 512, tex_max: int = 4096,
                          baseline: np.ndarray | None = None,
                          uncertainty: np.ndarray | None = None,
-                         susceptibility: np.ndarray | None = None) -> None:
+                         susceptibility: np.ndarray | None = None,
+                         semantic_labels: np.ndarray | None = None) -> None:
     """Assets for the Three.js viewer:
     texture.jpg    – the optical image (draped on the mesh)
     height.bin     – Float32 heights at mesh resolution (row-major)
@@ -186,6 +187,13 @@ def export_viewer_assets(out_dir: str | Path, image: InputImage, dsm: np.ndarray
         down(confidence).tofile(out / "confidence.bin")
 
     layers = {}
+    if semantic_labels is not None:
+        if semantic_labels.shape != dsm.shape:
+            raise ValueError("Semantic labels must share the DSM grid")
+        _resize(semantic_labels.astype(np.uint8), (mw, mh), Image.NEAREST).tofile(out / "semantic.bin")
+        layers["semantic"] = True
+    else:
+        (out / "semantic.bin").unlink(missing_ok=True)
     for name, arr in (("base", baseline), ("unc", uncertainty), ("susc", susceptibility)):
         if arr is not None:
             down(arr).tofile(out / f"{name}.bin")
@@ -266,4 +274,3 @@ def match_grid(img: InputImage, shape: tuple[int, int]) -> InputImage:
     return InputImage(rgb=rgb, path=img.path, georeferenced=img.georeferenced, crs=img.crs,
                       transform=img.transform * Affine.scale(fx, fy) if img.georeferenced else img.transform,
                       pixel_size_m=img.pixel_size_m * fx if img.pixel_size_m else None)
-

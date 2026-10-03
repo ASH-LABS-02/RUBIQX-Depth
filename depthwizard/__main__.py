@@ -46,6 +46,7 @@ def main(argv=None):
     p.add_argument("--scene", default="auto", choices=["auto", "urban", "sparse", "forest", "hilly"])
     p.add_argument("--gsd", type=float, default=1.0, help="assumed m/pixel for non-georeferenced input")
     p.add_argument("--device", help="cuda | mps | cpu")
+    p.add_argument("--semantic-model", help="optional experimental overhead SegFormer checkpoint; refines object masks only")
     p.add_argument("--tta", type=int, default=4, choices=[1, 2, 4, 8],
                    help="rotation/flip test-time augmentation passes (uncertainty map needs >1)")
     p.add_argument("--dem-kind", default="auto", choices=["auto", "surface", "terrain"],
@@ -101,7 +102,7 @@ def main(argv=None):
                allow_fallback=a.allow_fallback, device=a.device, tta=a.tta,
                dem_kind=a.dem_kind, match_dem_30m=not a.no_consistency,
                sun_elevation=a.sun_elevation, sun_azimuth=a.sun_azimuth, anchors=anchors,
-               gcp_height_type=a.gcp_height_type, cop_scale=a.cop_scale)
+               gcp_height_type=a.gcp_height_type, cop_scale=a.cop_scale, semantic_model=a.semantic_model)
     if "metrics" in meta:
         print(json.dumps(meta["metrics"], indent=2))
 

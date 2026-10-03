@@ -89,6 +89,7 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 ## Latest updates · 3 October 2026
 
+- **Optional semantic prototype:** overhead SegFormer masks refine building/canopy separation and City tree placement. The current candidate is research-only and disabled by default; three cached-scene comparisons show mask changes, not a measured accuracy gain. DSM pixels are unchanged by classification. See the [comparison, checkpoint and validation protocol](docs/semantic-prototype.md).
 - **Workspace polish:** visible workspace names and labelled layer tabs, higher-contrast inspectors and import dialogs, shorter camera tooltips, and a scrollable mobile navigation bar. Hover readouts avoid the header and coordinate panel. Foliage uses deeper greens; the City screenshot above shows the updated layout.
 - **Tree rendering:** Roof-fit City now uses branching trunks and 5–6 irregular foliage clusters per tree, varied silhouettes and subdued green shades. Trees are illustrative instances placed from canopy candidates, not individually surveyed trees or classified species. Ground and canopy-top elevations retain the existing DSM/DTM estimates; exported rasters and accuracy scores are unchanged. Trees remain off for relative scenes.
 - **Model failures:** processing stops with a clear error when inference fails. Web uploads never silently substitute a heuristic; CLI prototype runs can explicitly use `--allow-fallback`, with results labelled unsuitable for accuracy evaluation.

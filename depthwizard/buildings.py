@@ -55,6 +55,7 @@ def extract_buildings(
     return_labels: bool = False,
     edge_refine_for_footprints: bool = False,
     roof_fitting: bool | None = None,
+    semantic_labels: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Extract LoD1 buildings and optional LoD1.5 roof-shape hypotheses.
 
@@ -81,13 +82,23 @@ def extract_buildings(
     # Threshold for candidate structures; exclude sunlit vegetation (excess-green),
     # which otherwise turns tree canopy into "buildings".
     mask = footprint_ndsm >= min_height_m
+    if semantic_labels is not None:
+        from .semantic import BUILDING, TREE, GROUND, WATER, ROAD
+        if semantic_labels.shape != ndsm.shape:
+            raise ValueError("Semantic labels must share the DSM grid")
+        mask &= ~np.isin(semantic_labels, (TREE, GROUND, WATER, ROAD))
     if rgb is not None and rgb.shape[:2] == ndsm.shape:
         f = rgb.astype(np.float32)
         exg = (2 * f[..., 1] - f[..., 0] - f[..., 2]) / (f.sum(-1) + 1e-6)
-        mask &= ~(exg > 0.06)
+        vegetation = exg > 0.06
+        if semantic_labels is not None:
+            vegetation &= semantic_labels != BUILDING
+        mask &= ~vegetation
     # Morphological cleaning to separate close buildings and remove tree-leaf speckle
     mask = ndimage.binary_opening(mask, structure=np.ones((3, 3), bool))
     mask = ndimage.binary_closing(mask, structure=np.ones((3, 3), bool))
+    if semantic_labels is not None:
+        mask &= ~np.isin(semantic_labels, (TREE, GROUND, WATER, ROAD))
 
     labeled, num_features = ndimage.label(mask)
     if num_features == 0:
@@ -188,6 +199,7 @@ def extract_buildings(
             "confidence": round(conf, 2),
             "confidence_basis": conf_basis,
             "source": "LoD1 model",
+            "footprint_basis": "experimental semantic + nDSM" if semantic_labels is not None else "nDSM + RGB colour",
             "center": [round(world_center_x, 2), round(world_center_z, 2)],
             "polygon_world": poly_world,
             "polygon_uv": poly_uv,

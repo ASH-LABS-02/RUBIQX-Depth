@@ -49,7 +49,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         relative_display_height_m=None, device=None, dem_source="COP30",
         match_dem_30m=True, tta=4, dem_kind="auto", sun_elevation=None, sun_azimuth=None,
         vertical_datum=None, gcp_height_type="orthometric", anchors=None,
-        max_pixels=None, cop_scale=False, log=print) -> dict:
+        max_pixels=None, cop_scale=False, semantic_model=None, log=print) -> dict:
     t0 = time.time()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -267,6 +267,28 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     if unc_units is not None:
         unc_view = unc_units if units == "metre" else unc_units * meta["display_height_m"]
 
+    semantic_labels = None
+    semantic_info = {"status": "disabled"}
+    semantic_model = semantic_model or os.environ.get("DEPTHWIZARD_SEMANTIC_CHECKPOINT")
+    if semantic_model and units == "metre" and gsd < COARSE_GSD_M:
+        from .semantic import SemanticSegmenter
+        log("experimental overhead semantic segmentation")
+        segmenter = SemanticSegmenter(semantic_model, device=device)
+        semantic_labels, semantic_info = segmenter.predict(img.rgb, log=log)
+        del segmenter
+        import rasterio
+        with rasterio.open(out / "dsm.tif") as src:
+            profile = src.profile.copy()
+        profile.update(count=1, dtype="uint8", nodata=0)
+        with rasterio.open(out / "semantic.tif", "w", **profile) as dst:
+            dst.write(semantic_labels, 1)
+            dst.update_tags(CLASSES=json.dumps(semantic_info["classes"]),
+                            SOURCE="experimental semantic classifier; not height truth")
+    elif semantic_model:
+        semantic_info = {"status": "skipped", "reason": "requires metric imagery finer than 2.5 m/px"}
+    meta["semantic_segmentation"] = semantic_info
+    if semantic_labels is None:
+        (out / "semantic.tif").unlink(missing_ok=True)
     log("extracting LoD1 building footprints")
     b_dtm = cal.dtm if units == "metre" else None
     min_h = 2.5 if units == "metre" else 0.12 * float(np.percentile(view_h - view_h.min(), 98))
@@ -279,6 +301,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
                                   world_h=img.shape[0] * gsd, rgb=img.rgb,
                                   uncertainty_m=unc_view, min_height_m=max(min_h, 1e-3),
                                   edge_refine_for_footprints=True,
+                                  semantic_labels=semantic_labels,
                                   return_labels=True)
     labels = buildings.pop("_labels", None)
     if units != "metre":
@@ -299,7 +322,12 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     # Only a consistent group may change metric scale; all candidates/rejections
     # remain visible in metadata for audit and manual review.
     auto_applied = False
-    if units == "metre" and cal.ndsm is not None and cal.dtm is not None and labels is not None and buildings["count"] and not anchors:
+    # Keep the optional segmentation experiment separate from automatic scale
+    # fitting: changing candidate IDs must not silently select new scale cues.
+    if semantic_labels is not None:
+        log("  automatic height anchors skipped for the segmentation experiment; supplied anchors remain explicit")
+        meta["semantic_segmentation"]["automatic_anchors"] = "skipped to isolate mask changes"
+    if semantic_labels is None and units == "metre" and cal.ndsm is not None and cal.dtm is not None and labels is not None and buildings["count"] and not anchors:
         try:
             from .auto_anchors import automatic_height_anchors
             candidates, diagnostics = automatic_height_anchors(
@@ -524,7 +552,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         out / "viewer", img, view_h, meta, reference=view_ref,
         dtm=view_dtm, confidence=confidence_map, buildings=buildings,
         baseline=getattr(cal, "extras", {}).get("dem") if units == "metre" else None,
-        uncertainty=unc_view, susceptibility=susc)
+        uncertainty=unc_view, susceptibility=susc, semantic_labels=semantic_labels)
     dio.save_preview(out / "preview.png", view_h, gsd=gsd)
     (out / "meta.json").write_text(json.dumps(_clean_numpy(meta), separators=(',', ':'), default=float))
     log(f"done in {meta['timing_s']['total']} s -> {out}")
