@@ -96,10 +96,36 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 - **Reliability and uncertainty:** single-pass and heuristic runs produce no pixel reliability or uncertainty maps. Metric uncertainty is provisional and calibrated on two DC scenes; relative output is unitless ensemble spread. Building scores distinguish ensemble agreement from roof-height consistency. Scores are not accuracy probabilities.
 - **Export clarity:** menus and reports distinguish full-grid GeoTIFFs from sampled display meshes and point clouds. The complete ZIP includes raw metric ensemble spread when available, alongside the provisional error map and provenance.
 - **Disaster tools:** flood assumptions remain visible with details collapsed. Slope bands describe angles rather than safety, and routes, refuge candidates, runout and relay coverage state their screening limits.
-- **Robustness:** switching between City and Surface while a scene is loading no longer attempts to rebuild an absent height grid. The latest local verification passed **65 pytest tests** and JavaScript syntax checks; the updated City view was inspected in the browser.
+- **Robustness:** switching between City and Surface while a scene is loading no longer attempts to rebuild an absent height grid. The latest local verification passed **72 pytest tests** and JavaScript syntax checks; the experimental City view and a real pipeline run were also checked.
 
 The rendering and reporting fixes do not establish improved height accuracy. See
 [completed limitation fixes and remaining evidence gaps](docs/limitation-fixes.md).
+
+### Experimental building / canopy separation
+
+![City view with experimental semantic masks](docs/images/semantic-city-current.jpg)
+
+An optional overhead-image SegFormer classifier separates building, woody
+canopy, ground, water and road candidates. Unknown pixels retain the existing
+detector; classified green roofs bypass the RGB vegetation filter. City trees
+use the canopy masks. Classification does not change DSM height pixels.
+
+| Cached scene | Existing building candidates | With semantic masks |
+|---|---:|---:|
+| Glover Park | 139 | 106 |
+| Capitol Hill East | 75 | 71 |
+| Quesenbank forest north (display grid) | 20 | 16 |
+
+These are extraction changes, **not measured accuracy improvements**. No new
+training was run. The candidate remains disabled by default, with publisher
+licensing and training overlap unresolved. Automatic height anchors are skipped
+in this experiment to isolate mask changes. Independent class labels are needed
+before enabling a suitable licensed model by default.
+
+Use `--semantic-model <local-checkpoint>` for CLI runs, or
+`DEPTHWIZARD_SEMANTIC_CHECKPOINT` for new server jobs. Checkpoint preparation,
+comparison commands, provenance and the independent validation protocol are in
+the [semantic prototype report](docs/semantic-prototype.md).
 
 ### Disaster and response coverage
 
@@ -133,7 +159,7 @@ independent data and field verification.
 | **Products** | DSM, DTM, nDSM and per-pixel uncertainty GeoTIFFs · CityJSON with LoD1 or supported fitted LoD2 roofs · GLB/OBJ/PLY · HTML report · evidence JSON |
 | **3D** | Textured city on bare ground, fitted roof hypotheses, adjustable sun lighting, geometric DEM-vs-DSM swipe, orbit/fly/tour, one-click flythrough video |
 | **Analysis** | Connected flood (edge / clicked source) with depth, volume and buildings affected · landslide susceptibility · viewshed · rooftop solar · pre/post change detection · profiles, 3D distance, cut/fill |
-| **Engineering** | 65 automated tests at the latest local verification + CI, REST API with `/docs`, ONNX export, PyInstaller build script, [model card](docs/MODEL_CARD.md), [roadmap status](docs/ROADMAP_STATUS.md) |
+| **Engineering** | 72 automated tests at the latest local verification + CI, REST API with `/docs`, ONNX export, PyInstaller build script, [model card](docs/MODEL_CARD.md), [roadmap status](docs/ROADMAP_STATUS.md) |
 
 ### Mission workbench additions
 
