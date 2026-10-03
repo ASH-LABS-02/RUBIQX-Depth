@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "benchmark_kind": "diagnostic",
+  "benchmark_id": "nrw-cologne-v6a-1m-20261003-diagnostic",
+  "protocol": {
+    "height_target": "DSM",
+    "selection_split": "development",
+    "reference_policy": "scoring_only",
+    "scene_buffer_m": 100,
+    "tall_threshold_m": 15
+  },
+  "freeze": {
+    "at": "2026-10-03T16:30:10.226273+00:00",
+    "model_artifact": {
+      "path": "D:\\DepthWizard\\checkpoints\\da2-gamus-full\\model.safetensors",
+      "sha256": "3f8d8835ad8082adb0050db689484185ab1787f617c0221ef0a9b07c74146272",
+      "revision": "local-v6a-sha256:3f8d8835ad8082adb0050db689484185ab1787f617c0221ef0a9b07c74146272",
+      "source_url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Base-hf",
+      "license_id": "CC-BY-NC-4.0-derived-local-research",
+      "license_url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Base-hf/tree/main"
+    },
+    "configuration": {
+      "path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\frozen-inference.json",
+      "sha256": "1c329dc46b111d78bfecc2a2afb4fdb61cbe882af23a6966a22cb1fa23cd068d"
+    }
+  },
+  "training_audit": {
+    "status": "incomplete",
+    "evidence": "Local checkpoint configuration records GAMUS/Urban3D fine-tuning; complete base-model pretraining imagery inventory unavailable; semantic model disabled; diagnostic only",
+    "datasets": [
+      {
+        "id": "GAMUS",
+        "source_url": "https://github.com/EarthNets/RSI-MMSegmentation",
+        "splits": [
+          "train",
+          "val selection"
+        ],
+        "checkpoint": "local da2-gamus-full v6a ancestry"
+      },
+      {
+        "id": "Urban3D",
+        "source_url": "https://github.com/topcoderinc/Urban3d",
+        "splits": [
+          "train",
+          "val selection"
+        ],
+        "checkpoint": "local v5 to v6a ancestry"
+      },
+      {
+        "id": "Depth Anything V2 Base pretraining",
+        "source_url": "https://github.com/DepthAnything/Depth-Anything-V2",
+        "splits": [
+          "publisher corpus not enumerated for geographic audit"
+        ],
+        "checkpoint": "base checkpoint ancestry"
+      }
+    ],
+    "known_training_regions": [],
+    "excluded_scene_groups": []
+  },
+  "scenes": [
+    {
+      "id": "nrw-cologne-256m",
+      "scene_group": "nrw-cologne-source-surveys",
+      "split": "diagnostic",
+      "bbox_wgs84": [
+        6.960910865404894,
+        50.941058369139675,
+        6.96465292412807,
+        50.94342256265519
+      ],
+      "training_overlap": "unknown",
+      "overlap_evidence": "New geography relative to declared GAMUS/Urban3D US fine-tunes; complete base-model source-AOI inventory unavailable",
+      "prior_reference_use": [
+        "Reference metadata inspected for datum/grid; no reference height values used by inference"
+      ],
+      "change_review": "Specific local imagery/LiDAR acquisition dates unresolved; potential construction/season differences. High-resolution DGM1 terrain is supplied and may share LiDAR lineage with DOM1. One fixed diagnostic run; no parameter selection using its errors.",
+      "assets": {
+        "image": {
+          "path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\inputs\\rgb.tif",
+          "sha256": "78ea08913217cdda539d73e6ada320e4763303ca1a16dc3dc39e1cb716392acc",
+          "source_url": "https://www.govdata.de/suche/daten/digitale-orthophotos-nwadd54?ids=852bf419-89a0-4157-8d4b-b04ff63f7b9c",
+          "license_id": "dl-zero-de/2.0",
+          "license_url": "https://www.govdata.de/dl-de/zero-2-0",
+          "acquisition": {
+            "status": "unresolved"
+          },
+          "acquisition_evidence": "Saved official WCS capability/description/catalogue metadata; local survey dates not supplied"
+        },
+        "calibration_dem": {
+          "path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\inputs\\dtm-dhhn2016.tif",
+          "sha256": "935658e8959adc4b904c8033f3d217327cb314c3828328d90cf5ffa545ad0903",
+          "source_url": "https://www.bezreg-koeln.nrw.de/geobasis-nrw/produkte-und-dienste/hoehenmodelle/digitale-gelaendemodelle/digitales-gelaendemodell",
+          "license_id": "dl-zero-de/2.0",
+          "license_url": "https://www.govdata.de/dl-de/zero-2-0",
+          "acquisition": {
+            "status": "unresolved"
+          },
+          "acquisition_evidence": "Saved official WCS capability/description/catalogue metadata; local survey dates not supplied",
+          "height_type": "DTM",
+          "units": "metre",
+          "vertical_datum": "DHHN2016 height (EPSG:7837)",
+          "datum_evidence": "https://www.bezreg-koeln.nrw.de/geobasis-nrw/produkte-und-dienste/hoehenmodelle/digitale-gelaendemodelle/digitales-gelaendemodell"
+        },
+        "prediction": {
+          "path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\inference-v6a\\dsm.tif",
+          "sha256": "ce8c89ef9692204bfc91ba846ca061b5ad5fe8bdb09e56a784f47f88e481d17f",
+          "height_type": "DSM",
+          "units": "metre",
+          "vertical_datum": "DHHN2016 height (EPSG:7837)",
+          "datum_evidence": "Frozen configuration and output meta.json retain verified source DGM1 datum; no value conversion"
+        },
+        "reference": {
+          "path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\dsm.tif",
+          "sha256": "cc54ae2413da48a171d531780dc4df7981abe03f7ffcebda825ea8348eb5c3c8",
+          "source_url": "https://www.bezreg-koeln.nrw.de/geobasis-nrw/produkte-und-dienste/hoehenmodelle/digitale-oberflaechenmodelle/digitales",
+          "license_id": "dl-zero-de/2.0",
+          "license_url": "https://www.govdata.de/dl-de/zero-2-0",
+          "acquisition": {
+            "status": "unresolved"
+          },
+          "acquisition_evidence": "Saved official WCS capability/description/catalogue metadata; local survey dates not supplied",
+          "height_type": "DSM",
+          "units": "metre",
+          "vertical_datum": "DHHN2016 height (EPSG:7837)",
+          "datum_evidence": "https://www.bezreg-koeln.nrw.de/geobasis-nrw/produkte-und-dienste/hoehenmodelle/digitale-oberflaechenmodelle/digitales",
+          "usage": "scoring_only"
+        },
+        "reference_ndsm": {
+          "path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\reference-ndsm.tif",
+          "sha256": "082eea642d803cbeb313e531b4e41aa22e61821712034ee38c245efaf63fb486",
+          "source_url": "https://www.bezreg-koeln.nrw.de/geobasis-nrw/produkte-und-dienste/hoehenmodelle/digitale-oberflaechenmodelle/digitales",
+          "license_id": "dl-zero-de/2.0",
+          "license_url": "https://www.govdata.de/dl-de/zero-2-0",
+          "acquisition": {
+            "status": "unresolved"
+          },
+          "acquisition_evidence": "Saved official WCS capability/description/catalogue metadata; local survey dates not supplied",
+          "height_type": "nDSM",
+          "units": "metre",
+          "vertical_datum": "AGL",
+          "datum_evidence": "Official same-datum DOM1 minus source DGM1; prepared only after prediction freeze",
+          "usage": "scoring_only"
+        },
+        "uncertainty": {
+          "path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\inference-v6a\\uncertainty.tif",
+          "sha256": "51e1df60191d5e2f4068bc0ca568e74a5c1197c9c99abc7c3c895cd353d58a7f",
+          "units": "metre",
+          "calibration_provenance": "Existing DC two-scene floor4m/gain5.5 sigma model; unchanged and provisional; no NRW fitting"
+        }
+      }
+    }
+  ]
+}

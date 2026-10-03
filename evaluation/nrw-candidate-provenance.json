@@ -1,0 +1,269 @@
+{
+  "retrieved_at": "2026-10-03T16:14:42.671119+00:00",
+  "status": "candidate only; not an independent benchmark or accuracy result",
+  "bbox_epsg25832": [
+    356750,
+    5645250,
+    357006,
+    5645506
+  ],
+  "selection": "256 m Cologne AOI chosen before reading height values; no reference error inspection",
+  "requested_shape": [
+    256,
+    256
+  ],
+  "resampling": "WCS ScaleSize to 256x256; native DOP is 0.1 m, DOM/DGM 1 m; retain source metadata",
+  "license_id": "dl-zero-de/2.0",
+  "license_url": "https://www.govdata.de/dl-de/zero-2-0",
+  "license_evidence": [
+    "https://www.govdata.de/suche/daten/digitales-oberflachenmodell-1-nwf29e4?ids=ae35f25d-5682-47ca-ac81-f80c48f4f779",
+    "https://www.govdata.de/suche/daten/digitale-orthophotos-nwadd54?ids=852bf419-89a0-4157-8d4b-b04ff63f7b9c",
+    "https://www.bezreg-koeln.nrw.de/system/files/media/document/file/geobasis_krisigeo_nw_bereitstellung.pdf"
+  ],
+  "unresolved": [
+    "specific acquisition dates/temporal match",
+    "all base/height/semantic model training overlap",
+    "independent semantic/instance labels"
+  ],
+  "height_reference_usage": "reserved scoring only; never input to training/calibration/selection",
+  "assets": {
+    "dsm": {
+      "capabilities": {
+        "url": "https://www.wcs.nrw.de/geobasis/wcs_nw_dom?SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCapabilities",
+        "bytes": 11867,
+        "sha256": "ed78befa386ffcd45eb1f4e3ea338961ada76e63ac898d91571aa2461b204cac"
+      },
+      "description": {
+        "url": "https://www.wcs.nrw.de/geobasis/wcs_nw_dom?SERVICE=WCS&VERSION=2.0.1&REQUEST=DescribeCoverage&COVERAGEID=nw_dom",
+        "bytes": 2494,
+        "sha256": "8e91a830ff9918ddb20f9a5359fe0fe7d0f0e265d8f1c03385f9d105bab7f838"
+      },
+      "url": "https://www.wcs.nrw.de/geobasis/wcs_nw_dom?SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCoverage&COVERAGEID=nw_dom&FORMAT=image%2Ftiff&SUBSET=x%28356750%2C357006%29&SUBSET=y%285645250%2C5645506%29&SCALESIZE=x%28256%29%2Cy%28256%29",
+      "bytes": 262748,
+      "sha256": "cc54ae2413da48a171d531780dc4df7981abe03f7ffcebda825ea8348eb5c3c8",
+      "shape": [
+        256,
+        256
+      ],
+      "count": 1,
+      "dtypes": [
+        "float32"
+      ],
+      "crs": "EPSG:25832",
+      "transform": [
+        1.0,
+        0.0,
+        356750.0,
+        0.0,
+        -1.0,
+        5645506.0
+      ],
+      "nodata": null,
+      "tags": {
+        "TIFFTAG_XRESOLUTION": "90.714287",
+        "TIFFTAG_YRESOLUTION": "90.714287",
+        "TIFFTAG_RESOLUTIONUNIT": "2 (pixels/inch)",
+        "AREA_OR_POINT": "Area"
+      },
+      "colorinterp": [
+        "1"
+      ]
+    },
+    "dtm": {
+      "capabilities": {
+        "url": "https://www.wcs.nrw.de/geobasis/wcs_nw_dgm?SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCapabilities",
+        "bytes": 11887,
+        "sha256": "f275d011df435297f7afd42306828a5a00c2d8d8dc1137f94b2a359c495d0f87"
+      },
+      "description": {
+        "url": "https://www.wcs.nrw.de/geobasis/wcs_nw_dgm?SERVICE=WCS&VERSION=2.0.1&REQUEST=DescribeCoverage&COVERAGEID=nw_dgm",
+        "bytes": 2494,
+        "sha256": "e6ed36c47d979f0555727dd500241473478ae7b3b0fc3bc352ae947406f9040f"
+      },
+      "url": "https://www.wcs.nrw.de/geobasis/wcs_nw_dgm?SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCoverage&COVERAGEID=nw_dgm&FORMAT=image%2Ftiff&SUBSET=x%28356750%2C357006%29&SUBSET=y%285645250%2C5645506%29&SCALESIZE=x%28256%29%2Cy%28256%29",
+      "bytes": 105513,
+      "sha256": "71f600f5ce66cc96f0ae0ced3143c455f9b7193eb1d99e8f80bc3776b4750ffd",
+      "shape": [
+        256,
+        256
+      ],
+      "count": 1,
+      "dtypes": [
+        "float32"
+      ],
+      "crs": "EPSG:25832",
+      "transform": [
+        1.0,
+        0.0,
+        356750.0,
+        0.0,
+        -1.0,
+        5645506.0
+      ],
+      "nodata": -9999.0,
+      "tags": {
+        "TIFFTAG_XRESOLUTION": "96",
+        "TIFFTAG_YRESOLUTION": "96",
+        "TIFFTAG_RESOLUTIONUNIT": "2 (pixels/inch)",
+        "AREA_OR_POINT": "Area"
+      },
+      "colorinterp": [
+        "1"
+      ],
+      "catalog": {
+        "url": "https://apps.geoportal.nrw.de/soapServices/CSWStartup?Service=CSW&Request=GetRecordById&Version=2.0.2&outputSchema=http://www.isotc211.org/2005/gmd&elementSetName=full&id=0c6796e5-9eca-4ae6-8b32-1fcc5ae5c481",
+        "bytes": 23347,
+        "sha256": "290ede03327d15b671d04c9b54725dd5fb9d618918dbcb7d9e83a5bbb693c17d"
+      }
+    },
+    "rgbi": {
+      "capabilities": {
+        "url": "https://www.wcs.nrw.de/geobasis/wcs_nw_dop?SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCapabilities",
+        "bytes": 11392,
+        "sha256": "a7d42287d209d96118e0f7796e2b783b54c3c48ed11c215f3348377d9761af40"
+      },
+      "description": {
+        "url": "https://www.wcs.nrw.de/geobasis/wcs_nw_dop?SERVICE=WCS&VERSION=2.0.1&REQUEST=DescribeCoverage&COVERAGEID=nw_dop",
+        "bytes": 3742,
+        "sha256": "47b89e329ee5bd7687f3646de8fa76d375359530cb08377cbc7d9daec1954304"
+      },
+      "url": "https://www.wcs.nrw.de/geobasis/wcs_nw_dop?SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCoverage&COVERAGEID=nw_dop&FORMAT=image%2Ftiff&SUBSET=x%28356750%2C357006%29&SUBSET=y%285645250%2C5645506%29&SCALESIZE=x%28256%29%2Cy%28256%29",
+      "bytes": 263116,
+      "sha256": "ee772d87800d1272a04657e806e482733883b272477989195a0e3a05dfa93686",
+      "shape": [
+        256,
+        256
+      ],
+      "count": 4,
+      "dtypes": [
+        "uint8",
+        "uint8",
+        "uint8",
+        "uint8"
+      ],
+      "crs": "EPSG:25832",
+      "transform": [
+        1.0,
+        0.0,
+        356750.0,
+        0.0,
+        -1.0,
+        5645506.0
+      ],
+      "nodata": null,
+      "tags": {
+        "TIFFTAG_XRESOLUTION": "96",
+        "TIFFTAG_YRESOLUTION": "96",
+        "TIFFTAG_RESOLUTIONUNIT": "2 (pixels/inch)",
+        "AREA_OR_POINT": "Area"
+      },
+      "colorinterp": [
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "catalog": {
+        "url": "https://apps.geoportal.nrw.de/soapServices/CSWStartup?Service=CSW&Request=GetRecordById&Version=2.0.2&outputSchema=http://www.isotc211.org/2005/gmd&elementSetName=full&id=56fb584b-10cf-4009-a405-0bef06bb3e00",
+        "bytes": 25689,
+        "sha256": "89a086734e4fd1922720d156586edea786c113216235563cdf02ad5c211664eb"
+      }
+    }
+  },
+  "datum_audit": {
+    "status": "verified_same_native_vertical_crs",
+    "vertical_crs": "EPSG:7837",
+    "vertical_datum": "DHHN2016 height",
+    "units": "metre",
+    "horizontal_crs": "EPSG:25832",
+    "dsm_evidence": {
+      "url": "https://www.bezreg-koeln.nrw.de/geobasis-nrw/produkte-und-dienste/hoehenmodelle/digitale-oberflaechenmodelle/digitales",
+      "snapshot": "dsm-product.html",
+      "sha256": "d3a52e8faa72197b24ed437a9d8cdc74e41d457998f7fa7a3f665ccc49e02803",
+      "declaration": "Georeferenzierung: Hoehe / Hoehenangabe: DHHN2016 (EPSG 7837); page names wcs_nw_dom"
+    },
+    "dtm_evidence": {
+      "url": "https://apps.geoportal.nrw.de/soapServices/CSWStartup?Service=CSW&Request=GetRecordById&Version=2.0.2&outputSchema=http://www.isotc211.org/2005/gmd&elementSetName=full&id=0c6796e5-9eca-4ae6-8b32-1fcc5ae5c481",
+      "bytes": 23347,
+      "sha256": "290ede03327d15b671d04c9b54725dd5fb9d618918dbcb7d9e83a5bbb693c17d"
+    },
+    "unit_evidence": {
+      "authority": "EPSG:7837",
+      "name": "DHHN2016 height",
+      "axis_units": [
+        "metre"
+      ]
+    },
+    "operation": "No vertical conversion; retain native matched datum. Copies may be tagged from verified product provenance.",
+    "dtm_product_evidence": {
+      "url": "https://www.bezreg-koeln.nrw.de/geobasis-nrw/produkte-und-dienste/hoehenmodelle/digitale-gelaendemodelle/digitales-gelaendemodell",
+      "snapshot": "dtm-product.html",
+      "sha256": "187f2c48df70f7f67c43df1fc2fbe8bde985eefd7b955efd9d917fa6187ab657",
+      "declaration": "Georeferenzierung lists DHHN2016 EPSG7837"
+    }
+  },
+  "prepared_inputs": {
+    "rgb.tif": {
+      "path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\inputs\\rgb.tif",
+      "sha256": "78ea08913217cdda539d73e6ada320e4763303ca1a16dc3dc39e1cb716392acc",
+      "operation": "Select documented RGBI bands 1,2,3; no NIR"
+    },
+    "dtm-dhhn2016.tif": {
+      "path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\inputs\\dtm-dhhn2016.tif",
+      "sha256": "935658e8959adc4b904c8033f3d217327cb314c3828328d90cf5ffa545ad0903",
+      "operation": "Copy terrain values and grid unchanged; declare verified native vertical datum/units"
+    }
+  },
+  "diagnostic_run": {
+    "status": "completed once; no fitting/selection/reruns",
+    "independent_validation": false,
+    "model_sha256": "3f8d8835ad8082adb0050db689484185ab1787f617c0221ef0a9b07c74146272",
+    "frozen_configuration": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\frozen-inference.json",
+    "configuration_sha256": "1c329dc46b111d78bfecc2a2afb4fdb61cbe882af23a6966a22cb1fa23cd068d",
+    "manifest": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\diagnostic-manifest.json",
+    "manifest_sha256": "5666bb44ef708148f1bd9371d12defb605af2db31e5fe5b7faf63f420c0d4204",
+    "scores": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\diagnostic-scores.json",
+    "scores_sha256": "e37822f8cd67d132e3689afb61255bbe040b4f662db09f88a4ecf150311b6e62",
+    "output_directory": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\inference-v6a",
+    "controls": {
+      "reference": null,
+      "fetch_dem": false,
+      "cop_scale": false,
+      "auto_anchors": false,
+      "semantic_model": null,
+      "tta": 4,
+      "scene": "urban",
+      "RGB_bands": [
+        1,
+        2,
+        3
+      ],
+      "NIR_used": false
+    },
+    "terrain_condition": "Uses supplied 1m surveyed DGM1; possible shared LiDAR survey lineage with DOM1",
+    "date_status": "Specific image/LiDAR acquisition dates unresolved",
+    "training_overlap_status": "Base pretraining inventory incomplete",
+    "inference_time_s": {
+      "depth": 17.8,
+      "total": 18.18
+    },
+    "original_raw_score_sha256": "aaac88377b3b595495cd8aa4f01fbc86c7d2fc631485404ba98f70298126a817",
+    "metadata_correction": {
+      "scope": "Citation URLs only; no metric recomputation or prediction change",
+      "original_raw_score_path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\diagnostic-scores.raw.json",
+      "original_raw_score_sha256": "aaac88377b3b595495cd8aa4f01fbc86c7d2fc631485404ba98f70298126a817",
+      "original_scored_manifest_sha256": "d474f2cd47a49f62c562f830c34ca1d21c5b41bb3dece84bd406f69f164ef87b",
+      "verified_base_license_source": "https://huggingface.co/depth-anything/Depth-Anything-V2-Base-hf/tree/main"
+    },
+    "scorer_sha256": "748ad490b730090ae86aecd4f478229dbb808a0119a24ad94b237a4dff87d966",
+    "runtime_versions": {
+      "python": "3.14.5 (tags/v3.14.5:5607950, May 10 2026, 10:43:50) [MSC v.1944 64 bit (AMD64)]",
+      "numpy": "2.5.2",
+      "rasterio": "1.5.1",
+      "scipy": "1.18.1",
+      "torch": "2.13.0+cu130",
+      "transformers": "5.17.0",
+      "pyproj": "3.8.0"
+    }
+  }
+}

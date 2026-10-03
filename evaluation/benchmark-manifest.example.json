@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "REPLACE_WITH_BENCHMARK_NAME",
+  "protocol": {
+    "height_target": "DSM",
+    "selection_split": "development",
+    "reference_policy": "scoring_only",
+    "scene_buffer_m": 100,
+    "tall_threshold_m": 15
+  },
+  "freeze": {
+    "at": "REPLACE_WITH_ISO_TIMESTAMP_AND_TIMEZONE",
+    "model_artifact": {
+      "path": "REPLACE_WITH_CHECKPOINT_WEIGHT_FILE",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "revision": "REPLACE_WITH_PINNED_REVISION",
+      "source_url": "REPLACE_WITH_MODEL_SOURCE",
+      "license_id": "REPLACE_WITH_VERIFIED_WEIGHT_LICENCE",
+      "license_url": "REPLACE_WITH_LICENCE_SOURCE"
+    },
+    "configuration": {
+      "path": "REPLACE_WITH_FROZEN_RUN_CONFIGURATION_JSON",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256"
+    }
+  },
+  "training_audit": {
+    "status": "incomplete",
+    "evidence": "REPLACE_WITH_AUDIT_OF_ALL_CHECKPOINTS_AND_PRIOR_SELECTION",
+    "datasets": [
+      {
+        "id": "REPLACE_WITH_TRAINING_DATASET",
+        "source_url": "REPLACE_WITH_PRIMARY_SOURCE",
+        "splits": ["REPLACE_WITH_SPLITS_USED_FOR_TRAINING_OR_SELECTION"],
+        "checkpoint": "REPLACE_WITH_CHECKPOINT_AND_REVISION"
+      }
+    ],
+    "known_training_regions": [],
+    "excluded_scene_groups": ["REPLACE_WITH_BLIND_SCENE_GROUP"]
+  },
+  "scenes": [
+    {
+      "id": "REPLACE_WITH_DEVELOPMENT_SCENE_ID",
+      "scene_group": "REPLACE_WITH_DEVELOPMENT_SCENE_GROUP",
+      "split": "development",
+      "bbox_wgs84": [null, null, null, null],
+      "training_overlap": "unknown",
+      "overlap_evidence": "REPLACE_WITH_SPATIAL_AND_SOURCE_AUDIT",
+      "prior_reference_use": [],
+      "change_review": "REPLACE_WITH_DATES_CHANGE_AND_COREGISTRATION_REVIEW",
+      "assets": {
+        "image": {
+          "path": "REPLACE_WITH_IMAGE_GEOTIFF",
+          "sha256": "REPLACE_WITH_64_HEX_SHA256",
+          "source_url": "REPLACE_WITH_PRIMARY_SOURCE",
+          "license_id": "REPLACE_WITH_VERIFIED_LICENCE",
+          "license_url": "REPLACE_WITH_LICENCE_SOURCE",
+          "acquisition": {"start": "REPLACE_START_DATE", "end": "REPLACE_END_DATE"},
+          "acquisition_evidence": "REPLACE_WITH_SURVEY_METADATA"
+        },
+        "prediction": {
+          "path": "REPLACE_WITH_FROZEN_DSM_GEOTIFF",
+          "sha256": "REPLACE_WITH_64_HEX_SHA256",
+          "height_type": "DSM",
+          "units": "metre",
+          "vertical_datum": "REPLACE_WITH_EXPLICIT_DATUM",
+          "datum_evidence": "REPLACE_WITH_SOURCE_DEM_AND_TRANSFORM_PROVENANCE"
+        },
+        "reference": {
+          "path": "REPLACE_WITH_INDEPENDENT_DSM_GEOTIFF",
+          "sha256": "REPLACE_WITH_64_HEX_SHA256",
+          "height_type": "DSM",
+          "units": "metre",
+          "vertical_datum": "REPLACE_WITH_EXPLICIT_DATUM",
+          "datum_evidence": "REPLACE_WITH_SURVEY_AND_TRANSFORM_PROVENANCE",
+          "usage": "scoring_only",
+          "source_url": "REPLACE_WITH_PRIMARY_SOURCE",
+          "license_id": "REPLACE_WITH_VERIFIED_LICENCE",
+          "license_url": "REPLACE_WITH_LICENCE_SOURCE",
+          "acquisition": {"start": "REPLACE_START_DATE", "end": "REPLACE_END_DATE"},
+          "acquisition_evidence": "REPLACE_WITH_SURVEY_METADATA"
+        }
+      }
+    },
+    {
+      "id": "REPLACE_WITH_BLIND_SCENE_ID",
+      "scene_group": "REPLACE_WITH_BLIND_SCENE_GROUP",
+      "split": "blind_test",
+      "bbox_wgs84": [null, null, null, null],
+      "training_overlap": "unknown",
+      "overlap_evidence": "REPLACE_WITH_SPATIAL_AND_SOURCE_AUDIT",
+      "prior_reference_use": [],
+      "change_review": "REPLACE_WITH_DATES_CHANGE_AND_COREGISTRATION_REVIEW",
+      "assets": {
+        "image": {
+          "path": "REPLACE_WITH_IMAGE_GEOTIFF",
+          "sha256": "REPLACE_WITH_64_HEX_SHA256",
+          "source_url": "REPLACE_WITH_PRIMARY_SOURCE",
+          "license_id": "REPLACE_WITH_VERIFIED_LICENCE",
+          "license_url": "REPLACE_WITH_LICENCE_SOURCE",
+          "acquisition": {"start": "REPLACE_START_DATE", "end": "REPLACE_END_DATE"},
+          "acquisition_evidence": "REPLACE_WITH_SURVEY_METADATA"
+        },
+        "prediction": {
+          "path": "REPLACE_WITH_FROZEN_DSM_GEOTIFF",
+          "sha256": "REPLACE_WITH_64_HEX_SHA256",
+          "height_type": "DSM",
+          "units": "metre",
+          "vertical_datum": "REPLACE_WITH_EXPLICIT_DATUM",
+          "datum_evidence": "REPLACE_WITH_SOURCE_DEM_AND_TRANSFORM_PROVENANCE"
+        },
+        "reference": {
+          "path": "REPLACE_WITH_INDEPENDENT_DSM_GEOTIFF",
+          "sha256": "REPLACE_WITH_64_HEX_SHA256",
+          "height_type": "DSM",
+          "units": "metre",
+          "vertical_datum": "REPLACE_WITH_EXPLICIT_DATUM",
+          "datum_evidence": "REPLACE_WITH_SURVEY_AND_TRANSFORM_PROVENANCE",
+          "usage": "scoring_only",
+          "source_url": "REPLACE_WITH_PRIMARY_SOURCE",
+          "license_id": "REPLACE_WITH_VERIFIED_LICENCE",
+          "license_url": "REPLACE_WITH_LICENCE_SOURCE",
+          "acquisition": {"start": "REPLACE_START_DATE", "end": "REPLACE_END_DATE"},
+          "acquisition_evidence": "REPLACE_WITH_SURVEY_METADATA"
+        }
+      }
+    }
+  ]
+}

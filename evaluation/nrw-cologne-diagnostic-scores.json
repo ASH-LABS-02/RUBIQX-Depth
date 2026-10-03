@@ -1,0 +1,83 @@
+{
+  "valid": true,
+  "errors": [],
+  "warnings": [
+    "Training audit incomplete; diagnostic does not establish independent validation",
+    "scene nrw-cologne-256m: diagnostic only; exclude from independent benchmark aggregate",
+    "scene nrw-cologne-256m.image: acquisition dates unresolved; diagnostic only",
+    "scene nrw-cologne-256m.calibration_dem: acquisition dates unresolved; diagnostic only",
+    "scene nrw-cologne-256m.reference: acquisition dates unresolved; diagnostic only",
+    "scene nrw-cologne-256m.reference_ndsm: acquisition dates unresolved; diagnostic only"
+  ],
+  "scene_count": 1,
+  "files_checked": true,
+  "independent_validation": false,
+  "audit_limit": "Checks declarations and supplied footprints; cannot prove unreported training provenance or past reference access.",
+  "scores": {
+    "benchmark_id": "nrw-cologne-v6a-1m-20261003-diagnostic",
+    "freeze": {
+      "at": "2026-10-03T16:30:10.226273+00:00",
+      "model_artifact": {
+        "path": "D:\\DepthWizard\\checkpoints\\da2-gamus-full\\model.safetensors",
+        "sha256": "3f8d8835ad8082adb0050db689484185ab1787f617c0221ef0a9b07c74146272",
+        "revision": "local-v6a-sha256:3f8d8835ad8082adb0050db689484185ab1787f617c0221ef0a9b07c74146272",
+        "source_url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Base-hf",
+        "license_id": "CC-BY-NC-4.0-derived-local-research",
+        "license_url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Base-hf/tree/main"
+      },
+      "configuration": {
+        "path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\frozen-inference.json",
+        "sha256": "1c329dc46b111d78bfecc2a2afb4fdb61cbe882af23a6966a22cb1fa23cd068d"
+      }
+    },
+    "split": "diagnostic",
+    "independent_validation": false,
+    "scenes": [
+      {
+        "id": "nrw-cologne-256m",
+        "split": "diagnostic",
+        "height_target": "DSM",
+        "metrics": {
+          "n": 65536,
+          "rmse": 6.285503984492013,
+          "mae": 2.5952594268601388,
+          "bias": -2.1965616388479248,
+          "nmad": 0.05336407585144043,
+          "r": 0.7829866979924248,
+          "within_1m": 0.7028656005859375,
+          "within_2m": 0.7578125,
+          "within_5m": 0.83966064453125,
+          "p95_abs_error_m": 14.95799446105957
+        },
+        "valid_fraction": 1.0,
+        "reference_fit": false,
+        "tall_objects": {
+          "n": 8613,
+          "rmse": 16.486105196013714,
+          "mae": 14.459354425437162,
+          "bias": -14.459354425437162,
+          "nmad": 7.63613881072998,
+          "r": 0.6551923816344944,
+          "within_1m": 0.00011610356437942645,
+          "within_2m": 0.0013932427725531174,
+          "within_5m": 0.07686055961918031
+        },
+        "uncertainty": {
+          "pixels": 65536,
+          "includes_bias": true,
+          "within_1_sigma": 0.855072021484375,
+          "within_2_sigma": 0.96630859375,
+          "fit": false
+        }
+      }
+    ],
+    "aggregation": "Per-scene metrics; no pixel pooling or fitted alignment"
+  },
+  "metadata_correction": {
+    "scope": "Citation URLs only; no metric recomputation or prediction change",
+    "original_raw_score_path": "D:\\DepthWizard\\independent-candidates\\nrw-cologne-256m-20261003\\diagnostic-scores.raw.json",
+    "original_raw_score_sha256": "aaac88377b3b595495cd8aa4f01fbc86c7d2fc631485404ba98f70298126a817",
+    "original_scored_manifest_sha256": "d474f2cd47a49f62c562f830c34ca1d21c5b41bb3dece84bd406f69f164ef87b",
+    "verified_base_license_source": "https://huggingface.co/depth-anything/Depth-Anything-V2-Base-hf/tree/main"
+  }
+}
