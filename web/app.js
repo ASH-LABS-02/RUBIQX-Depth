@@ -176,7 +176,7 @@ const S = {
   id: null, meta: null, gw: 0, gh: 0, W: 1, H: 1, h: null, dtm: null, confidence: null,
   renderH: null, ref: null, base: 0,
   exag: 1, smoothingM: 0, mode: 'optical', tool: 'probe', nav: 'orbit',
-  viewGeometry: 'surface', treesEnabled: true, treeGroup: null, canopyCache: null,
+  viewGeometry: 'surface', treesEnabled: true, treeGroup: null, canopyCache: null, buildingToolsAvailable: false,
   mesh: null, skirt: null, water: null, floodActive: false, tex: null, texImg: null,
   marker: null, profileLine: null, profilePts: [],
   distPts: [], distLine: null,
@@ -832,6 +832,8 @@ async function loadScene(id) {
     Object.assign(S, { id, meta, gw: meta.grid_w, gh: meta.grid_h, W: meta.ground_w_m, H: meta.ground_h_m,
       h: hArr, dtm, confidence, buildings, ref, tex, texImg: tex.image, units: meta.units === 'metre' ? 'm' : 'relative units',
       viewGeometry: 'surface' });
+    const terrainOverview = Number(meta.gsd_m) >= 2.5 || !(buildings?.count > 0);
+    S.buildingToolsAvailable = !terrainOverview;
     S.hmin = Math.min(...[pct(S.h, 0), ref ? pct(ref, 0) : Infinity]);
     S.hmax = Math.max(pct(S.h, 1), ref ? pct(ref, 1) : -Infinity);
     S.base = S.hmin; S.extent = Math.max(S.W, S.H);
@@ -844,6 +846,7 @@ async function loadScene(id) {
     $('#flood-level').value = String(S.hmin + (S.hmax - S.hmin) * 0.25);
     const relief = S.hmax - S.hmin;
     S.exag = meta.units === 'metre' ? 1 : Math.min(10, Math.max(1, +(0.06 * S.extent / Math.max(relief, 1e-3)).toFixed(1)));
+    if (terrainOverview) S.exag = 3;
     $('#exag').value = S.exag; $('#exag-v').textContent = S.exag.toFixed(1) + '×';
     camera.near = S.extent / 5000; camera.far = S.extent * 30; camera.updateProjectionMatrix();
     scene.fog.near = S.extent * 1.5; scene.fog.far = S.extent * 6;
@@ -858,7 +861,7 @@ async function loadScene(id) {
       treesEl.disabled = meta.units !== 'metre';
     }
     $('#trees-toggle-row')?.classList.toggle('hidden', meta.units !== 'metre');
-    if (meta.scene === 'urban' || ((buildings?.count || 0) >= 50 && builtFraction >= 0.025)) setViewGeometry('city');
+    if (!terrainOverview && (meta.scene === 'urban' || ((buildings?.count || 0) >= 50 && builtFraction >= 0.025))) setViewGeometry('city');
     else $$('#view-mode button').forEach((b) => b.classList.toggle('active', b.dataset.view === 'surface'));
     updateAnalysisTools();
     const c0 = meta.calibration || {};
@@ -937,6 +940,14 @@ async function loadScene(id) {
     });
     renderAnchorPanel();
     updateAutoAnchorPanel();
+    for (const selector of ['#btn-city-view', '#mode-rail [data-workspace="buildings"]',
+      '#building-inspector-group', '#height-limit-group', '#b-count-badge', '#shelter-tool']) {
+      $(selector)?.classList.toggle('hidden', terrainOverview);
+    }
+    for (const selector of ['#flood-buildings-count', '#flood-population']) {
+      $(selector)?.closest('.metric-box')?.classList.toggle('hidden', terrainOverview);
+    }
+    if (terrainOverview) setMode('topo');
     updateCinematicScene();
     missionUi?.sceneLoaded();
     boldUi?.sceneLoaded();
@@ -1373,6 +1384,7 @@ function buildingMaskGrid() {
   S._bmask = m; return m;
 }
 function setViewGeometry(mode) {
+  if (mode === 'city' && !S.buildingToolsAvailable) mode = 'surface';
   const changed = S.viewGeometry !== mode;
   S.viewGeometry = mode;
   updateRenderHeight(true);
@@ -2285,8 +2297,9 @@ let currentAnchors = [];
 
 function renderAnchorPanel() {
   const panelGroup = $('#anchor-panel-group');
-  if (!S.meta || S.meta.units !== 'metre') {
+  if (!S.meta || S.meta.units !== 'metre' || !S.buildingToolsAvailable) {
     panelGroup.classList.add('hidden');
+    $('#scale-badge')?.classList.add('hidden');
     return;
   }
   
@@ -2400,7 +2413,7 @@ async function reloadViewer() {
 
 function updateAutoAnchorPanel() {
   const box = $('#automatic-anchor-group');
-  const metric = S.meta?.units === 'metre';
+  const metric = S.meta?.units === 'metre' && S.buildingToolsAvailable;
   box.classList.toggle('hidden', !metric);
   if (!metric) return;
   const record = S.meta.auto_anchors || {}, diag = record.diagnostics || {};
@@ -2692,6 +2705,7 @@ function updateMissionAvailability() {
     crs && !/EPSG:?(4326|3857)\b/.test(crs);
   for (const id of ['route-tool', 'shelter-tool', 'runout-tool', 'relay-tool']) $("#" + id).disabled = !ready;
   $('#runout-tool').disabled = !ready || !S.susc;
+  $('#shelter-tool').disabled = !ready || !S.buildingToolsAvailable;
   if (!ready) $('#mission-result').textContent = 'Mission tools need aligned DSM and bare-ground DTM in a local projected metre CRS.';
 }
 async function missionRequest(action, point) {
@@ -2931,6 +2945,7 @@ const WORKSPACES = {
   validate: { title: 'Validate', subtitle: 'Compare estimate, DEM baseline and reference', groups: [] },
 };
 function setWorkspace(mode, openDrawer = true) {
+  if (mode === 'buildings' && !S.buildingToolsAvailable) mode = 'explore';
   if (!WORKSPACES[mode]) return;
   if (openDrawer) $('#app').classList.remove('drawer-collapsed');
   S.workspace = mode; $('#app').dataset.workspace = mode;
