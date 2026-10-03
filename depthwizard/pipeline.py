@@ -45,7 +45,7 @@ COARSE_GSD_M = 2.5  # at/above this pixel size auto-Copernicus uses surface mode
 
 
 def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small",
-        scene="auto", fetch_dem=True, assumed_gsd_m=1.0, allow_fallback=True,
+        scene="auto", fetch_dem=True, assumed_gsd_m=1.0, allow_fallback=False,
         relative_display_height_m=None, device=None, dem_source="COP30",
         match_dem_30m=True, tta=4, dem_kind="auto", sun_elevation=None, sun_azimuth=None,
         vertical_datum=None, gcp_height_type="orthometric", anchors=None,

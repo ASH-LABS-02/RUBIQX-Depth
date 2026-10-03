@@ -56,8 +56,11 @@ def main(argv=None):
     p.add_argument("--sun-azimuth", type=float, help="sun azimuth (deg from north); estimated if omitted")
     p.add_argument("--anchor", action="append", help="ID:HEIGHT (e.g. 12:18.0) to set a known building height in metres")
     p.add_argument("--anchors", help="CSV with lon,lat,height_m to set known building heights")
-    p.add_argument("--no-fallback", action="store_true",
-                   help="fail instead of using the heuristic when the model is unavailable")
+    fallback = p.add_mutually_exclusive_group()
+    fallback.add_argument("--allow-fallback", action="store_true",
+                          help="allow heuristic output for prototype use only (never for evaluation)")
+    fallback.add_argument("--no-fallback", action="store_true",
+                          help="fail when the model is unavailable (the default)")
     a = p.parse_args(argv)
     
     anchors = []
@@ -95,7 +98,7 @@ def main(argv=None):
 
     meta = run(a.image, a.out, dem=a.dem, gcp=a.gcp, reference=a.ref, model=model,
                scene=a.scene, fetch_dem=a.fetch_dem, dem_source=a.dem_source, assumed_gsd_m=a.gsd,
-               allow_fallback=not a.no_fallback, device=a.device, tta=a.tta,
+               allow_fallback=a.allow_fallback, device=a.device, tta=a.tta,
                dem_kind=a.dem_kind, match_dem_30m=not a.no_consistency,
                sun_elevation=a.sun_elevation, sun_azimuth=a.sun_azimuth, anchors=anchors,
                gcp_height_type=a.gcp_height_type, cop_scale=a.cop_scale)

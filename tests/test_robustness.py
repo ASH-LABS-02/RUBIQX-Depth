@@ -35,7 +35,35 @@ def test_bundled_model_without_training_drive(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "run", lambda *a, **kw: calls.append(kw) or {})
     cli.main(["image.png"])
     assert calls[0]["model"] == str(model)
+    assert calls[0]["allow_fallback"] is False
     assert server.local_model()["path"] == str(model)
+
+
+@pytest.mark.parametrize("flag, allowed", [(None, False), ("--no-fallback", False),
+                                         ("--allow-fallback", True)])
+def test_cli_fallback_requires_explicit_opt_in(monkeypatch, flag, allowed):
+    from depthwizard import __main__ as cli
+
+    calls = []
+    monkeypatch.setattr(cli, "run", lambda *a, **kw: calls.append(kw) or {})
+    cli.main(["image.png", "--model", "small"] + ([flag] if flag else []))
+    assert calls[0]["allow_fallback"] is allowed
+
+
+def test_model_failure_fails_closed_with_actionable_error(monkeypatch):
+    import numpy as np
+    from depthwizard import depth
+
+    def unavailable(*args):
+        raise OSError("checkpoint unavailable")
+
+    monkeypatch.setattr(depth, "get_backbone", unavailable)
+    rgb = np.zeros((16, 16, 3), np.uint8)
+    with pytest.raises(RuntimeError, match="Depth model inference failed") as exc:
+        depth.relative_height(rgb)
+    assert isinstance(exc.value.__cause__, OSError)
+    _, name = depth.relative_height(rgb, allow_fallback=True)
+    assert name == "heuristic-fallback"
 
 
 @pytest.mark.parametrize("role", ["image", "dem", "reference"])

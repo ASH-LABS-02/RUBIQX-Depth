@@ -330,7 +330,7 @@ def heuristic_relative_height(rgb: np.ndarray) -> np.ndarray:
     return normalise(ndimage.median_filter(0.7 * local + 0.3 * broad, 5))
 
 
-def relative_height(rgb: np.ndarray, model: str = "small", allow_fallback: bool = True,
+def relative_height(rgb: np.ndarray, model: str = "small", allow_fallback: bool = False,
                     device: str | None = None, tta=1, return_uncertainty: bool = False,
                     return_info: bool = False, gsd: float | None = None):
     """Relative height in [0, 1].
@@ -359,7 +359,11 @@ def relative_height(rgb: np.ndarray, model: str = "small", allow_fallback: bool 
         name = bb.name
     except Exception as exc:  # noqa: BLE001
         if not allow_fallback:
-            raise
+            raise RuntimeError(
+                "Depth model inference failed. Check the checkpoint, dependencies and device. "
+                "Put the checkpoint in models/da2-gamus-full or set DEPTHWIZARD_CHECKPOINT. "
+                "Heuristic output is available only through --allow-fallback for prototype use."
+            ) from exc
         print(f"[depthwizard] depth backbone unavailable ({exc.__class__.__name__}: {exc}); "
               "using heuristic fallback – NOT for evaluation")
         rel = heuristic_relative_height(rgb)
