@@ -294,7 +294,7 @@ On those two Quesenbank crops, the fine-tuned model with the nonnegative DEM-fus
 - **Evaluation breadth.** Absolute accuracy is measured on 30 GAMUS tiles from three US cities and two DC LiDAR scenes near the training region. There is no Indian, Cartosat, hilly or dense-forest validation yet; that is the top priority, followed by more non-urban LiDAR sites.
 - **Failure cases.** Leaf-off forest, large flat roofs and isolated tall trees are the worst cases on held-out tiles; see the [failure-case figure](docs/images/failure_cases.jpg) and [BENCHMARKS §1c–1d](docs/BENCHMARKS.md), which also lists approaches that did not help.
 - **Building heights.** Tall objects are still under-estimated on real imagery: with the v2 model the median Glover Park roof is 6.4 m against 9.1 m in the LiDAR (previous model 4.3 m against 9.4 m), and pixels above 15 m are about 7.6 m low. One supplied height or a few GCPs correct most of this.
-- **Uncertainty.** `uncertainty.tif` is a calibrated 1-sigma error fitted on only two scenes (held-out 1σ coverage 52–88 %); treat it as provisional. The viewer's confidence layer is a relative reliability index, not a probability.
+- **Uncertainty.** Metric `uncertainty.tif` uses an error model fitted on only two DC urban scenes (leave-one-scene-out 1σ coverage 52–88 %); coverage on other domains is unvalidated. Relative outputs contain unitless ensemble spread, not metric error bars. Single-pass and heuristic runs produce no uncertainty or pixel reliability map. Building reliability may instead describe roof-height spread; it is not an accuracy probability.
 
 - Monocular height is weakest on:
   - Uniform flat roofs, where there is little texture.

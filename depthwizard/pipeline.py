@@ -214,7 +214,9 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     # per-pixel 1-sigma uncertainty from the rotation ensemble, in output units
     std_rel = dinfo.get("std_rel")
     unc_units = None
-    if std_rel is not None:
+    ensemble_available = (backbone != "heuristic-fallback" and dinfo.get("tta", 0) > 1
+                          and std_rel is not None)
+    if ensemble_available:
         unc_units = std_rel * (cal.scale_k if units == "metre" and cal.scale_k else 1.0)
         if units == "metre":
             # exported error bar: calibrated 1-sigma in metres (see uncertainty.py);
@@ -244,6 +246,11 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         "assumed_gsd_m": assumed_gsd_m,
         "dsm_file": name,
         "tta": dinfo.get("tta"),
+        "has_uncertainty": ensemble_available,
+        "has_confidence": ensemble_available,
+        "uncertainty_status": ("provisional - two-scene error calibration" if units == "metre"
+                               else "ensemble agreement only - not an error bar")
+                              if ensemble_available else "unavailable - no model ensemble",
         "water_fraction": meta_water,
         "agl_model": is_agl,
         "learned_scale_m_per_unit": learned,
@@ -501,10 +508,10 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         scale = 2.0 if units == "metre" else max(float(np.percentile(unc_view, 95)), 1e-6)
         confidence_map = np.exp(-unc_view / scale).astype(np.float32)
     else:
-        confidence_map = np.clip(1.0 - unc_norm, 0.0, 1.0).astype(np.float32)
+        confidence_map = None
     meta["confidence_definition"] = ("exp(-spread / 2 m), spread = rotation-ensemble spread; "
                                      "a relative reliability index, not a probability"
-                                     if units == "metre" else "relative ensemble agreement")
+                                     if units == "metre" else "relative ensemble agreement; not a probability") if ensemble_available else "unavailable - no model ensemble"
     if units == "metre" and unc_units is not None:
         from .uncertainty import PROVENANCE
         meta["uncertainty_calibration"] = dict(PROVENANCE, file="uncertainty.tif",

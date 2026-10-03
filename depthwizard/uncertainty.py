@@ -16,8 +16,8 @@ Leave-one-scene-out check: fitted on one scene, 1-sigma covers 52 % and 88 % of
 errors on the other (raw spread: 5 % and 9 %). Two scenes is a small sample;
 treat these values as provisional and re-fit with scripts/uncertainty_coverage.py
 when more reference scenes are available. The fit is for metric scenes on the
-DEM + learned-scale route; GCP- or anchor-calibrated scenes usually have a
-smaller floor, so the value is conservative there.
+DEM + learned-scale route. Coverage on other calibration routes and landscapes
+has not been established; it must not be treated as guaranteed there.
 """
 from __future__ import annotations
 
@@ -31,6 +31,9 @@ PROVENANCE = {
     "fitted_on": "2 DC LiDAR scenes (Glover Park, Capitol Hill East), DEM + learned-scale route",
     "held_out_1sigma_coverage": "52-88 % (ideal 68 %); raw ensemble spread 5-9 %",
     "status": "provisional - small calibration set",
+    "calibration_scene_count": 2,
+    "scope": "DC urban scenes on the DEM + learned-scale route; other domains unvalidated",
+    "independent_validation": False,
 }
 
 

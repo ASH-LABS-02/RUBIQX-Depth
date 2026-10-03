@@ -345,6 +345,11 @@ PRODUCTS = {"dsm": ("dsm.tif", "rdsm.tif"), "dtm": ("dtm.tif",), "ndsm": ("ndsm.
 def download_product(job_id: str, kind: str):
     """GeoTIFF products: dsm, dtm, ndsm, uncertainty."""
     folder = _completed_scene(job_id)
+    if kind == "uncertainty":
+        meta = json.loads((folder / "meta.json").read_text())
+        if (meta.get("has_uncertainty") is False or meta.get("tta") == 1
+                or meta.get("backbone") == "heuristic-fallback"):
+            raise HTTPException(404, "Uncertainty is unavailable without a model ensemble")
     for name in PRODUCTS.get(kind, ()):
         if (folder / name).exists():
             return FileResponse(folder / name, filename=f"{job_id}_{name}", media_type="image/tiff")
@@ -390,8 +395,13 @@ def download_all(job_id: str):
     notes = []
     with _export_lock:
         members: list[tuple[Path, str]] = []
-        for name in ("dsm.tif", "rdsm.tif", "dtm.tif", "ndsm.tif", "uncertainty.tif", "preview.png",
+        meta = json.loads((folder / "meta.json").read_text())
+        has_uncertainty = (meta.get("has_uncertainty") is not False and meta.get("tta") != 1
+                           and meta.get("backbone") != "heuristic-fallback")
+        for name in ("dsm.tif", "rdsm.tif", "dtm.tif", "ndsm.tif", "uncertainty.tif", "ensemble_spread.tif", "preview.png",
                      "meta.json", "metrics.json"):
+            if name in ("uncertainty.tif", "ensemble_spread.tif") and not has_uncertainty:
+                continue
             if (folder / name).is_file():
                 members.append((folder / name, name))
         if (folder / "viewer" / "buildings.json").is_file():

@@ -787,7 +787,7 @@ async function loadScene(id) {
 
     let [dtm, confidence, buildings, susc, change, demBase] = await Promise.all([
       meta.has_dtm !== false ? fetchLayer('dtm.bin') : Promise.resolve(null),
-      meta.has_confidence !== false ? fetchLayer('confidence.bin') : Promise.resolve(null),
+      meta.has_confidence !== false && meta.tta !== 1 && meta.backbone !== 'heuristic-fallback' ? fetchLayer('confidence.bin') : Promise.resolve(null),
       meta.buildings_count !== 0 ? fetchLayer('buildings.json', 'json') : Promise.resolve(null),
       meta.layers?.susc ? fetchLayer('susc.bin') : Promise.resolve(null),
       meta.layers?.change ? fetchLayer('change.bin') : Promise.resolve(null),

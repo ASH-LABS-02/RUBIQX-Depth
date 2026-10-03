@@ -335,8 +335,8 @@ def relative_height(rgb: np.ndarray, model: str = "small", allow_fallback: bool 
                     return_info: bool = False, gsd: float | None = None):
     """Relative height in [0, 1].
 
-    Returns (rel, name), plus a normalised uncertainty map when
-    ``return_uncertainty`` is set, plus an info dict when ``return_info`` is
+    Returns (rel, name), plus a normalised ensemble-spread map (or None without
+    an ensemble) when ``return_uncertainty`` is set, plus an info dict when ``return_info`` is
     set. ``tta`` is the number of rotation/flip passes (True means 4).
     info: agl flag, net_gsd_m, tta, std_rel (TTA spread in normalised units),
     learned_scale(gsd) -> metres per normalised unit or None.
@@ -372,9 +372,7 @@ def relative_height(rgb: np.ndarray, model: str = "small", allow_fallback: bool 
     out = [rel, name]
     if return_uncertainty:
         std = info.get("std_rel")
-        if std is None:  # proxy: local high-frequency energy
-            std = np.abs(rel - ndimage.gaussian_filter(rel, 2.0))
-        out.append(normalise(std))
+        out.append(normalise(std) if std is not None and info.get("tta", 0) > 1 else None)
     if return_info:
         out.append(info)
     return tuple(out)
