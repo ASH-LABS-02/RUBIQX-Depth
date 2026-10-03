@@ -105,7 +105,26 @@ adds error at object edges.
   uses as a height cue. This is a hypothesis, not yet tested; a height anchor or
   GCPs correct it in practice (§3).
 
-### 1g. Satellite training data – current model (v5)
+### 1h. Satellite-weighted fine-tune – current model (v6a)
+
+v6a = v5 fine-tuned 6 more epochs with 50 % Urban 3D (was 30 %), tall-pixel
+weight 0.75 (was 0.5), LR 2e-6 (`scripts/run_gamus_urban3d.ps1 -ExtraWeight 0.5
+-TallWeight 0.75`). Raw results: `docs/eval/v6a/`.
+
+| Test (no fitting) | v5 | **v6a (shipped)** |
+|---|---:|---:|
+| Urban 3D test, 159 satellite tiles | 1.82 m, r 0.93, bias −0.12 | **1.66 m, r 0.94, bias −0.08** |
+| GAMUS 30 tiles, colour 0.33 / 0.6 m | 2.61 / 2.47 m | 2.61 / 2.47 m |
+| GAMUS 30 tiles, panchromatic 0.6 m | 2.76 m | 2.76 m |
+| Blind DC Glover Park, colour / panchromatic | 4.37 / 4.51 m | 4.45 / 4.49 m |
+| Blind DC Capitol Hill East, colour / panchromatic | 2.84 / 3.13 m | 2.82 / 3.09 m |
+| Blind DC mean, colour / panchromatic | 3.61 / 3.82 m | 3.64 / **3.79 m** |
+
+Satellite error falls a further 9 %; aerial and DC results unchanged within
+noise. On Glover Park the median building is still 6.2 m against 8.9 m in the
+LiDAR – the tall-object under-estimate on true-orthophoto imagery remains.
+
+### 1g. Satellite training data – v5
 
 v5 = v4 fine-tuned 4 epochs on GAMUS plus the **Urban 3D Challenge** dataset
 (WorldView satellite RGB, 0.5 m, Jacksonville/Tampa/Richmond; heights = Vricon

@@ -16,7 +16,7 @@ Competitor columns summarise what their public material shows (see
 ## 2. Model
 | Item | Status | Notes |
 |---|---|---|
-| Overhead fine-tuned backbone | ✅ | DA-V2-Base on GAMUS + Urban 3D satellite (v5): 2.61 m RMSE on 30 GAMUS tiles, 1.82 m on 159 WorldView tiles, 2.76 m panchromatic, no per-tile fitting |
+| Overhead fine-tuned backbone | ✅ | DA-V2-Base on GAMUS + Urban 3D satellite (v5): 2.61 m RMSE on 30 GAMUS tiles, 1.66 m on 159 WorldView tiles (v6a), 2.76 m panchromatic, no per-tile fitting |
 | Multi-task / EO foundation model | ⬜ | |
 | Metric height output | 🟡 | learned pixel-footprint scale (±40 %), resolution-matched tiling |
 | Diffusion refinement | ⬜ | |
