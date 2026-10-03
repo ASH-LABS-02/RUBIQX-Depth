@@ -1931,7 +1931,7 @@ async function refreshLocalModel() {
     const prior = select.value;
     select.querySelector('option[data-local-model]')?.remove();
     if (info.ready) {
-      const option = new Option('DepthWizard GAMUS v2 · metric heights (recommended)', info.path);
+      const option = new Option('DepthWizard v6a · metric heights (recommended)', info.path);
       option.dataset.localModel = 'true';
       select.add(option, 0);
       if (prior === info.path || !select.dataset.userSelected) select.value = info.path;
