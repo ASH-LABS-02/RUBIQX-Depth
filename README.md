@@ -1,9 +1,9 @@
 # RUBIQX-Depth (DepthWizard)
 
-**One ordinary satellite image → a calibrated 3D surface model and a disaster-ready digital twin.**
+**One ordinary satellite image → an estimated 3D surface and a workspace for disaster screening.**
 Smart India Hackathon 2026 · Problem Statement 26175 (ISRO / SAC) · Team RUBIQX
 
-![DepthWizard: current city UI with fitted roofs, grounded tree crowns and a coordinate grid](docs/images/city-current.jpg)
+![DepthWizard: current city UI with fitted roofs, branching trees and a coordinate grid](docs/images/city-current.jpg)
 
 | Absolute height, 30 held-out GAMUS tiles | Reference-held-out DC LiDAR check (2 scenes) | Runs offline |
 |---|---|---|
@@ -51,7 +51,7 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 ## Gallery
 
-| **City** – 139 fitted building candidates, grounded tree crowns and a CRS coordinate grid | **Bengaluru** – 10 m imagery opens with Topo at 3× vertical exaggeration |
+| **City** – 139 fitted building candidates, branching tree crowns and a CRS coordinate grid | **Bengaluru** – 10 m imagery opens with Topo at 3× vertical exaggeration |
 |---|---|
 | ![Current city viewer](docs/images/city-current.jpg) | ![Bengaluru terrain overview](docs/images/bengaluru-current.jpg) |
 | **Slope hazard** (true slope, 0–30° / 30–45° / >45°) | **Flood & response** – connected flood, buildings and people exposed, mission planning |
@@ -84,8 +84,36 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 | Height model | Off-the-shelf depth model trained on street-level photos | Fine-tuned on aerial LiDAR above-ground height |
 | Metres | Assumed, hand-scaled, or only after manual pins | Automatic calibration from the best available evidence, always labelled |
 | Existing DEM input | Displayed as if it were an estimate | Shown as *Input DEM (not estimated)*; used only for calibration of image estimates |
-| Uncertainty | None | Per-pixel map and per-building confidence (ranks reliability; see benchmarks §5) |
+| Uncertainty | None | Multi-pass ensemble reliability and provisional metric error estimates; building scores state their basis (see benchmarks §5) |
 | Proof | Screenshots | Reference-held-out two-scene LiDAR check vs the DEM-only baseline, with calibration provenance |
+
+## Latest updates · 3 October 2026
+
+- **Tree rendering:** Roof-fit City now uses branching trunks and 5–6 irregular foliage clusters per tree, varied silhouettes and subdued green shades. Trees are illustrative instances placed from canopy candidates, not individually surveyed trees or classified species. Ground and canopy-top elevations retain the existing DSM/DTM estimates; exported rasters and accuracy scores are unchanged. Trees remain off for relative scenes.
+- **Model failures:** processing stops with a clear error when inference fails. Web uploads never silently substitute a heuristic; CLI prototype runs can explicitly use `--allow-fallback`, with results labelled unsuitable for accuracy evaluation.
+- **Reliability and uncertainty:** single-pass and heuristic runs produce no pixel reliability or uncertainty maps. Metric uncertainty is provisional and calibrated on two DC scenes; relative output is unitless ensemble spread. Building scores distinguish ensemble agreement from roof-height consistency. Scores are not accuracy probabilities.
+- **Export clarity:** menus and reports distinguish full-grid GeoTIFFs from sampled display meshes and point clouds. The complete ZIP includes raw metric ensemble spread when available, alongside the provisional error map and provenance.
+- **Disaster tools:** flood assumptions remain visible with details collapsed. Slope bands describe angles rather than safety, and routes, refuge candidates, runout and relay coverage state their screening limits.
+- **Robustness:** switching between City and Surface while a scene is loading no longer attempts to rebuild an absent height grid. The latest local verification passed **65 pytest tests** and JavaScript syntax checks; the updated City view was inspected in the browser.
+
+The rendering and reporting fixes do not establish improved height accuracy. See
+[completed limitation fixes and remaining evidence gaps](docs/limitation-fixes.md).
+
+### Disaster and response coverage
+
+| Implemented | Scope |
+|---|---|
+| Flood inundation and rainfall playback | Edge-connected, point-source or level-plane flooding; depth, affected buildings and a 60% runoff rainfall scenario |
+| Landslide screening | Susceptibility index and simplified downhill traces identifying exposed buildings |
+| Evacuation routing | Dry terrain paths toward high ground, avoiding flooded cells, footprints and steep slopes |
+| Vertical refuge candidates | Buildings with sufficient estimated roof clearance and reliability for field inspection |
+| Population exposure | Floor-area/storey occupancy proxy, explicitly an estimate |
+| Communication relay placement | Tower/drone line-of-sight coverage; no radio-propagation model |
+| Supporting analysis | Viewsheds, height/slope probes, distance and profiles, and before/after height-change detection |
+
+Earthquake, cyclone, tsunami and wildfire simulations are not implemented.
+These tools require suitable georeferenced metric scenes; operational use requires
+independent data and field verification.
 
 ## New in v3 (viewer and workflow)
 
@@ -103,7 +131,7 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 | **Products** | DSM, DTM, nDSM and per-pixel uncertainty GeoTIFFs · CityJSON with LoD1 or supported fitted LoD2 roofs · GLB/OBJ/PLY · HTML report · evidence JSON |
 | **3D** | Textured city on bare ground, fitted roof hypotheses, adjustable sun lighting, geometric DEM-vs-DSM swipe, orbit/fly/tour, one-click flythrough video |
 | **Analysis** | Connected flood (edge / clicked source) with depth, volume and buildings affected · landslide susceptibility · viewshed · rooftop solar · pre/post change detection · profiles, 3D distance, cut/fill |
-| **Engineering** | 12 automated tests + CI, REST API with `/docs`, ONNX export, PyInstaller build script, [model card](docs/MODEL_CARD.md), [roadmap status](docs/ROADMAP_STATUS.md) |
+| **Engineering** | 65 automated tests at the latest local verification + CI, REST API with `/docs`, ONNX export, PyInstaller build script, [model card](docs/MODEL_CARD.md), [roadmap status](docs/ROADMAP_STATUS.md) |
 
 ### Mission workbench additions
 
@@ -293,7 +321,7 @@ On those two Quesenbank crops, the fine-tuned model with the nonnegative DEM-fus
 
 - **Evaluation breadth.** Absolute accuracy is measured on 30 GAMUS tiles from three US cities and two DC LiDAR scenes near the training region. There is no Indian, Cartosat, hilly or dense-forest validation yet; that is the top priority, followed by more non-urban LiDAR sites.
 - **Failure cases.** Leaf-off forest, large flat roofs and isolated tall trees are the worst cases on held-out tiles; see the [failure-case figure](docs/images/failure_cases.jpg) and [BENCHMARKS §1c–1d](docs/BENCHMARKS.md), which also lists approaches that did not help.
-- **Building heights.** Tall objects are still under-estimated on real imagery: with the v2 model the median Glover Park roof is 6.4 m against 9.1 m in the LiDAR (previous model 4.3 m against 9.4 m), and pixels above 15 m are about 7.6 m low. One supplied height or a few GCPs correct most of this.
+- **Building heights.** Tall objects are still under-estimated on real imagery: with the v2 model the median Glover Park roof is 6.4 m against 9.1 m in the LiDAR (previous model 4.3 m against 9.4 m), and pixels above 15 m are about 7.6 m low. Height anchors can correct scene scale, but local roof and canopy errors remain; verify improvement against an independent reference. Copernicus height scaling and multi-resolution blending remain disabled by default because the measured experiments did not consistently improve results ([details](docs/limitation-fixes.md)).
 - **Uncertainty.** Metric `uncertainty.tif` uses an error model fitted on only two DC urban scenes (leave-one-scene-out 1σ coverage 52–88 %); coverage on other domains is unvalidated. Relative outputs contain unitless ensemble spread, not metric error bars. Single-pass and heuristic runs produce no uncertainty or pixel reliability map. Building reliability may instead describe roof-height spread; it is not an accuracy probability.
 
 - Monocular height is weakest on:
