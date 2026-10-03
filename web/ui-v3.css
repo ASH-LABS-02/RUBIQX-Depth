@@ -202,3 +202,63 @@ button,input,select,textarea{border-radius:12px}button{background:transparent;bo
   .model-compare-note { left: 12px; max-width: calc(100% - 80px); }
   .comparison { left: 12px; right: 68px; }
 }
+
+/* Scene-first framing: labelled camera controls and an expandable summary. */
+#camera-modes {
+  position: absolute; left: 50%; top: 78px; transform: translateX(-50%); z-index: 20;
+  padding: 4px; border: 1px solid var(--glass-edge); border-radius: 14px;
+  background: var(--panel-glass); max-width: calc(100% - 360px);
+}
+#camera-modes #nav-mode { flex-direction: row; gap: 2px; border: 0; padding: 0; }
+#camera-modes button {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 34px; padding: 6px 11px; border: 0; border-radius: 10px; color: var(--ink-2);
+}
+#camera-modes button.active { background: rgba(56,211,245,.14); color: var(--cyan); }
+#camera-modes button:disabled { opacity: .38; }
+#camera-modes svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#camera-modes .v3-tool-label { display: inline; position: static; font-size: 12px; white-space: nowrap; }
+#scene-badge.scene-badge { max-width: none; flex: none; white-space: nowrap; overflow: visible; }
+#app-header { gap: 12px; }
+#library-toggle.scene-picker { flex: 1; min-width: 80px; max-width: 240px; }
+#scene-hero, #app.drawer-collapsed #scene-hero {
+  left: 176px; bottom: 110px; width: min(420px, calc(100% - 280px)); max-width: none;
+  padding: 9px 12px; pointer-events: auto; border-radius: 12px; background: var(--panel-glass);
+}
+.hero-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+#hero-title { margin: 0; min-width: 0; color: var(--ink-1); font-weight: 500; }
+#hero-details-toggle { flex: none; padding: 4px 8px; min-height: 28px; font-size: 11px; color: var(--cyan); }
+#hero-details { padding-top: 12px; }
+#hero-stats { flex-wrap: wrap; gap: 12px 20px; }
+#hero-stats .hero-stat b { font-size: 19px; }
+#hero-caption { margin-top: 10px; overflow-wrap: anywhere; }
+#scene-hero:has(#hero-details:not(.hidden)) { box-shadow: 0 8px 28px rgba(0,0,0,.25); }
+#app:not(.drawer-collapsed) #scene-hero { width: min(360px, calc(100% - 632px)); }
+#app:has(#legend:not(:empty), #layer-legend.topo-active) #scene-hero { bottom: 194px; }
+#fly-hint, #stage:has(#model-compare-note:not(.hidden)) #fly-hint { bottom: 174px; }
+#app:has(#hero-details:not(.hidden)) #fly-hint { bottom: 310px; }
+#app.presentation #camera-modes { display: none; }
+#stage:has(#swipe-divider:not(.hidden)) .swipe-label { top: 144px; }
+#stage:has(#swipe-divider:not(.hidden)) .model-compare-note { top: 200px; }
+@media (max-width: 1000px) and (min-width: 701px) {
+  #scene-hero, #app.drawer-collapsed #scene-hero { left: 144px; width: min(360px, calc(100% - 248px)); }
+  #app:not(.drawer-collapsed) #scene-hero { width: min(280px, calc(100% - 536px)); }
+  #camera-modes { max-width: calc(100% - 240px); }
+  #camera-modes button { padding: 6px 8px; }
+  #scene-badge.scene-badge { font-size: 10px; padding: 4px 6px; }
+}
+@media (max-width: 700px) {
+  #scene-badge.scene-badge { display: none !important; }
+  #camera-modes { top: 64px; left: 12px; transform: none; max-width: calc(100% - 80px); }
+  #camera-modes button { padding: 6px 8px; }
+  #camera-modes svg { display: none; }
+  #coordinate-readout { top: 112px; }
+  #scene-hero, #app.drawer-collapsed #scene-hero { left: 12px; bottom: 164px; width: calc(100% - 80px); padding: 7px 10px; }
+  #app:has(#legend:not(:empty), #layer-legend.topo-active) #scene-hero { bottom: 252px; }
+  #hero-stats .hero-stat:nth-child(n+3) { display: block; }
+  #fly-hint, #stage:has(#model-compare-note:not(.hidden)) #fly-hint { bottom: 224px; font-size: 10px; }
+  #app:has(#hero-details:not(.hidden)) #fly-hint { bottom: 360px; }
+  #app #cinematic-status { top: 170px; }
+  #stage:has(#swipe-divider:not(.hidden)) .swipe-label { top: 164px; }
+  #stage:has(#swipe-divider:not(.hidden)) .model-compare-note { top: 244px; }
+}

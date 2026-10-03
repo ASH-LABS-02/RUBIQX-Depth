@@ -141,7 +141,7 @@ function crownColor(seed) {
   return new THREE.Color().setHSL(
     0.28 + hash01(seed * 19) * 0.06,
     0.32 + hash01(seed * 23) * 0.20,
-    0.20 + hash01(seed * 29) * 0.10,
+    0.16 + hash01(seed * 29) * 0.09,
   );
 }
 
@@ -186,7 +186,9 @@ export function buildTreeGroup({ h, dtm, buildingMask, gw, gh, W, H, groundWm = 
         if (!Number.isFinite(dtm[ii]) || !Number.isFinite(agl) || agl < CANOPY_MIN_AGL_M) continue;
         const x = (cc / (gw - 1) - 0.5) * W;
         const z = (rr / (gh - 1) - 0.5) * H;
-        out.push({ x, z, ground: dtm[ii], agl, seed: ii, blobs: hash01(ii * 31) < 0.65 ? 5 : 6 });
+        const form = Math.floor(hash01(ii * 47) * 3); // broad, slender or irregular
+        out.push({ x, z, ground: dtm[ii], agl, seed: ii, form,
+          blobs: form === 0 ? 4 : form === 1 ? 5 : 6 });
         if (out.length > MAX_INSTANCES) return out;
       }
     }
@@ -279,19 +281,23 @@ export function buildTreeGroup({ h, dtm, buildingMask, gw, gh, W, H, groundWm = 
       const main = b === 0;
       const lower = b > 0 && b <= 3;
       const angle = rot + b * 2.399963;
-      const offsetM = main ? 0 : crownR * (lower ? 0.47 : 0.30);
-      const radiusM = crownR * (main ? 0.58 : lower ? 0.46 : 0.42);
-      const bottomY = worldY(t.ground + t.agl * (main ? 0.56 : lower ? 0.32 + hash01(seed) * 0.08 : 0.52));
+      const spread = t.form === 0 ? 1.12 : t.form === 1 ? .68 : 1;
+      const offsetM = main ? 0 : crownR * spread * (lower ? .40 + hash01(seed * 3) * .16 : .30);
+      const radiusM = crownR * spread * (main ? .68 : lower ? .38 + hash01(seed * 5) * .10 : .38);
+      const bottomY = worldY(t.ground + t.agl * (main ? (t.form === 1 ? .40 : .55) : lower ? .35 + hash01(seed) * .10 : .54));
       const topY = worldY(t.ground + t.agl * (main ? 1 : lower ? 0.74 + hash01(seed * 7) * 0.10 : 0.88 + hash01(seed * 7) * 0.08));
       const radiusY = (topY - bottomY) / (crownMaxY - crownMinY);
       dummy.position.set(t.x + Math.cos(angle) * offsetM * scaleX,
         topY - crownMaxY * radiusY, t.z + Math.sin(angle) * offsetM * scaleZ);
       dummy.rotation.set(0, rot + b, 0);
-      const width = 0.85 + hash01(t.seed * 41) * 0.25;
+      const width = .78 + hash01(t.seed * 41) * .38;
       dummy.scale.set(radiusM * width * scaleX, radiusY, radiusM * (0.85 + hash01(seed * 11) * 0.20) * scaleZ);
       dummy.updateMatrix();
       crownMesh.setMatrixAt(crownIndex, dummy.matrix);
-      crownMesh.setColorAt(crownIndex++, crownColor(seed));
+      // Keep each tree's palette coherent; nearby trees still vary naturally.
+      const color = crownColor(t.seed);
+      color.offsetHSL((hash01(seed * 19) - .5) * .015, 0, (hash01(seed * 23) - .5) * .025);
+      crownMesh.setColorAt(crownIndex++, color);
     }
   }
 

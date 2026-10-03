@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="studio.css?v=20260930-mission-studio-v2">
 <link rel="stylesheet" href="mission.css?v=20260930-v9">
 <link rel="stylesheet" href="ui-v2.css?v=20261001-v1">
-<link rel="stylesheet" href="ui-v3.css?v=20261003-ux-polish">
+<link rel="stylesheet" href="ui-v3.css?v=20261003-scene-polish">
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
 </script>
@@ -84,6 +84,7 @@
       <div class="seg" id="nav-mode" aria-label="Navigation mode">
         <button data-nav="orbit" class="active" title="Orbit (O)">Orbit</button>
         <button data-nav="fly" title="First-person fly (F)">Fly</button>
+        <button data-nav="walk" title="Surface-following walk · metric scenes">Walk</button>
         <button data-nav="tour" title="30 s cinematic flythrough (Shift+C or T)">Tour</button>
       </div>
       <button id="record-tour" title="Record a 30 s cinematic flythrough as a video file">● Record</button>
@@ -100,7 +101,7 @@
     </div>
     <div id="cinematic-status" class="hidden"><span id="cinematic-progress">Cinematic · 30s</span><button id="cinematic-stop" type="button" title="Stop cinematic (Esc)">Stop · Esc</button></div>
     <div id="layer-dock"><div id="layer-legend"></div><div id="layer-dock-actions"></div><button id="dock-more" type="button" title="More surface layers" aria-label="More surface layers">···</button><div id="layer-more-menu"></div></div>
-    <div id="scene-hero" class="scene-hero"><h2 id="hero-title">Choose a scene</h2><div id="hero-stats"></div><span id="hero-caption">Single image → 3D surface</span></div>
+    <div id="scene-hero" class="scene-hero"><div class="hero-heading"><h2 id="hero-title">Choose a scene</h2><button id="hero-details-toggle" type="button" aria-expanded="false" aria-controls="hero-details">Details</button></div><div id="hero-details" class="hidden"><div id="hero-stats"></div><span id="hero-caption">Single image → 3D surface</span></div></div>
     <div id="hud">
       <span id="hud-scene">No scene loaded</span>
       <span id="hud-cam"></span>
@@ -421,6 +422,7 @@
     <h2>Controls</h2>
     <table><tr><td>Orbit</td><td>Left-drag rotate · Right-drag pan · Wheel zoom · Click to probe</td></tr>
       <tr><td>Fly</td><td>Click to capture mouse · WASD move · Q/E down/up · Shift ×4 speed · Esc exit</td></tr>
+      <tr><td>Walk</td><td>Click to look around · WASD move over the displayed surface · Shift fast · Esc release. Metric scenes only; no building collision simulation.</td></tr>
       <tr><td>Tour</td><td>Automatic circling flythrough for demos</td></tr>
       <tr><td>Compare</td><td>Optical and height maps share a cursor and 3D probe</td></tr>
       <tr><td>2D map</td><td>Open beside a georeferenced scene; click inside the footprint to fly there</td></tr>
@@ -431,6 +433,6 @@
     <button id="help-close" class="primary">Got it</button>
   </div>
 </div>
-<script type="module" src="app.js?v=20261003-semantic-prototype"></script>
+<script type="module" src="app.js?v=20261003-scene-polish"></script>
 </body>
 </html>

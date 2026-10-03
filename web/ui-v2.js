@@ -232,7 +232,7 @@ export function createMissionUi(ctx) {
   }
   function cancelOpening(){const s=getState();if(s.cameraFlight?.opening){s.cameraFlight=null;requestRender();}}
   ['pointermove','pointerdown','wheel','keydown','touchstart'].forEach(ev=>addEventListener(ev,cancelOpening,{capture:true,passive:true}));
-  function navigationChanged(mode){clearTimeout(flyTimer);$('#fly-hint').classList.remove('faded');if(mode==='fly')flyTimer=setTimeout(()=>$('#fly-hint').classList.add('faded'),5000);}
+  function navigationChanged(mode){clearTimeout(flyTimer);$('#fly-hint').classList.remove('faded');if(mode==='fly'||mode==='walk')flyTimer=setTimeout(()=>$('#fly-hint').classList.add('faded'),5000);}
   function tick(active){
     const now=performance.now(),s=getState(),frame=lastFrame?now-lastFrame:0;lastFrame=now;
     if(!active||!s.mesh||s.cameraFlight||reducedQuality||document.hidden){slowFor=0;return;}

@@ -6,13 +6,23 @@ export function createBoldUi({getState,orbit,canvas,requestRender}){
   arrival.innerHTML='<h1>DepthWizard</h1><p id="arrival-subtitle">One satellite image → a 3D world</p><small id="arrival-evidence"></small>';
   $('#stage').append(arrival);
   const tools=[...document.querySelectorAll('#nav-mode button')].map(b=>[b,b.dataset.nav,b.textContent.trim()]);
+  paths.walk='<circle cx="12" cy="4" r="2"/><path d="m8 10 4-3 4 4m-4-4-1 7-4 7m4-7 5 7M5 11l3-1"/>';
   tools.push(...[...document.querySelectorAll('#view-mode button')].map(b=>[b,b.dataset.view==='city'?'city':'mesh',b.dataset.view==='city'?'Roof-fit City':'DSM Mesh']));
   for(const [id,key,name]of [['topdown','top','Top down'],['reset','reset','Reset view'],['compare-trigger','compare','Compare'],['exag-trigger','exag','Vertical exaggeration'],['fullscreen','full','Fullscreen viewer'],['present-btn','present','Present'],['vr-toggle','vr','VR']])tools.push([$('#'+id),key,name]);
   for(const [button,key,name]of tools){
     button.setAttribute('aria-label',name);button.dataset.v3='true';
+    if(button.dataset.nav)button.setAttribute('aria-pressed',String(button.classList.contains('active')));
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');svg.innerHTML=paths[key]||paths.orbit;
     const tip=document.createElement('span');tip.className='v3-tool-label';tip.textContent=name;button.replaceChildren(svg,tip);
   }
+  const navigation=document.createElement('div');navigation.id='camera-modes';navigation.setAttribute('aria-label','Camera navigation');
+  navigation.append($('#nav-mode'));$('#stage').append(navigation);
+  const heroToggle=$('#hero-details-toggle');
+  heroToggle.onclick=()=>{
+    const expanded=heroToggle.getAttribute('aria-expanded')!=='true';
+    heroToggle.setAttribute('aria-expanded',String(expanded));heroToggle.textContent=expanded?'Less':'Details';
+    $('#hero-details').classList.toggle('hidden',!expanded);
+  };
   $('#drawer-toggle').textContent='×';$('#drawer-toggle').setAttribute('aria-label','Close inspector');
   $('#exposure').value='1.08';$('#exposure-v').textContent='1.08';
   const mapShell=document.createElement('div');mapShell.id='minimap-shell';$('#minimap').before(mapShell);mapShell.append($('#minimap'));
@@ -25,6 +35,7 @@ export function createBoldUi({getState,orbit,canvas,requestRender}){
   orbit.autoRotateSpeed=.1;
   function sceneLoaded(){
     lastInput=performance.now();orbit.autoRotate=false;
+    heroToggle.setAttribute('aria-expanded','false');heroToggle.textContent='Details';$('#hero-details').classList.add('hidden');
     const s=getState(),relative=s.meta.units!=='metre';
     const t=s.meta.transform,det=t?t[0]*t[4]-t[1]*t[3]:0;
     const nx=det?-t[1]/det*s.W/s.meta.src_w:0,nz=det?t[0]/det*s.H/s.meta.src_h:-1;

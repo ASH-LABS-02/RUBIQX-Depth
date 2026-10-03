@@ -91,19 +91,24 @@ The first visit opens a gallery of demo scenes. Put the fine-tuned checkpoint in
 
 - **Optional semantic prototype:** overhead SegFormer masks refine building/canopy separation and City tree placement. The current candidate is research-only and disabled by default; three cached-scene comparisons show mask changes, not a measured accuracy gain. DSM pixels are unchanged by classification. See the [comparison, checkpoint and validation protocol](docs/semantic-prototype.md).
 - **Workspace polish:** visible workspace names and labelled layer tabs, higher-contrast inspectors and import dialogs, shorter camera tooltips, and a scrollable mobile navigation bar. Hover readouts avoid the header and coordinate panel. Foliage uses deeper greens; the City screenshot above shows the updated layout.
-- **Tree rendering:** Roof-fit City now uses branching trunks and 5–6 irregular foliage clusters per tree, varied silhouettes and subdued green shades. Trees are illustrative instances placed from canopy candidates, not individually surveyed trees or classified species. Ground and canopy-top elevations retain the existing DSM/DTM estimates; exported rasters and accuracy scores are unchanged. Trees remain off for relative scenes.
+- **Scene framing and navigation:** scenes open at a closer, lower inspection angle fitted to their bounds. The summary expands through **Details**, generic image names become readable scene names, and the datum badge keeps full provenance in its tooltip. Labelled **Orbit / Fly / Walk / Tour** controls stay visible; Walk follows the displayed metric surface at eye level, without building collision simulation. Subtle roof and wall outlines clarify existing geometry.
+- **Tree rendering:** Roof-fit City now uses branching trunks and 4–6 foliage clusters per tree, with broad, slender and irregular silhouettes and darker green variation. Trees are illustrative instances placed from canopy candidates, not individually surveyed trees or classified species. Ground and canopy-top elevations retain the existing DSM/DTM estimates; exported rasters and accuracy scores are unchanged. Trees remain off for relative scenes.
 - **Model failures:** processing stops with a clear error when inference fails. Web uploads never silently substitute a heuristic; CLI prototype runs can explicitly use `--allow-fallback`, with results labelled unsuitable for accuracy evaluation.
 - **Reliability and uncertainty:** single-pass and heuristic runs produce no pixel reliability or uncertainty maps. Metric uncertainty is provisional and calibrated on two DC scenes; relative output is unitless ensemble spread. Building scores distinguish ensemble agreement from roof-height consistency. Scores are not accuracy probabilities.
 - **Export clarity:** menus and reports distinguish full-grid GeoTIFFs from sampled display meshes and point clouds. The complete ZIP includes raw metric ensemble spread when available, alongside the provisional error map and provenance.
 - **Disaster tools:** flood assumptions remain visible with details collapsed. Slope bands describe angles rather than safety, and routes, refuge candidates, runout and relay coverage state their screening limits.
-- **Robustness:** switching between City and Surface while a scene is loading no longer attempts to rebuild an absent height grid. The latest local verification passed **72 pytest tests** and JavaScript syntax checks; the experimental City view and a real pipeline run were also checked.
+- **Robustness:** switching between City and Surface while a scene is loading no longer attempts to rebuild an absent height grid. The earlier semantic-prototype verification passed **72 pytest tests** and included a real pipeline run. This latest UI polish passed JavaScript syntax and whitespace checks; the City layout, expandable summary and Walk entry were previewed locally with no browser warnings or errors. Pytest was not rerun for this display-only update.
 
 The rendering and reporting fixes do not establish improved height accuracy. See
 [completed limitation fixes and remaining evidence gaps](docs/limitation-fixes.md).
 
 ### Experimental building / canopy separation
 
-![City view with experimental semantic masks](docs/images/semantic-city-current.jpg)
+![Updated City layout with darker trees, labelled camera controls and experimental semantic masks](docs/images/ui-polish-current.jpg)
+
+Current UI preview on the **experimental semantic Glover Park** scene (106
+building candidates). Semantic masks remain disabled by default; this screenshot
+demonstrates presentation changes, not a height-accuracy improvement.
 
 An optional overhead-image SegFormer classifier separates building, woody
 canopy, ground, water and road candidates. Unknown pixels retain the existing
@@ -302,9 +307,9 @@ The app opens into **Terrain Mission Control**: a full-bleed 3D scene, a compact
 
 | Feature | Details |
 |---|---|
-| Navigation | **Orbit**; **Fly** (first-person, pointer-lock, WASD/QE/Shift, never drops below the terrain); **Tour** (30 s cinematic pass, Shift+C; Esc stops); **Top down** and **Fullscreen**; a minimap you can click to jump |
+| Navigation | Labelled **Orbit / Fly / Walk / Tour** controls; Fly uses pointer-lock and WASD/QE/Shift; Walk uses WASD/Shift at eye level on the displayed surface (metric scenes only; no building collisions); Tour is a 30 s cinematic pass (Shift+C; Esc stops); **Top down** and **Fullscreen**; a minimap you can click to jump |
 | Surfaces | Optical drape, height colour ramp, slope (° for metric DSMs; relative gradient otherwise), curvature, error vs a metric reference; contour lines; wireframe |
-| Controls | Vertical exaggeration; display-only mesh smoothing; sun azimuth and illustrative time of day |
+| Controls | Expandable scene summary through **Details**; vertical exaggeration; display-only mesh smoothing; sun azimuth and illustrative time of day |
 | Comparison | Linked source RGB and height maps with a shared cursor; clicking a pixel sets the 3D height probe |
 | Probe | Estimated height, reference height, error, slope, aspect, and map coordinates (E/N) for georeferenced scenes |
 | Coordinates | Source-affine E/N grid and live readout (Shift+G toggles); geographic CRS uses degrees, projected coordinates retain native CRS units; corner-interpolated lat/lon is labelled approximate; plain images show pixels |

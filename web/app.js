@@ -10,10 +10,10 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-v3';
-import { createMissionUi } from './ui-v2.js?v=20261003-integrity';
+import { createMissionUi } from './ui-v2.js?v=20261003-scene-polish';
 import { createDiorama } from './diorama.js?v=20261001-bold-r4';
-import { createBoldUi } from './ui-v3.js?v=20261003-ux-polish';
-import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261003-semantic-prototype';
+import { createBoldUi } from './ui-v3.js?v=20261003-scene-polish';
+import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats } from './trees.js?v=20261003-scene-polish';
 import { cinematicPath } from './cinematic.js?v=20261003-cinematic';
 import { coordinateAt, coordinateFrame, coordinateGrid } from './coordinates.js?v=20261003-grid';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
@@ -89,6 +89,17 @@ const cssRamp = (name) => 'linear-gradient(90deg,' + (RAMPS[name] || RAMPS.heigh
 const pct = (arr, p) => { const a = Float32Array.from(arr).filter(Number.isFinite).sort(); return a[Math.floor((a.length - 1) * p)]; };
 const fmt = (v, d = 2) => (v === undefined || v === null || Number.isNaN(v)) ? '–' : Number(v).toFixed(d);
 const escapeHtml = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
+
+function sceneDisplayName(id = S.id, meta = S.meta, name) {
+  const libraryName = name ?? $(`#scene-list .item[data-id="${CSS.escape(id || '')}"] .n`)?.textContent;
+  const raw = String(meta?.display_name || meta?.scene_name || libraryName || meta?.input || '')
+    .replace(/Â·/g, '·').split(/[\\/]/).pop().replace(/\.(tiff?|png|jpe?g)$/i, '');
+  if (raw && !/^(rgb|image|optical|input|texture|scene)([ _-]?\d+)?$/i.test(raw)) return raw;
+  id = String(id || '');
+  if (!id || /^[a-f\d-]{20,}$/i.test(id)) return id ? `Uploaded scene · ${id.slice(-8)}` : 'Current scene';
+  return id.replace(/^demo[-_]/i, '').split(/[-_]+/).map((word) =>
+    /^(dc|nyc|s2)$/i.test(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
 
 // ------------------------------------------------------------------ renderer / scene
 const canvas = $('#gl');
@@ -925,10 +936,10 @@ async function loadScene(id) {
     const evidence = meta.units === 'metre' ? `${evidenceLevel || 'unverified'} · ${cal.method || 'calibrated'}` : 'relative height';
     const badge = $('#scene-badge');
     const label = document.createElement('strong'); label.textContent = inputDem ? 'Input DEM (not estimated)' : meta.units === 'metre' ? (String(evidenceLevel).startsWith('provisional')?'Provisional evidence':provisional?'Approximate evidence':evidenceLevel?'Metric evidence':'Unverified evidence') : 'Relative scene';
-    if (meta.units === 'metre' && cal.vertical_datum === 'same as input DEM')
-      label.textContent = 'Datum: same as input DEM';
+    if (meta.units === 'metre' && cal.vertical_datum === 'same as input DEM' && !inputDem)
+      label.textContent = `Input DEM datum · ${provisional ? 'approximate' : 'metric'}`;
     if (meta.backbone === 'heuristic-fallback') label.textContent = 'Prototype · heuristic output';
-    badge.replaceChildren(label, document.createTextNode(` · ${cal.method || evidence}`));
+    badge.replaceChildren(label);
     badge.title = `${evidence} · vertical datum: ${cal.vertical_datum || 'unspecified'}`;
     if (meta.backbone === 'heuristic-fallback') badge.title = 'Heuristic prototype output; not representative of model accuracy';
     badge.dataset.evidence = evidenceLevel;
@@ -943,6 +954,7 @@ async function loadScene(id) {
       el.querySelector('.scene-select')?.setAttribute('aria-pressed', String(active));
     });
     $('#model-swipe-toggle').disabled = !String(meta.backbone || '').toLowerCase().includes('gamus');
+    $('#nav-mode button[data-nav="walk"]').disabled = meta.units !== 'metre';
     renderMetrics();
     renderBuildingList();
     drawMinimap();
@@ -979,11 +991,26 @@ async function loadScene(id) {
 }
 
 function resetView() {
+  S.cameraFlight = null;
   setNav('orbit');
   camera.up.set(0, 1, 0);
-  const cy = worldY((S.hmin + S.hmax) / 2);
+  const cy = worldY(pct(S.renderH || S.h, .5));
   orbit.target.set(0, cy, 0);
-  camera.position.set(S.extent*.18, cy + S.extent * .85, S.extent * 1.05);
+  // Fit the real scene bounds at a lower inspection angle, including relief.
+  // Portrait screens need more distance than a widescreen city presentation.
+  const direction = new THREE.Vector3(.42, .40, .81).normalize();
+  const right = new THREE.Vector3().crossVectors(camera.up, direction).normalize();
+  const up = new THREE.Vector3().crossVectors(direction, right).normalize();
+  const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const tanH = tanV * camera.aspect;
+  let distance = 0;
+  for (const x of [-S.W / 2, S.W / 2]) for (const z of [-S.H / 2, S.H / 2])
+    for (const y of [worldY(S.hmin), worldY(S.hmax)]) {
+      const corner = new THREE.Vector3(x, y - cy, z);
+      distance = Math.max(distance, corner.dot(direction) + Math.max(
+        Math.abs(corner.dot(right)) / (tanH * .92), Math.abs(corner.dot(up)) / (tanV * .90)));
+    }
+  camera.position.copy(orbit.target).addScaledVector(direction, Math.max(distance, S.extent * .65));
   orbit.minDistance = S.extent * 0.01; orbit.maxDistance = S.extent * 4;
   orbit.update();
 }
@@ -1070,6 +1097,7 @@ function createBuildingMeshes(bData) {
     roughness: 0.85,
     metalness: 0.05,
     side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
   });
 
   for (const b of bData.buildings) {
@@ -1175,6 +1203,15 @@ function createBuildingMeshes(bData) {
         panel.userData.building = b; panel.castShadow = true; panel.receiveShadow = true;
         mesh.add(panel);
       }
+    }
+    // Quiet crease lines clarify roof/wall boundaries without changing geometry.
+    mesh.updateMatrixWorld(true);
+    const edgeParts = [];
+    mesh.traverse((part) => { if (part.isMesh) edgeParts.push(part); });
+    for (const part of edgeParts) {
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(part.geometry, 35),
+        new THREE.LineBasicMaterial({ color: 0x253039, transparent: true, opacity: .24, depthWrite: false }));
+      edges.raycast = () => {}; edges.renderOrder = 1; part.add(edges);
     }
     mesh.scale.y = 0.001;
     group.add(mesh);
@@ -1424,17 +1461,29 @@ function setViewGeometry(mode) {
 
 // ------------------------------------------------------------------ navigation
 function setNav(mode) {
+  if (mode === 'walk' && (!S.mesh || S.meta?.units !== 'metre')) return;
   if (!S.mesh && mode === 'tour') return;
   if (mode === S.nav && mode !== 'tour') return;
-  if (S.nav === 'fly') fly.unlock();
+  if (S.nav === 'fly' || S.nav === 'walk') fly.unlock();
   if (mode !== 'orbit') camera.up.set(0, 1, 0);
   S.nav = mode;
   S.cinematic = null;
+  S.cameraFlight = null;
+  S.keys = {};
   $('#cinematic-status').classList.toggle('hidden', mode !== 'tour' || S.presentation);
   missionUi?.navigationChanged(mode);
   orbit.enabled = mode === 'orbit';
-  $('#fly-hint').classList.toggle('hidden', mode !== 'fly');
-  $$('#nav-mode button').forEach((b) => b.classList.toggle('active', b.dataset.nav === mode));
+  $('#fly-hint').classList.toggle('hidden', mode !== 'fly' && mode !== 'walk');
+  updateNavigationHint();
+  $$('#nav-mode button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.nav === mode);
+    b.setAttribute('aria-pressed', String(b.dataset.nav === mode));
+  });
+  if (mode === 'walk') {
+    const direction = camera.getWorldDirection(new THREE.Vector3());
+    camera.rotation.set(-.08, Math.atan2(-direction.x, -direction.z), 0, 'YXZ');
+    clampCamera();
+  }
   if (mode === 'orbit') {
     // look at the terrain point in the centre of the view
     const hit = raycastFrom(new THREE.Vector2(0, 0));
@@ -1453,17 +1502,30 @@ function setNav(mode) {
 }
 
 const clock = new THREE.Clock();
+function updateNavigationHint() {
+  $('#fly-hint').textContent = `${fly.isLocked ? '' : 'Click to look around · '}${S.nav === 'walk'
+    ? 'WASD walk · follows display surface' : 'WASD fly · Q/E down/up'} · Shift fast · Esc release`;
+}
 function updateFly(dt) {
-  const speed = S.extent / 12 * (S.keys.ShiftLeft || S.keys.ShiftRight ? 4 : 1) * dt;
+  if (!fly.isLocked) return;
+  const walking = S.nav === 'walk';
+  const speed = (walking ? 1.8 * S.W / (S.meta.ground_w_m || S.W) : S.extent / 12)
+    * (S.keys.ShiftLeft || S.keys.ShiftRight ? (walking ? 2 : 4) : 1) * dt;
   if (S.keys.KeyW) fly.moveForward(speed);
   if (S.keys.KeyS) fly.moveForward(-speed);
   if (S.keys.KeyD) fly.moveRight(speed);
   if (S.keys.KeyA) fly.moveRight(-speed);
-  if (S.keys.KeyE || S.keys.Space) camera.position.y += speed;
-  if (S.keys.KeyQ) camera.position.y -= speed;
+  if (!walking && (S.keys.KeyE || S.keys.Space)) camera.position.y += speed;
+  if (!walking && S.keys.KeyQ) camera.position.y -= speed;
   clampCamera();
 }
 function clampCamera() {
+  if (S.nav === 'walk') {
+    camera.position.x = THREE.MathUtils.clamp(camera.position.x, -S.W * .499, S.W * .499);
+    camera.position.z = THREE.MathUtils.clamp(camera.position.z, -S.H * .499, S.H * .499);
+    camera.position.y = terrainY(camera.position.x, camera.position.z) + worldY(S.base + 1.7) - worldY(S.base);
+    return;
+  }
   // Constrain first-person travel, not the orbit dolly or the diorama framing.
   const m = S.extent * (S.nav === 'fly' ? .6 : 5);
   camera.position.x = Math.max(-m, Math.min(m, camera.position.x));
@@ -1544,7 +1606,7 @@ function rebuildCoordinateGrid() {
 }
 function updateCoordinateLabels() {
   const rect = canvas.getBoundingClientRect();
-  const blockers = ['#toolbar', '#scene-hero', '#layer-dock', '#layer-legend', '#minimap-shell', '#coordinate-readout', '#inspector', '#app-header']
+  const blockers = ['#toolbar', '#camera-modes', '#scene-hero', '#layer-dock', '#layer-legend', '#minimap-shell', '#coordinate-readout', '#inspector', '#app-header']
     .map(s => $(s)).filter(el => el && el.getClientRects().length).map(el => el.getBoundingClientRect());
   for (const { label, point } of coordinateLabels) {
     const p = point.clone().project(camera), x = (p.x + 1) * rect.width / 2, y = (1 - p.y) * rect.height / 2;
@@ -1607,7 +1669,7 @@ function placeHoverHud(hud, pointerX, pointerY) {
   hud.classList.remove('hidden');
   const width = hud.offsetWidth || 250, height = hud.offsetHeight || 170, pad = 10;
   const clamp = (n, max) => Math.max(pad, Math.min(n, Math.max(pad, max - pad)));
-  const obstacles = ['#app-header', '#coordinate-readout', '#mode-rail', '#scene-hero', '#layer-dock', '#toolbar', '#layer-legend',
+  const obstacles = ['#app-header', '#camera-modes', '#coordinate-readout', '#mode-rail', '#scene-hero', '#layer-dock', '#toolbar', '#layer-legend',
     '#model-compare-note', '#swipe-label-left', '#swipe-label-right', '#inspector', '#welcome-card', '#minimap', '#scale-bar-container', '#exaggeration-note']
     .map((selector) => $(selector)?.getBoundingClientRect())
     .filter((r) => r && r.width && r.height)
@@ -1704,7 +1766,7 @@ canvas.addEventListener('pointerup', (e) => {
   if (!S.mesh || !down) return;
   const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null;
   if (moved <= 4 && e.button === 0) $('#app').classList.add('drawer-collapsed');
-  if (S.nav === 'fly') { if (!fly.isLocked) fly.lock(); return; }
+  if (S.nav === 'fly' || S.nav === 'walk') { if (!fly.isLocked) fly.lock(); return; }
   if (S.nav === 'tour') { setNav('orbit'); return; }
   if (moved > 4 || e.button !== 0) return;
   const stageRect = $('#stage').getBoundingClientRect();
@@ -2198,8 +2260,8 @@ $$('#export-menu [data-export]').forEach((b) => b.onclick = async () => {
 document.addEventListener('pointerdown', (e) => {
   if (!e.target.closest('.header-actions,#export-menu')) closeExportMenu();
 });
-fly.addEventListener('lock', () => $('#fly-hint').textContent = 'WASD move · Q/E down/up · Shift fast · Esc release');
-fly.addEventListener('unlock', () => $('#fly-hint').textContent = 'Click to look around · WASD move · Q/E down/up · Shift fast · Esc release');
+fly.addEventListener('lock', updateNavigationHint);
+fly.addEventListener('unlock', () => { S.keys = {}; updateNavigationHint(); });
 
 addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openCommandPalette(); return; }
@@ -2219,7 +2281,7 @@ addEventListener('keydown', (e) => {
     e.preventDefault(); return;
   }
   S.keys[e.code] = true;
-  if (S.nav === 'fly' && ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'Space'].includes(e.code)) { e.preventDefault(); return; }
+  if ((S.nav === 'fly' || S.nav === 'walk') && ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'Space'].includes(e.code)) { e.preventDefault(); return; }
   const k = e.key.toLowerCase();
   if (k === 'o') setNav('orbit'); else if (k === 'f') setNav('fly'); else if (k === 't') setNav('tour');
   else if (k === 'd') topDownView(); else if (k === 'v') setComparison($('#comparison').classList.contains('hidden'));
@@ -2240,16 +2302,17 @@ async function refreshScenes(selectId, forceFetch = true) {
   const el = $('#scene-list');
   el.innerHTML = list.length ? '' : '<p class="muted">No scenes yet – use Upload.</p>';
   for (const s of list) {
+    const name = sceneDisplayName(s.id, null, s.name);
     const d = document.createElement('div'); d.className = 'item'; d.dataset.id = s.id;
     d.innerHTML = `<img class="scene-thumb" alt=""><button class="scene-select" type="button" aria-pressed="false"><span class="n"></span><span class="m"></span></button><button class="x" type="button" title="Delete">✕</button>`;
     d.querySelector('.scene-thumb').src = `jobs/${encodeURIComponent(s.id)}/viewer/texture.jpg`;
-    d.querySelector('.n').textContent = s.name;
-    d.querySelector('.n').title = s.name;
+    d.querySelector('.n').textContent = name;
+    d.querySelector('.n').title = `${name} · Source: ${s.name}`;
     d.querySelector('.m').textContent = `${s.units === 'metre' ? 'DSM (m)' : 'rDSM'} · ${s.method ?? ''}${s.has_reference ? ' · reference' : ''}`;
-    d.querySelector('.x').setAttribute('aria-label', `Delete ${s.name}`);
+    d.querySelector('.x').setAttribute('aria-label', `Delete ${name}`);
     d.querySelector('.scene-select').onclick = () => { $('#app').classList.remove('library-open'); loadScene(s.id); };
     d.querySelector('.x').onclick = async (e) => {
-      e.stopPropagation(); if (!confirm(`Delete ${s.name}?`)) return;
+      e.stopPropagation(); if (!confirm(`Delete ${name}?`)) return;
       await apiFetch(`api/scenes/${s.id}`, { method: 'DELETE' }); refreshScenes();
     };
     el.appendChild(d);
@@ -2341,7 +2404,7 @@ renderer.setAnimationLoop(() => {
       if (t >= 1) S.cameraFlight = null;
     }
     if (S.nav === 'orbit') { orbit.update(dt); clampCamera(); }
-    else if (S.nav === 'fly') updateFly(dt);
+    else if (S.nav === 'fly' || S.nav === 'walk') updateFly(dt);
     else if (S.nav === 'tour') updateTour(dt);
     updateCoordinateLabels();
     if (S.nav !== 'orbit') {
@@ -3004,7 +3067,7 @@ async function openGallery() {
     const what = sc.units === 'metre'
       ? `Metric 3D surface · ${sc.method || 'calibrated'}${sc.has_reference ? ' · reference attached' : ''}`
       : 'Relative 3D surface from a plain image';
-    const [title, tag] = presentation[sc.id] || [sc.name.replace(/Â·/g, '·'), sc.units === 'metre' ? 'METRIC DSM' : 'RELATIVE DSM'];
+    const [title, tag] = presentation[sc.id] || [sceneDisplayName(sc.id, null, sc.name), sc.units === 'metre' ? 'METRIC DSM' : 'RELATIVE DSM'];
     card.innerHTML = `<div class="gallery-image"><img alt="" loading="lazy"><span class="gallery-tag"></span></div><b></b><small></small>`;
     card.querySelector('img').src = `jobs/${encodeURIComponent(sc.id)}/viewer/texture.jpg`;
     card.querySelector('.gallery-tag').textContent = tag;
@@ -3093,7 +3156,7 @@ function setAnimatedStat(el, value, suffix = '', precision = null) {
 function updateMissionHud() {
   if (!S.meta) return;
   const mode = S.workspace || 'explore', list = S.buildings?.buildings || [];
-  const friendly = ($(`#scene-list .item[data-id="${CSS.escape(S.id || '')}"] .n`)?.textContent || S.meta.input || 'Current scene').replace(/Â·/g, '·');
+  const friendly = sceneDisplayName();
   $('#hero-title').textContent = friendly.replace(/\.(tiff?|png|jpe?g)$/i, '');
   $('#top-scene-name').textContent = friendly.replace(/\.(tiff?|png|jpe?g)$/i, '');
   const tallest = list.reduce((v, b) => Math.max(v, Number(b.height_m) || 0), 0);
