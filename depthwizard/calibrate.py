@@ -72,6 +72,8 @@ class Calibration:
     vertical_datum: str | None = None
     match_dem_30m: bool | None = None
     is_agl: bool | None = None
+    cop_height_scale: float | None = None
+    cop_height_scale_cells: int | None = None
     note: str = ""
     dtm: np.ndarray | None = None
     ndsm: np.ndarray | None = None
@@ -82,6 +84,48 @@ class Calibration:
 
 
 # ---------------------------------------------------------------- utilities
+def copernicus_height_scale(ndsm, ground, image, dem_path):
+    """Fit one structure multiplier from native Copernicus cells, never LiDAR.
+
+    Terrain remains unchanged. Both fine grids use the same finite pixels;
+    the native DSM minus area-mean terrain is the Copernicus structure cue.
+    """
+    import rasterio
+    from rasterio.warp import reproject, Resampling, transform_bounds
+    from rasterio.windows import from_bounds, transform as window_transform
+
+    if not image.georeferenced:
+        raise ValueError("Copernicus height scale requires georeferenced imagery")
+    h, w = image.shape
+    xy = [image.transform * (c, r) for c, r in ((0, 0), (w, 0), (0, h), (w, h))]
+    x, y = zip(*xy)
+    valid = np.isfinite(ndsm) & np.isfinite(ground)
+    with rasterio.open(dem_path) as src:
+        if src.crs is None:
+            raise ValueError("Copernicus height scale requires a georeferenced DEM")
+        bounds = transform_bounds(image.crs, src.crs, min(x), min(y), max(x), max(y),
+                                  densify_pts=21)
+        window = from_bounds(*bounds, transform=src.transform).round_offsets().round_lengths()
+        window = window.intersection(rasterio.windows.Window(0, 0, src.width, src.height))
+        cop = src.read(1, window=window, masked=True).astype(np.float32).filled(np.nan)
+        means = []
+        for grid in (ndsm, ground):
+            mean = np.full(cop.shape, np.nan, np.float32)
+            reproject(source=np.where(valid, grid, np.nan).astype(np.float32), destination=mean,
+                      src_transform=image.transform, src_crs=image.crs, src_nodata=np.nan,
+                      dst_transform=window_transform(window, src.transform), dst_crs=src.crs,
+                      dst_nodata=np.nan, resampling=Resampling.average)
+            means.append(mean)
+    est_nd, ground_mean = means
+    cop_nd = cop - ground_mean
+    cells = np.isfinite(cop_nd) & np.isfinite(est_nd) & (cop_nd > 2) & (est_nd > 1e-3)
+    n = int(cells.sum())
+    if n < 30:
+        return None, n
+    s = min(1.6, max(0.8, float(np.median(cop_nd[cells] / est_nd[cells]))))
+    return s, n
+
+
 def huber_affine(x: np.ndarray, y: np.ndarray, iters: int = 20, delta: float | None = None):
     """Robust y ≈ a x + b via iteratively reweighted least squares (Huber)."""
     x, y = np.asarray(x, np.float64).ravel(), np.asarray(y, np.float64).ravel()

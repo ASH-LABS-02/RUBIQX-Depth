@@ -15,6 +15,10 @@ def main(argv=None):
                    help="download Copernicus GLO-30 for georeferenced images (default)")
     p.add_argument("--no-fetch-dem", dest="fetch_dem", action="store_false",
                    help="skip automatic DEM download")
+    p.add_argument("--cop-scale", dest="cop_scale", action="store_true", default=False,
+                   help="fit above-ground height scale to Copernicus, fetching it even with a terrain DEM")
+    p.add_argument("--no-cop-scale", dest="cop_scale", action="store_false",
+                   help="skip Copernicus above-ground height-scale correction")
     p.add_argument("--dem-source", default=None, choices=["COP30", "SRTMGL1"],
                    help="identify a supplied DEM; SRTM also enables OpenTopography fallback")
     p.add_argument("--gcp", help="CSV of ground control points (x,y,z or easting,northing,z)")
@@ -77,7 +81,7 @@ def main(argv=None):
                allow_fallback=not a.no_fallback, device=a.device, tta=a.tta,
                dem_kind=a.dem_kind, match_dem_30m=not a.no_consistency,
                sun_elevation=a.sun_elevation, sun_azimuth=a.sun_azimuth, anchors=anchors,
-               gcp_height_type=a.gcp_height_type)
+               gcp_height_type=a.gcp_height_type, cop_scale=a.cop_scale)
     if "metrics" in meta:
         print(json.dumps(meta["metrics"], indent=2))
 

@@ -49,7 +49,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         relative_display_height_m=None, device=None, dem_source="COP30",
         match_dem_30m=True, tta=4, dem_kind="auto", sun_elevation=None, sun_azimuth=None,
         vertical_datum=None, gcp_height_type="orthometric", anchors=None,
-        max_pixels=None, log=print) -> dict:
+        max_pixels=None, cop_scale=False, log=print) -> dict:
     t0 = time.time()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -177,6 +177,29 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         meta_water = 0.0
         wm = None
 
+    cop_scale_dem = None
+    if cop_scale and img.georeferenced and gsd < COARSE_GSD_M and units == "metre" and cal.dtm is not None:
+        try:
+            cop_scale_dem = dem if effective_source == "COP30" else str(
+                fetch_copernicus_glo30(img, out / "cop_scale_dem.tif"))
+            from .calibrate import copernicus_height_scale
+            est_nd = dsm - cal.dtm
+            s, n = copernicus_height_scale(est_nd, cal.dtm, img, cop_scale_dem)
+            cal.cop_height_scale_cells = n
+            if s is None:
+                log(f"  Copernicus height scale skipped: {n} usable cells (need at least 30)")
+            else:
+                cal.cop_height_scale = s
+                cal.ndsm = (s * est_nd).astype(np.float32)
+                dsm = (cal.dtm + cal.ndsm).astype(np.float32)
+                cal.scale_k = (cal.scale_k or 1.0) * s
+                cal.extras["ndsm"] = cal.ndsm
+                cal.note += f" Above-ground height scale multiplied by {s:.3f} from {n} Copernicus cells."
+                log(f"  Copernicus height scale s={s:.4f} ({n} cells); terrain unchanged")
+        except (RuntimeError, ValueError, OSError) as exc:
+            cop_scale_dem = None
+            log(f"  WARNING: Copernicus height scale skipped: {exc}")
+
     name = "dsm.tif" if units == "metre" else "rdsm.tif"
     dio.write_dsm(out / name, dsm, img, units=units,
                   description=f"DepthWizard {cal.method} ({backbone})", vertical_datum=datum)
@@ -227,6 +250,8 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         "timing_s": {"depth": round(t_depth, 2)},
         "sun_input": {"elevation_deg": sun_elevation, "azimuth_deg": sun_azimuth},
     }
+    if cop_scale_dem:
+        meta["input_paths"]["copernicus_scale"] = str(Path(cop_scale_dem).resolve())
     if units == "relative":
         # display scale for the viewer: relief ~ 8% of scene width unless given
         meta["display_height_m"] = relative_display_height_m or 0.08 * max(img.shape) * gsd
@@ -400,9 +425,10 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
                 metrics["buildings"] = bm
                 log(f"  per-building heights vs reference: n={bm['n']} "
                     f"RMSE {bm['rmse']:.2f} m, r {bm['r']:.2f}")
-    if dem and effective_source == "COP30" and units == "metre":
+    cop_score_dem = cop_scale_dem or (dem if effective_source == "COP30" else None)
+    if cop_score_dem and units == "metre":
         try:
-            agreement = vs_copernicus_30m(dsm, img, dem)
+            agreement = vs_copernicus_30m(dsm, img, cop_score_dem)
             agreement["note"] = ("Copernicus was the calibration input; this measures consistency, "
                                  "not independent accuracy")
             metrics["vs_copernicus_30m"] = agreement
