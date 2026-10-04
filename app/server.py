@@ -11,6 +11,7 @@ import threading
 import time
 import traceback
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 
 import rasterio
@@ -23,9 +24,14 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from depthwizard.pipeline import run
+from depthwizard.job_control import JobCancelled, stage_for
 from depthwizard.mesh_export import ALLOWED_RESOLUTIONS, export_glb, export_obj_zip
 from depthwizard.report import generate_html_report
 from app.mission_api import create_mission_router
+from app.terrain_api import create_terrain_router
+from app.calibration_history import calibration_edit, undo_calibration, CalibrationHistoryFull
+from app.security import install_security
+from app.identity import build_identity, file_hash
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
@@ -39,6 +45,11 @@ MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 IMAGE_EXTENSIONS = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 
 app = FastAPI(title="DepthWizard")
+install_security(app)
+
+@app.exception_handler(CalibrationHistoryFull)
+async def history_capacity_error(request, exc):
+    return JSONResponse(status_code=413, content={"detail": str(exc)})
 
 
 @app.middleware("http")
@@ -56,6 +67,7 @@ _lock = threading.Lock()   # one model inference at a time (GPU memory)
 _state_lock = threading.Lock()   # job/comparison status bookkeeping only (never held during work)
 _files_lock = threading.Lock()   # rewrites of scene files (rescale, missions, auto-anchors); never waits on the GPU
 _export_lock = threading.Lock()
+app.include_router(create_terrain_router(lambda ident: _completed_scene(ident), _files_lock))
 
 
 def _validate_upload(upload: UploadFile | None, role: str) -> None:
@@ -122,31 +134,54 @@ def _save_status(job_id: str) -> None:
     if st is None or not folder.is_dir():
         return
     try:
-        (folder / "status.json").write_text(json.dumps(
-            {"state": st["state"], "error": st.get("error"), "log": st["log"][-_LOG_LIMIT:]}), encoding="utf-8")
+        temporary = folder / ("status-" + uuid.uuid4().hex + ".tmp")
+        temporary.write_text(json.dumps(
+            {"state": st["state"], "error": st.get("error"), "log": st["log"][-_LOG_LIMIT:],
+             "stage": st.get("stage"), "progress": st.get("progress", 0),
+             "cancel_requested": st.get("cancel_requested", False)}), encoding="utf-8")
+        temporary.replace(folder / "status.json")
     except OSError:
         pass
 
 
 def _run_job(job_id: str, kwargs: dict):
-    st = _status[job_id]
+    with _state_lock:
+        st = _status.get(job_id)
+    if st is None:
+        return
 
     def log(msg):
+        if st.get("cancel_requested"):
+            raise JobCancelled("Processing cancelled at a pipeline stage boundary")
+        stage = stage_for(msg)
+        if stage:
+            st["stage"], st["progress"] = stage
         st["log"].append(msg)
         if len(st["log"]) > _LOG_LIMIT:
             del st["log"][: len(st["log"]) - _LOG_LIMIT]
 
     try:
         with _lock:
+            if st.get("cancel_requested"):
+                raise JobCancelled("Queued job cancelled")
             with _state_lock:
                 st["state"] = "running"
             _save_status(job_id)
-            run(log=log, **kwargs)
+            def check_cancel():
+                if st.get("cancel_requested"):
+                    raise JobCancelled("Processing cancelled between inference tiles")
+            run(log=log, check_cancel=check_cancel, **kwargs)
+            check_cancel()
         st["state"] = "done"
+        st["stage"], st["progress"] = "Complete", 100
+    except JobCancelled as exc:
+        st["state"] = "cancelled"
+        st["stage"] = "Cancelled"
+        st["error"] = str(exc)
     except Exception as exc:  # noqa: BLE001
         st["state"] = "error"
         st["error"] = f"{exc.__class__.__name__}: {exc}"
-        log(traceback.format_exc(limit=3))
+        st["log"].append(traceback.format_exc(limit=3))
     finally:
         _save_status(job_id)
 
@@ -222,6 +257,7 @@ async def process(image: UploadFile = File(...),
                                                                  "dem": dem.filename if dem else None,
                                                                  "reference": reference.filename if reference else None,
                                                                  "gcp": gcp.filename if gcp else None}}))
+    (folder / "request.json").write_text(json.dumps(kwargs), encoding="utf-8")
     with _state_lock:
         _status[job_id] = {"state": "queued", "log": [], "error": None}
         _queue_order.append(job_id)
@@ -241,9 +277,14 @@ def _queue_position(job_id: str) -> int:
 
 @app.get("/api/jobs/{job_id}")
 def job(job_id: str):
+    folder = (JOBS / job_id).resolve()
+    if folder.parent != JOBS.resolve():
+        raise HTTPException(404)
     if job_id in _status:
         st = _status[job_id]
-        out = {"state": st["state"], "log": list(st["log"]), "error": st.get("error")}
+        out = {"state": st["state"], "log": list(st["log"]), "error": st.get("error"),
+               "stage": st.get("stage", "Queued"), "progress": st.get("progress", 0),
+               "cancel_requested": st.get("cancel_requested", False)}
         if st["state"] == "queued":
             out["position"] = _queue_position(job_id)
         return out
@@ -258,6 +299,73 @@ def job(job_id: str):
     raise HTTPException(404)
 
 
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    with _state_lock:
+        st = _status.get(job_id)
+        if not st or st["state"] not in ("queued", "running"):
+            raise HTTPException(409, "Only queued or running jobs can be cancelled")
+        st["cancel_requested"] = True
+        if st["state"] == "queued":
+            st["state"], st["stage"] = "cancelled", "Cancelled"
+            if job_id in _queue_order:
+                _queue_order.remove(job_id)
+    _save_status(job_id)
+    return {"state": st["state"], "cancel_requested": True,
+            "message": "Running inference stops at the next pipeline boundary."}
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: str):
+    old = (JOBS / job_id).resolve()
+    if old.parent != JOBS.resolve() or not (old / "request.json").is_file():
+        raise HTTPException(404, "Saved processing inputs unavailable; upload again")
+    st = job(job_id)
+    if st["state"] not in ("cancelled", "error"):
+        raise HTTPException(409, "Retry is available only for a failed or cancelled job")
+    kwargs = json.loads((old / "request.json").read_text())
+    new_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+    folder = JOBS / new_id
+    sources = {}
+    for key in ("image_path", "dem", "reference", "gcp"):
+        if not kwargs.get(key):
+            continue
+        source = Path(kwargs[key]).resolve()
+        if not source.is_file() or old / "inputs" not in source.parents:
+            raise HTTPException(409, "A saved upload is missing; upload again")
+        sources[key] = source
+    for key, source in sources.items():
+        destination = folder / "inputs" / key / source.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        kwargs[key] = str(destination)
+    kwargs["out_dir"] = str(folder)
+    (folder / "request.json").write_text(json.dumps(kwargs), encoding="utf-8")
+    info = json.loads((old / "job.json").read_text())
+    info.update(created=time.time(), retry_of=job_id)
+    (folder / "job.json").write_text(json.dumps(info), encoding="utf-8")
+    with _state_lock:
+        _status[new_id] = {"state": "queued", "log": [], "error": None}
+        _queue_order.append(new_id)
+    _save_status(new_id)
+    _jobs_q.put((new_id, kwargs))
+    return {"id": new_id, "position": _queue_position(new_id)}
+
+
+@app.post("/api/scenes/{job_id}/calibration/undo")
+def undo_scene_calibration(job_id: str):
+    folder = _completed_scene(job_id)
+    try:
+        with _files_lock:
+            result = undo_calibration(folder)
+            for path in (folder / "exports").glob("*"):
+                if path.is_file():
+                    path.unlink()
+            return result
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @app.get("/api/scenes")
 def scenes():
     out = []
@@ -265,7 +373,17 @@ def scenes():
         meta = d / "viewer" / "meta.json"
         if not meta.exists():
             continue
-        m = json.loads(meta.read_text())
+        try:
+            m = json.loads(meta.read_text())
+            if not (d / "viewer/height.bin").is_file() or not (d / "viewer/texture.jpg").is_file():
+                continue
+            st = _status.get(d.name)
+            if st is None and (d / "status.json").is_file():
+                st = json.loads((d / "status.json").read_text())
+            if st and st.get("state") != "done":
+                continue
+        except (OSError, ValueError):
+            continue
         info = json.loads((d / "job.json").read_text()) if (d / "job.json").exists() else {}
         out.append({"id": d.name, "name": info.get("name", m.get("input", d.name)),
                     "units": m.get("units"), "method": m.get("calibration", {}).get("method"),
@@ -278,6 +396,8 @@ def delete_scene(job_id: str):
     d = (JOBS / job_id).resolve()
     if d.parent != JOBS.resolve() or not d.exists():
         raise HTTPException(404)
+    if _status.get(job_id, {}).get("state") in ("queued", "running"):
+        raise HTTPException(409, "Cancel processing and wait for it to stop before deleting")
     shutil.rmtree(d)
     with _state_lock:
         _status.pop(job_id, None)
@@ -500,7 +620,16 @@ def change_detection(job_id: str, other_id: str, drop_m: float = 3.0):
 
 @app.get("/api/health")
 def health():
-    return JSONResponse({"ok": True})
+    configured = os.environ.get("DEPTHWIZARD_CHECKPOINT")
+    checkpoint = Path(configured) if configured else TRAINING_ROOT / ("da2-gamus-full" if TRAINING_ROOT == ROOT / "models" else "checkpoints/da2-gamus-full")
+    if not configured and not _checkpoint_ready(checkpoint):
+        checkpoint = ROOT / "models/da2-gamus-full"
+    weight = checkpoint / "model.safetensors"
+    if not weight.is_file():
+        weight = checkpoint / "pytorch_model.bin"
+    return JSONResponse({"ok": True,"build":build_identity(str(ROOT)),
+        "model":{"ready":_checkpoint_ready(checkpoint),"label":checkpoint.name,
+                 "sha256":file_hash(weight)},"authentication_enabled":bool(os.environ.get("DEPTHWIZARD_AUTH_USER"))})
 
 
 @app.get("/api/local-model")
@@ -909,7 +1038,7 @@ def gcp_fit(job_id: str, body: GcpBody):
     from depthwizard.io import read_raster
     folder = _completed_scene(job_id)
     backup = folder / "gcp_backup"
-    with _files_lock:
+    with _files_lock, (calibration_edit(folder) if body.apply or body.reset else nullcontext()):
         if body.reset:
             if not backup.is_dir():
                 return {"reset": False, "note": "no GCP calibration to undo"}
@@ -1039,7 +1168,7 @@ def rescale(job_id: str, body: RescaleBody):
     folder = _completed_scene(job_id)
     if not (folder / "ndsm.tif").exists() or not (folder / "dtm.tif").exists():
         raise HTTPException(400, "height anchors need a metric scene (dsm + dtm + ndsm)")
-    with _files_lock:
+    with _files_lock, calibration_edit(folder):
         vm_prior = json.loads((folder / "viewer" / "meta.json").read_text(encoding="utf-8"))
         normalized_anchors = []
         seen_ids = set()

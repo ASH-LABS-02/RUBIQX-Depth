@@ -1,0 +1,35 @@
+services:
+  depthwizard:
+    build:
+      context: .
+    environment:
+      DEPTHWIZARD_PRODUCTION: "1"
+      DEPTHWIZARD_AUTH_USER: ${DEPTHWIZARD_AUTH_USER:?Set a production user}
+      DEPTHWIZARD_AUTH_PASSWORD: ${DEPTHWIZARD_AUTH_PASSWORD:?Set a strong production password}
+      DEPTHWIZARD_BUILD_SHA: ${DEPTHWIZARD_BUILD_SHA:?Set the deployed commit SHA}
+      DEPTHWIZARD_CHECKPOINT: /app/models/da2-gamus-full
+      DEPTHWIZARD_MAX_MP: "32"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models:ro
+    expose: ["8000"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+  caddy:
+    image: caddy:2-alpine
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      DEPTHWIZARD_DOMAIN: ${DEPTHWIZARD_DOMAIN:?Set a domain pointing to this host}
+    volumes:
+      - ./packaging/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+volumes:
+  caddy_data:
+  caddy_config:

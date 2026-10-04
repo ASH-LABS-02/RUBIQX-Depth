@@ -26,7 +26,8 @@ def _client(monkeypatch, tmp_path, scenes=("dc-glover-park",)):
 def _digest(folder):
     return {str(p.relative_to(folder)): hashlib.md5(p.read_bytes()).hexdigest()
             for p in sorted(folder.rglob("*")) if p.is_file()
-            and "gcp_backup" not in p.parts and "exports" not in p.parts and p.name != "normal.png"}
+            and "gcp_backup" not in p.parts and "calibration_history" not in p.parts
+            and "exports" not in p.parts and p.name != "normal.png"}
 
 
 def test_gcp_fit_apply_reset(monkeypatch, tmp_path):

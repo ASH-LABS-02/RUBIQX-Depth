@@ -97,12 +97,17 @@ def evacuation_route(
     max_slope_deg: float = 30.0,
     min_destination_area_m2: float = 25.0,
     max_expansions: int = 300_000,
+    road_mask: np.ndarray | None = None,
+    access_mask: np.ndarray | None = None,
+    uncertainty_m: np.ndarray | None = None,
+    max_uncertainty_m: float = 8.0,
 ) -> dict[str, Any]:
     """Find a least-cost dry footpath to connected terrain above the water.
 
     A* uses distance and an uphill/slope penalty.  Building footprints, steep
-    cells and flooded cells are impassable.  No road/bridge, property-access,
-    traffic, debris, culvert or real-time hazard data is considered.
+    cells and flooded cells are impassable. Optional aligned road, access and
+    uncertainty grids constrain the screen; absent inputs remain unknown.
+    Bridge, traffic, debris, culvert and real-time hazard data are not modelled.
     """
     z = _grid(dtm_m, "dtm_m")
     gsd = _gsd(gsd_m)
@@ -132,6 +137,23 @@ def evacuation_route(
     gy, gx = np.gradient(smooth, gsd)
     slope = np.degrees(np.arctan(np.hypot(gx, gy)))
     passable = np.isfinite(z) & ~flooded & (slope <= float(max_slope_deg))
+    road = None
+    for values, name in ((road_mask,"road_mask"),(access_mask,"access_mask"),(uncertainty_m,"uncertainty_m")):
+        if values is not None and np.shape(values) != z.shape:
+            raise ValueError(f"{name} shape must match dtm_m")
+    blocked_access = np.zeros(z.shape,dtype=bool)
+    blocked_uncertainty = np.zeros(z.shape,dtype=bool)
+    if access_mask is not None:
+        blocked_access = ~np.asarray(access_mask,dtype=bool)
+        passable &= ~blocked_access
+    if uncertainty_m is not None:
+        if not math.isfinite(max_uncertainty_m) or max_uncertainty_m <= 0:
+            raise ValueError("max_uncertainty_m must be positive finite metres")
+        uncertainty = np.asarray(uncertainty_m)
+        blocked_uncertainty = ~np.isfinite(uncertainty) | (uncertainty > max_uncertainty_m)
+        passable &= ~blocked_uncertainty
+    if road_mask is not None:
+        road = np.asarray(road_mask,dtype=bool)
     if building_labels is not None:
         labels = np.asarray(building_labels)
         if labels.shape != z.shape:
@@ -139,7 +161,9 @@ def evacuation_route(
         passable &= labels == 0
     if not passable[start]:
         return {"status": "blocked_start", "route_px": [], "route_uv": [],
-                "message": "Selected start cell is occupied or exceeds the slope limit.",
+                "message": "Selected start cell is occupied, inaccessible, uncertain or exceeds the slope limit.",
+                "blocked_access_cells": int(blocked_access.sum()),
+                "blocked_uncertainty_cells": int(blocked_uncertainty.sum()),
                 "water_level_m": level, "flood_basis": flood_basis,
                 "screening_only": True}
 
@@ -201,6 +225,8 @@ def evacuation_route(
             rise = max(0.0, float(z[rr, cc] - z[row, col]))
             # Prefer gentler climbs while still reaching the nearest safe patch.
             step_cost = step * (1.0 + 0.7 * (slope[rr, cc] / max_slope_deg) ** 2) + 0.25 * rise
+            if road is not None and not road[rr,cc]:
+                step_cost += .5*step  # prefer roads without assuming mapped roads guarantee access
             candidate = old_cost + step_cost
             if candidate < dist[nxt]:
                 dist[nxt] = candidate
@@ -210,6 +236,8 @@ def evacuation_route(
         return {"status": "no_dry_route", "route_px": [], "route_uv": [],
                 "message": "No connected dry path reached a qualifying high-ground patch.",
                 "expanded_cells": expanded, "water_level_m": level,
+                "blocked_access_cells": int(blocked_access.sum()),
+                "blocked_uncertainty_cells": int(blocked_uncertainty.sum()),
                 "flood_basis": flood_basis, "screening_only": True}
 
     indices = []
@@ -231,6 +259,9 @@ def evacuation_route(
             "assumptions": {"max_slope_deg": float(max_slope_deg),
                             "min_destination_area_m2": float(min_destination_area_m2),
                             "buildings_impassable": building_labels is not None},
+            "road_preference": road is not None, "access_mask_used": access_mask is not None,
+            "uncertainty_screen_used": uncertainty_m is not None,
+            "off_road_fraction": float(np.mean([not road[r,c] for r,c in path])) if road is not None else None,
             "warning": "Exploratory terrain route only; verify roads, bridges, access and live conditions.",
             "screening_only": True}
 

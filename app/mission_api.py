@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import math
+import hashlib
+import uuid
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable, Literal
@@ -15,7 +17,7 @@ from typing import Callable, Literal
 import numpy as np
 import rasterio
 from rasterio.warp import transform as transform_coordinates
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from PIL import Image
 from pydantic import BaseModel
 
@@ -37,7 +39,7 @@ MAX_PROJECTION_SCALE_ERROR = 0.02
 class MissionRequest(BaseModel):
     """All coordinates are normalised optical-image ``u, v`` in [0, 1]."""
 
-    action: Literal["route", "shelters", "population", "runout", "relay"]
+    action: Literal["route", "shelters", "population", "runout", "relay", "rainfall"]
     u: float | None = None
     v: float | None = None
     water_level_m: float | None = None
@@ -54,6 +56,11 @@ class MissionRequest(BaseModel):
     observer_agl_m: float = 20.0
     target_agl_m: float = 1.5
     max_range_m: float = 3000.0
+    max_uncertainty_m: float = 8.0
+    rainfall_mm: float = 50
+    duration_min: float = 60
+    infiltration_mm_hr: float = 5
+    drainage_mm_hr: float = 0
 
 
 def _finite_bounded(value: float, name: str, lo: float, hi: float) -> float:
@@ -79,7 +86,7 @@ def _read_raster(path: Path) -> tuple[np.ndarray, dict]:
             # Check the raster header before allocating a potentially huge array.
             if src.height * src.width > MAX_MISSION_CELLS:
                 raise HTTPException(413, "mission raster exceeds 16 million cells; crop the scene")
-            arr = src.read(1, masked=True).filled(np.nan).astype(np.float32)
+            arr = src.read(1, masked=True).astype(np.float32).filled(np.nan)
             return arr, {"crs": src.crs, "transform": src.transform,
                          "shape": (src.height, src.width)}
     except rasterio.errors.RasterioIOError as exc:
@@ -285,6 +292,38 @@ def create_mission_router(
     """
     router = APIRouter()
 
+    @router.post("/api/scenes/{job_id}/route-input/{kind}")
+    async def route_input(job_id: str, kind: str, mask: UploadFile = File(...)):
+        if kind not in ("roads", "access") or Path(mask.filename or "").suffix.lower() not in (".tif", ".tiff"):
+            raise HTTPException(400, "Use a roads or access GeoTIFF (.tif/.tiff)")
+        content = await mask.read(64 * 1024 * 1024 + 1)
+        if len(content) > 64 * 1024 * 1024:
+            raise HTTPException(413, "Route constraint exceeds 64 MB")
+        folder = Path(resolve_scene(job_id))
+        with (scene_lock if scene_lock is not None else nullcontext()):
+            try:
+                with rasterio.open(folder / "dtm.tif") as ground, rasterio.io.MemoryFile(content) as mem, mem.open() as src:
+                    if src.count != 1 or src.shape != ground.shape or src.crs != ground.crs or src.transform != ground.transform:
+                        raise HTTPException(422, "Route constraint must be one band on the exact DTM CRS, transform and dimensions")
+                    if src.width * src.height > MAX_MISSION_CELLS:
+                        raise HTTPException(413, "Route constraint exceeds 16 million cells")
+                    values = src.read(1, masked=True).astype(np.float32).filled(np.nan)
+                    valid = np.isfinite(values)
+                    if not np.isin(values[valid], [0, 1]).all():
+                        raise HTTPException(422, "Route constraint values must be 0 or 1; nodata means unknown")
+                    profile = ground.profile.copy()
+                    profile.update(count=1, dtype="float32", nodata=float("nan"), compress="deflate")
+                temporary = folder / ("route-" + uuid.uuid4().hex + ".tmp")
+                with rasterio.open(temporary, "w", **profile) as dst:
+                    dst.write(values, 1)
+                    dst.update_tags(source_filename=Path(mask.filename).name, source_sha256=hashlib.sha256(content).hexdigest(),
+                                    purpose="route screening; user supplied constraint; not verified access")
+                temporary.replace(folder / f"route_{kind}.tif")
+            except rasterio.errors.RasterioIOError as exc:
+                raise HTTPException(422, "Cannot read route GeoTIFF") from exc
+        return {"kind": kind, "known_cells": int(valid.sum()), "unknown_cells": int((~valid).sum()),
+                "screening_only": True, "sha256": hashlib.sha256(content).hexdigest()}
+
     @router.post("/api/scenes/{job_id}/mission")
     def mission(job_id: str, body: MissionRequest):
         folder = Path(resolve_scene(job_id))
@@ -315,7 +354,9 @@ def create_mission_router(
             max_slope = _finite_bounded(body.max_slope_deg, "max_slope_deg", 1.0, 60.0)
             result = evacuation_route(dtm, origin, level, gsd, flood_mask=flood,
                                       building_labels=labels, clearance_m=clearance,
-                                      max_slope_deg=max_slope)
+                                      max_slope_deg=max_slope,
+                                      **_route_masks(folder,scene,body.max_uncertainty_m))
+            provenance["routing_data"] = "optional route_roads.tif, route_access.tif, uncertainty.tif; absent inputs remain unknown"
         elif body.action == "shelters":
             confidence = _finite_bounded(body.min_confidence, "min_confidence", 0.0, 1.0)
             freeboard = _finite_bounded(body.min_roof_freeboard_m, "min_roof_freeboard_m", 0.0, 100.0)
@@ -343,6 +384,21 @@ def create_mission_router(
             result = landslide_runout(dtm, susc, gsd, building_labels=labels,
                                       threshold=threshold)
             provenance["susceptibility"] = susc_source
+        elif body.action == "rainfall":
+            from depthwizard.rainfall import simulate_rainfall
+            factor = max(1,int(math.ceil(max(dtm.shape)/256)))
+            terrain = dtm[::factor,::factor]
+            result = simulate_rainfall(terrain,gsd*factor,
+                rainfall_mm=_finite_bounded(body.rainfall_mm,"rainfall_mm",0,1000),
+                duration_min=_finite_bounded(body.duration_min,"duration_min",1,1440),
+                infiltration_mm_hr=_finite_bounded(body.infiltration_mm_hr,"infiltration_mm_hr",0,100),
+                drainage_mm_hr=_finite_bounded(body.drainage_mm_hr,"drainage_mm_hr",0,100))
+            result["depth_m"] = np.round(result.pop("depth"),4).tolist()
+            result["ground_m"] = np.where(np.isfinite(terrain),np.round(terrain,3),None).tolist()
+            result["sampling_factor"] = factor
+            result["simulation_grid"] = [terrain.shape[1],terrain.shape[0]]
+            result["simulation_gsd_m"] = gsd*factor
+            provenance["terrain_sampling"] = f"every {factor} source cells; sub-grid drainage omitted"
         else:  # relay
             origin = _point_rc(body.u, body.v, scene["shape"], "relay")
             observer_h = _finite_bounded(body.observer_agl_m, "observer_agl_m", 0.0, 500.0)
@@ -356,3 +412,19 @@ def create_mission_router(
                 "gsd_m": round(gsd, 6), **result, "provenance": provenance}
 
     return router
+
+
+def _route_masks(folder, scene, max_uncertainty):
+    result = {}
+    for name, key in (("route_roads.tif","road_mask"),("route_access.tif","access_mask"),
+                       ("uncertainty.tif","uncertainty_m")):
+        path = folder / name
+        if not path.is_file():
+            continue
+        values, grid = _read_raster(path)
+        with rasterio.open(folder / "dtm.tif") as src:
+            if grid["shape"] != src.shape or grid["crs"] != src.crs or grid["transform"] != src.transform:
+                raise HTTPException(409,f"{name} must use the exact DTM grid")
+        result[key] = values if key == "uncertainty_m" else np.isfinite(values)&(values>0)
+    result["max_uncertainty_m"] = _finite_bounded(max_uncertainty,"max_uncertainty_m",.1,100)
+    return result
