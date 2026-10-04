@@ -4,7 +4,7 @@
 3D terrain workspace.** Built by Team RUBIQX for SIH 2026, PS 26175, ISRO / SAC.
 
 [Quick start](#quick-start) · [Samples](#try-a-sample) · [Features](#features) ·
-[Benchmarks](#accuracy-and-evidence) · [FAQ](#faq) · [Limitations](#limitations) ·
+[Benchmarks](#accuracy-and-evidence) · [What we made better](#what-we-made-better) · [Limitations](#limitations) ·
 [Documentation](#documentation)
 
 ![DepthWizard terrain workspace](docs/images/city-gallery-current.jpg)
@@ -190,30 +190,51 @@ Flood exposure is a screening estimate.
 
 </details>
 
-## FAQ
+## What we made better
 
-**Does it work offline?** Yes, with dependencies, selected model weights and required
-DEM/geoid assets already local. The Three.js viewer is vendored. Live OSM, DEM
-fetching and external basemaps still require a connection. To cache pretrained
-models, run `python scripts/download_models.py small base`; this does not download
-v6a weights or all geospatial assets.
+### From relative depth to useful height estimates
 
-**Can I use a plain PNG or JPG?** Yes. Without sufficient scale evidence, output is
-relative and unitless. Entering horizontal pixel size does not establish absolute
-vertical accuracy.
+The pretrained backbone supplies a starting point. DepthWizard adapts it to overhead
+imagery with GAMUS aerial and Urban 3D satellite training, then combines height
+predictions with explicit terrain, GCP or building-anchor evidence. Calibration
+provenance stays attached to the result, so a metric claim has a traceable basis.
 
-**Which DEMs can I use?** Supplied georeferenced terrain or surface rasters, including
-CartoDEM, SRTM and Copernicus, subject to alignment and coverage. Public Copernicus
-GLO-30 downloads use AWS tiles; optional OpenTopography routes have their own key
-requirements. Copernicus/SRTM include surface objects and are not guaranteed bare earth.
+**Measured progress:** the historical first model scored **3.46 m RMSE** on the
+30 GAMUS metric AGL test tiles; current v6a scores **2.61 m**. These are documented
+model snapshots on the same test split, not proof of performance in every region.
+See [benchmark protocols and versions](docs/BENCHMARKS.md).
 
-**Do I need to train a model?** No training is needed to use a compatible existing
-checkpoint. Reproducing or adapting the fine-tune is a separate workflow in
-[TRAINING.md](TRAINING.md); training does not guarantee improvement on a new domain.
+### From a height mesh to a city you can explore
 
-**Does the viewer change the measured heights?** Exaggeration and lighting are
-presentation settings. Decimated meshes and illustrative objects must not replace
-the full-resolution DSM in measurement workflows.
+Roof-fit buildings, procedural facades and clustered dark green trees make urban
+structure easier to read. Orbit, Fly, Walk and a cinematic Tour let users inspect
+it from different perspectives. Coordinate grids, live map coordinates, probes
+and profiles connect the visual scene back to its source data.
+
+Adaptive rendering and bounded Surface/Optical tile streaming help larger scenes
+remain usable. The full-resolution DSM remains the measurement output; illustrative
+objects and display exaggeration do not change its accuracy.
+
+### From a static result to a response workspace
+
+Flood scenarios highlight exposed buildings and estimated population. Candidate
+routes, elevated refuges, landslide runout and relay line of sight turn terrain
+into questions a response team can investigate. A separate rainfall surface-flow
+prototype adds infiltration and drainage losses with an exported mass-balance record.
+
+These tools make assumptions visible and support planning review; they are not
+validated disaster forecasts or certified evacuation plans.
+
+### From impressive visuals to inspectable evidence
+
+The model swipe exposes the difference between pretrained and fine-tuned surfaces.
+Reference validation shows errors, height-band diagnostics and the terrain baseline.
+Stage audits, calibration metadata and open GeoTIFF/3D/report exports let users
+inspect how a result was produced. Failed accuracy and ONNX experiments remain
+unpromoted; uncertainty limitations stay explicit.
+
+**The result: estimate → explore → screen → validate → export, in one workspace.**
+
 
 ## Limitations
 
