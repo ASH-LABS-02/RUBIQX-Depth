@@ -5,3 +5,8 @@ models/cache/
 **/__pycache__/
 data/jobs/*/model_comparison/
 *.tgz
+
+# Runtime credentials and checkpoints are supplied outside the image
+.env
+.env.*
+models/

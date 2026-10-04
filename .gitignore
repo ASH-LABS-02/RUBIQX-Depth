@@ -34,3 +34,7 @@ data/jobs/*/gcp_backup/
 data/jobs/*/status.json
 .kiro/
 scratch/
+
+# Deployment credentials
+.env
+.env.*

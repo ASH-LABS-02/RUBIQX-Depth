@@ -49,12 +49,13 @@ For other startup scripts, CLI options and deployment details, see
 | v6a height inference, calibration, GeoTIFFs, 3D viewer and validation | Generalisation beyond evaluated domains; tall roofs and trees |
 | Flood scenarios, surface-flow prototype, rescue screening and reports | Event-validated hydrology and field-verified route safety |
 | Adaptive rendering, streamed Surface/Optical tiles, cancellable jobs | Broad uncertainty validation and independent Indian benchmarks |
-| Docker and production configuration | Semantic model licensing and verified live AWS deployment |
+| Docker and production configuration | Semantic model licensing and broader deployment acceptance |
 
 The last recorded implementation checks on **4 October 2026** passed **90 Python
-and 15 Node tests**. This is a dated local result. The historical
-[AWS demo](http://16.170.173.94/) timed out during the latest checks; availability
-and deployed revision are unverified. See [release readiness](docs/release-readiness.md).
+and 15 Node tests**. This is a dated local result. The new [AWS demo](https://13-62-80-223.sslip.io) is online with HTTPS and login
+protection. External health, scene assets and a CPU inference check passed on
+4 October; full upload/browser acceptance remains pending. See
+[AWS deployment](docs/AWS_DEPLOYMENT.md) for the deployed revision and limits.
 
 ## Approach
 
@@ -269,6 +270,7 @@ See [failure cases](docs/images/failure_cases.jpg),
 - [Vertical datum handling](docs/vertical-datum.md)
 - [Roadmap status](docs/ROADMAP_STATUS.md) and [4 October execution report](docs/roadmap-execution-20261004.md)
 - [Indian benchmark acquisition plan](docs/india-benchmark-plan.md)
+- [AWS deployment](docs/AWS_DEPLOYMENT.md)
 - [Release and live deployment checks](docs/release-readiness.md)
 - [Contributing and evaluation integrity](CONTRIBUTING.md)
 

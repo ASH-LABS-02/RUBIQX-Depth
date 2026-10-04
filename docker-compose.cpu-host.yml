@@ -1,0 +1,8 @@
+# CPU deployment override for an 8 GiB EC2 instance.
+# Combine with docker-compose.production.yml; Caddy owns the public ports.
+services:
+  depthwizard:
+    environment:
+      DEPTHWIZARD_MAX_MP: "8"
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
