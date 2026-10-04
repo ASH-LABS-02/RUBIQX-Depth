@@ -52,8 +52,7 @@ For other startup scripts, CLI options and deployment details, see
 | Docker and production configuration | Semantic model licensing and broader deployment acceptance |
 
 The last recorded implementation checks on **4 October 2026** passed **90 Python
-and 15 Node tests**. This is a dated local result. The new [AWS demo](https://13-62-80-223.sslip.io) is online with HTTPS and login
-protection. External health, scene assets and a CPU inference check passed on
+and 15 Node tests**. This is a dated local result. The new [AWS demo](https://13-62-80-223.sslip.io) is online with HTTPS and public access. External health, scene assets and a CPU inference check passed on
 4 October; full upload/browser acceptance remains pending. See
 [AWS deployment](docs/AWS_DEPLOYMENT.md) for the deployed revision and limits.
 

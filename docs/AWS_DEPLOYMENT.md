@@ -83,3 +83,13 @@ production domain must be supplied before the live service can be updated.
 For this host, append `-f docker-compose.cpu-host.yml` to the production Compose
 commands above. The temporary sslip.io address can later be replaced with a custom
 DNS name by updating DEPTHWIZARD_DOMAIN and restarting Caddy.
+
+### Public demo access update
+
+At the owner's request, the live demo now opens without username/password. HTTPS
+remains enabled. The host CPU override clears authentication and disables the
+production authentication guard explicitly; protected production defaults in the
+repository remain available for private deployments. Live public uploads remain
+capped at 8 MP. Login credentials were removed from the host environment and the
+local temporary credential file. Unauthenticated root/scenes/health requests passed
+and health reports authentication_enabled=false.
