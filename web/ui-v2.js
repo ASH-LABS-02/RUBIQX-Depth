@@ -24,9 +24,9 @@ export function createMissionUi(ctx) {
   const demKind = advanced.querySelector('[name=dem_kind]').closest('label');
   const match = advanced.querySelector('[name=match_dem_30m]').closest('label');
   basic.append(demKind,match);
-  basic.open=false;
-  basic.querySelector('summary').textContent='Scale evidence · auto-download Copernicus';
-  basic.querySelector('[name=dem]').closest('label').firstChild.textContent='No internet? Drop a DEM file here instead';
+  basic.open=true;
+  basic.querySelector('summary').textContent='2 · Calibration DEM / DSM';
+  basic.querySelector('[name=dem]').closest('label').firstChild.textContent='Calibration DEM / DSM GeoTIFF (optional; otherwise auto-download)';
   const intro=document.createElement('div'); intro.id='import-intro';
   intro.innerHTML='<div id="import-paths" aria-label="Input paths"><button type="button" data-path="geo" aria-pressed="false"><strong>GeoTIFF</strong><span>Metric heights with calibration</span></button><button type="button" data-path="relative" aria-pressed="false"><strong>PNG / JPG</strong><span>Relative heights</span></button></div><p class="note">The file chooses the path automatically. GeoTIFF coordinates locate the image; a DEM or surveyed anchors establish elevation scale.</p>';
   const preview=document.createElement('div');
@@ -38,7 +38,14 @@ export function createMissionUi(ctx) {
   logDetails.innerHTML='<summary>Details · processing log</summary>';logDetails.append($('#job-log'));
   const stageProgress=document.createElement('div');stageProgress.id='job-progress';stageProgress.className='hidden';stageProgress.innerHTML='<i></i>';
   $('#app-header').append(stageProgress);
-  form.dataset.flow='single';form.replaceChildren(intro,drop,preview,run,basic,advanced,progress);
+  const imageHeading=document.createElement('h3'); imageHeading.textContent='1 · Optical image';
+  const validation=document.createElement('section'); validation.id='import-reference';
+  validation.innerHTML='<h3>3 · Reference DSM / LiDAR</h3><p class="note">Optional · used only for scoring accuracy, never for height calibration.</p>';
+  validation.append(advanced.querySelector('[name=reference]').closest('label'));
+  const modelSection=document.createElement('section'); modelSection.id='import-model';
+  modelSection.innerHTML='<h3>4 · Depth model</h3>';
+  modelSection.append(advanced.querySelector('[name=model]').closest('label'),$('#local-model-status'));
+  form.dataset.flow='single';form.replaceChildren(intro,imageHeading,drop,preview,basic,validation,modelSection,advanced,run,progress);
   form.append(logDetails);
   run.textContent='Generate 3D scene';
   form.fetch_dem.checked=true;form.dem_source.value='COP30';form.dem_kind.value='auto';form.match_dem_30m.checked=true;form.tta.value='4';
