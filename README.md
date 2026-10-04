@@ -7,7 +7,7 @@
 [Benchmarks](#accuracy-and-evidence) · [FAQ](#faq) · [Limitations](#limitations) ·
 [Documentation](#documentation)
 
-![DepthWizard terrain workspace](docs/images/city-current.png)
+![DepthWizard terrain workspace](docs/images/city-gallery-current.jpg)
 
 ## Quick start
 
@@ -174,9 +174,9 @@ Find model versions, raw results, overlap/date caveats and failed experiments in
 
 | City reconstruction | Coarse terrain |
 |---|---|
-| ![City view](docs/images/city-current.png) | ![Bengaluru terrain view](docs/images/bengaluru-current.png) |
+| ![City view](docs/images/city-gallery-current.jpg) | ![Bengaluru terrain view](docs/images/bengaluru-gallery-current.jpg) |
 | Flood screening | Reference validation |
-| ![Flood scenario](docs/images/flood-current.png) | ![Validation panel](docs/images/validate-current.png) |
+| ![Flood scenario](docs/images/flood-gallery-current.jpg) | ![Validation panel](docs/images/validate-gallery-current.jpg) |
 
 Gallery refreshed from the local application on **4 October 2026**, including the
 current City trees, flood tools and validation panel. Validation values shown are
