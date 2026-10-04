@@ -7,7 +7,7 @@
 [Benchmarks](#accuracy-and-evidence) · [FAQ](#faq) · [Limitations](#limitations) ·
 [Documentation](#documentation)
 
-![DepthWizard terrain workspace](docs/images/roadmap-current.png)
+![DepthWizard terrain workspace](docs/images/city-current.png)
 
 ## Quick start
 
@@ -174,18 +174,17 @@ Find model versions, raw results, overlap/date caveats and failed experiments in
 
 | City reconstruction | Coarse terrain |
 |---|---|
-| ![City view](docs/images/city-current.jpg) | ![Bengaluru terrain view](docs/images/bengaluru-current.jpg) |
+| ![City view](docs/images/city-current.png) | ![Bengaluru terrain view](docs/images/bengaluru-current.png) |
 | Flood screening | Reference validation |
-| ![Flood scenario](docs/images/flood.jpg) | ![Validation panel](docs/images/validate.jpg) |
+| ![Flood scenario](docs/images/flood-current.png) | ![Validation panel](docs/images/validate-current.png) |
 
-Screenshots are interface snapshots, not new benchmark results.
+Gallery refreshed from the local application on **4 October 2026**, including the
+current City trees, flood tools and validation panel. Validation values shown are
+for the selected Glover Park job, not the aggregate benchmark above.
 
 <details>
-<summary>More interface and pipeline images</summary>
+<summary>Pipeline overview</summary>
 
-![Model comparison](docs/images/swipe.jpg)
-![Hazard screening](docs/images/hazard.jpg)
-![Scene gallery](docs/images/gallery.jpg)
 ![Pipeline overview](docs/images/approach.jpg)
 
 </details>
