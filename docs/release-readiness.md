@@ -1,4 +1,17 @@
-# Release readiness — 3 October 2026
+# Release readiness — 4 October 2026
+
+The [roadmap execution report](roadmap-execution-20261004.md) adds regression,
+browser and numerical checks. The health endpoint now exposes commit/UI/model
+hashes, and `docker-compose.production.yml` requires authentication behind
+Caddy HTTPS. The live AWS service has **not** been updated: this environment has
+no AWS credentials/deployment key or Docker runtime. Older observations below
+are dated historical records, not current release certification.
+
+Latest local verification: **90 pytest passes**, **15 Node passes** and all
+viewer syntax checks passed. Desktop runoff/viewpoint/streaming and 390 × 844
+import checks are recorded in the execution report. The local HTTP audit passed;
+the 4 October AWS audit timed out on all four endpoints. Its current deployed
+revision remains unknown.
 
 This checklist records source inspection and existing evidence. It is not a
 release, deployment approval or claim of new FPS/accuracy improvement.

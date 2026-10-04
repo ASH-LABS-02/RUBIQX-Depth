@@ -167,7 +167,15 @@ def main():
         payloads[name] = body if name == "index" else json_response(result, body)
     health = report["checks"]["health"]
     health["ok"] = isinstance(payloads["health"], dict) and payloads["health"].get("ok") is True
-    health["missing_metadata"] = ["server_build_version", "checkpoint_sha256"]
+    identity = payloads["health"] if isinstance(payloads["health"], dict) else {}
+    build = identity.get("build", {})
+    frozen_model = identity.get("model", {})
+    health["server_build_version"] = token(build.get("commit"))
+    health["ui_sha256"] = token(build.get("ui_sha256"))
+    health["checkpoint_sha256"] = token(frozen_model.get("sha256"))
+    health["authentication_enabled"] = identity.get("authentication_enabled")
+    health["source_dirty"] = build.get("source_dirty")
+    health["missing_metadata"] = [key for key in ("server_build_version", "checkpoint_sha256", "ui_sha256") if not health[key]]
     if not isinstance(payloads["health"], dict) or not isinstance(payloads["health"].get("ok"), bool):
         health["missing_metadata"].append("ok")
     scenes, data = report["checks"]["scenes"], payloads["scenes"]
@@ -181,7 +189,9 @@ def main():
     model["epochs_done"] = data.get("epochs_done") if isinstance(data, dict) and isinstance(data.get("epochs_done"), int) else None
     model["checkpoint_path_reported"] = bool(data.get("path")) if isinstance(data, dict) else False
     model["error_reported"] = bool(data.get("error")) if isinstance(data, dict) else None
-    model["missing_metadata"] = [key for key in ("ready", "stage", "epochs_done") if model[key] is None] + ["model_version", "checkpoint_sha256"]
+    model["model_version"] = token(frozen_model.get("label"))
+    model["checkpoint_sha256"] = health["checkpoint_sha256"]
+    model["missing_metadata"] = [key for key in ("ready", "stage", "epochs_done", "model_version", "checkpoint_sha256") if model[key] is None]
     index = report["checks"]["index"]
     try:
         observed = parse_assets(payloads["index"]) if index["http_status"] == 200 and not index["error"] else []
@@ -210,7 +220,9 @@ def main():
         index["error"] = type(error).__name__
     if args.checkpoint is not None:
         report["checkpoint_receipt"] = checkpoint_receipt(args.checkpoint)
-    report["audit_ok"] = health["ok"] and scenes["schema_valid"] and model["ready"] is True and index.get("versions_match_local", False) and report["checks"].get("app_script", {}).get("matches_local", False)
+    app_check = report["checks"].get("app_script", {})
+    health["ui_matches_served"] = bool(health["ui_sha256"] and health["ui_sha256"] == app_check.get("sha256"))
+    report["audit_ok"] = health["ok"] and not health["missing_metadata"] and health["ui_matches_served"] and scenes["schema_valid"] and model["ready"] is True and index.get("versions_match_local", False) and app_check.get("matches_local", False)
     report["scope"] = "HTTP and served-source observations; not deployment approval or model-accuracy validation"
     print(json.dumps(report, sort_keys=True, separators=(",", ":"), allow_nan=False))
     return 0 if report["audit_ok"] else 1

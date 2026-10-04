@@ -1,6 +1,8 @@
 # DepthWizard implementation and evidence status
 
-Status as of **3 October 2026**. ✅ implemented in the current source ·
+Status as of **4 October 2026**. The approved follow-up order, delivered changes
+and measured experiments are recorded in [the 20-item execution report](roadmap-execution-20261004.md).
+The catalogue below retains earlier feature scope. ✅ implemented in the current source ·
 🟡 partial, experimental or awaiting validation · ⬜ no implementation documented.
 These labels describe implementation scope; they do not certify accuracy,
 performance, hardware compatibility or release readiness. Historical checks

@@ -3,7 +3,7 @@
 **One ordinary satellite image → an estimated 3D surface and a workspace for disaster screening.**
 Smart India Hackathon 2026 · Problem Statement 26175 (ISRO / SAC) · Team RUBIQX
 
-![DepthWizard: current city UI with fitted roofs, branching trees and a coordinate grid](docs/images/city-current.jpg)
+![DepthWizard: current city UI with fitted roofs, branching trees and a coordinate grid](docs/images/roadmap-current.png)
 
 | Absolute height, 30 held-out GAMUS tiles | Related-domain DC LiDAR diagnostic (2 scenes) | Runs offline |
 |---|---|---|
@@ -15,9 +15,24 @@ GAMUS DC training tiles. The older six-scene **5.04 m RMSE** aggregate includes
 reference-derived simulated DEM inputs and same-survey forest DEMs; it is a
 mixed-evidence pipeline check, not an independent accuracy result.
 
+## Roadmap implementation · 4 October 2026
+
+The [20-item execution report](docs/roadmap-execution-20261004.md) records the
+changes, experiments and remaining evidence. New capabilities include stage-level
+height audits, exact CRS probes, bounded terrain streaming, measured adaptive
+quality, smooth tree LOD, saved viewpoints, undoable calibration, cancellable jobs,
+route constraints and a rainfall/runoff depth overlay. Production deployment now
+has an optional HTTPS/authenticated compose configuration and model/build hashes.
+
+A separate two-epoch GAMUS development candidate reduced overall RMSE from
+2.415 to 2.346 m and ≥30 m error from 4.848 to 4.539 m, but worsened the 2.5–15 m
+band. **It has not replaced v6a.** The metric-tail correction and ONNX alternatives
+remain disabled after failing their measured gates. Indian independent accuracy,
+semantic licensing, general uncertainty and live AWS deployment remain pending.
+
 ## Live demo
 
-**http://16.170.173.94/** – AWS EC2 demo endpoint (CPU only; use plain `http://`). On 3 October the root and health endpoint timed out from the development environment; availability and the deployed revision are currently unverified. The local application remains usable. See the [release checks](docs/release-readiness.md) before claiming a current live deployment.
+**http://16.170.173.94/** – AWS EC2 demo endpoint (CPU only; use plain `http://`). On 4 October the root, health, scenes and model endpoints timed out from the development environment; availability and the deployed revision are currently unverified. The local application remains usable. See the [release checks](docs/release-readiness.md) before claiming a current live deployment.
 
 ## Try it yourself – test and validation files
 

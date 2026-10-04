@@ -1,0 +1,69 @@
+{
+  "schema": "depthwizard-render-profile-v1",
+  "capturedAt": "2026-10-04T13:17:54.690Z",
+  "initialContext": {
+    "scene": "qa-streaming-large-20261004",
+    "view": "surface",
+    "layer": "topo",
+    "quality": "balanced",
+    "navigation": "orbit",
+    "grid": [
+      512,
+      512
+    ],
+    "viewport": [
+      1280,
+      720
+    ],
+    "adaptiveLevel": 0,
+    "terrainStreaming": null,
+    "pixelRatio": 1.25,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "renderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A78B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "hardwareNote": "Local in-app browser; synthetic 3072² streaming QA; hardware identified in JSON",
+    "treeCandidates": 0
+  },
+  "finalContext": {
+    "scene": "qa-streaming-large-20261004",
+    "view": "surface",
+    "layer": "topo",
+    "quality": "balanced",
+    "navigation": "orbit",
+    "grid": [
+      512,
+      512
+    ],
+    "viewport": [
+      1280,
+      720
+    ],
+    "adaptiveLevel": 1,
+    "terrainStreaming": null,
+    "pixelRatio": 1.25,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "renderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A78B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "hardwareNote": "Local in-app browser; synthetic 3072² streaming QA; hardware identified in JSON",
+    "treeCandidates": 0
+  },
+  "samples": 1267,
+  "measuredSeconds": 29.975800000071526,
+  "fps": 42.26742905934043,
+  "frameMedianMs": 23.299999952316284,
+  "frameP95Ms": 26.100000023841858,
+  "frameP99Ms": 43.60000002384186,
+  "cpuSubmissionMedianMs": 2.200000047683716,
+  "cpuSubmissionP95Ms": 2.8000000715255737,
+  "framesOver33Ms": 25,
+  "peakDrawCalls": 19,
+  "peakTriangles": 1045273,
+  "qualityModes": [
+    "balanced"
+  ],
+  "treeLodAtEnd": null,
+  "notes": [
+    "The viewer continuously rendered during capture; 2 s warmup excluded.",
+    "Frame intervals include browser scheduling and rendering workload. CPU submission excludes GPU completion.",
+    "Draw calls/triangles include shadow and postprocessing passes. Results apply only to the reported browser, viewport and renderer.",
+    "This is a performance report, not a height-accuracy evaluation."
+  ]
+}

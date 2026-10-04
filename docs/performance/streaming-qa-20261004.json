@@ -1,0 +1,81 @@
+{
+  "schema": "depthwizard-render-profile-v1",
+  "capturedAt": "2026-10-04T13:26:33.676Z",
+  "initialContext": {
+    "scene": "qa-streaming-large-20261004",
+    "view": "surface",
+    "layer": "optical",
+    "quality": "balanced",
+    "navigation": "orbit",
+    "grid": [
+      512,
+      512
+    ],
+    "viewport": [
+      1280,
+      720
+    ],
+    "adaptiveLevel": 1,
+    "terrainStreaming": {
+      "tiles": 5,
+      "pending": 0,
+      "failures": 0,
+      "maxTiles": 48,
+      "maxLevel": 4
+    },
+    "pixelRatio": 1.25,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "renderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A78B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "hardwareNote": "Local in-app browser; synthetic 3072² streaming QA; hardware identified in JSON",
+    "treeCandidates": 0
+  },
+  "finalContext": {
+    "scene": "qa-streaming-large-20261004",
+    "view": "surface",
+    "layer": "optical",
+    "quality": "balanced",
+    "navigation": "orbit",
+    "grid": [
+      512,
+      512
+    ],
+    "viewport": [
+      1280,
+      720
+    ],
+    "adaptiveLevel": 0,
+    "terrainStreaming": {
+      "tiles": 5,
+      "pending": 0,
+      "failures": 0,
+      "maxTiles": 48,
+      "maxLevel": 4
+    },
+    "pixelRatio": 1.25,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "renderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A78B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "hardwareNote": "Local in-app browser; synthetic 3072² streaming QA; hardware identified in JSON",
+    "treeCandidates": 0
+  },
+  "samples": 925,
+  "measuredSeconds": 29.999,
+  "fps": 30.834361145371513,
+  "frameMedianMs": 32.299999952316284,
+  "frameP95Ms": 33.89999997615814,
+  "frameP99Ms": 38.89999997615814,
+  "cpuSubmissionMedianMs": 1.8000000715255737,
+  "cpuSubmissionP95Ms": 2.5,
+  "framesOver33Ms": 91,
+  "peakDrawCalls": 25,
+  "peakTriangles": 262933,
+  "qualityModes": [
+    "balanced"
+  ],
+  "treeLodAtEnd": null,
+  "notes": [
+    "The viewer continuously rendered during capture; 2 s warmup excluded.",
+    "Frame intervals include browser scheduling and rendering workload. CPU submission excludes GPU completion.",
+    "Draw calls/triangles include shadow and postprocessing passes. Results apply only to the reported browser, viewport and renderer.",
+    "This is a performance report, not a height-accuracy evaluation."
+  ]
+}
