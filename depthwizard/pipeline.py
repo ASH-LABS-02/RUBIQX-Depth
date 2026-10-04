@@ -49,7 +49,8 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         relative_display_height_m=None, device=None, dem_source="COP30",
         match_dem_30m=True, tta=4, dem_kind="auto", sun_elevation=None, sun_azimuth=None,
         vertical_datum=None, gcp_height_type="orthometric", anchors=None,
-        max_pixels=None, cop_scale=False, semantic_model=None, auto_anchors=True, log=print) -> dict:
+        max_pixels=None, cop_scale=False, semantic_model=None, auto_anchors=True,
+        audit_stages=False, preserve_metric_tail=False, check_cancel=None, log=print) -> dict:
     t0 = time.time()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -68,6 +69,8 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         log(f"  large scene: downsampled {shrink:.2f}x to {img.shape[1]}x{img.shape[0]} px "
             f"(limit {max_pixels / 1e6:.0f} MP; set DEPTHWIZARD_MAX_MP to change)")
     gsd = img.pixel_size_m or assumed_gsd_m
+    from .stage_audit import StageAudit
+    audit = StageAudit(out, img, audit_stages)
     log(f"  {img.shape[1]}x{img.shape[0]} px, georeferenced={img.georeferenced}"
         + (f", GSD~{gsd:.2f} m" if img.pixel_size_m else ""))
 
@@ -128,11 +131,19 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     t1 = time.time()
     rel, backbone, unc_norm, dinfo = relative_height(
         img.rgb, model=model, allow_fallback=allow_fallback, device=device,
-        tta=passes, return_uncertainty=True, return_info=True, gsd=gsd)
+        tta=passes, return_uncertainty=True, return_info=True, gsd=gsd,
+        **({"audit_raw": True} if audit_stages else {}),
+        **({"preserve_metric_tail": True} if preserve_metric_tail else {}),
+        **({"check_cancel": check_cancel} if check_cancel is not None else {}))
     t_depth = time.time() - t1
-    rel = ndimage.median_filter(rel, 3)  # suppress tile/speckle artefacts
     is_agl = bool(dinfo.get("agl"))
     learned = dinfo["learned_scale"](gsd) if dinfo.get("learned_scale") else None
+    audit.capture("model_metric_pre_normalisation_agl", dinfo.pop("metric_before_normalisation", None), "metre")
+    audit.capture("raw_model_agl" if is_agl and learned else "raw_model_relative", rel,
+                  "metre" if is_agl and learned else "relative", scale=learned or 1.0)
+    rel = ndimage.median_filter(rel, 3)  # suppress tile/speckle artefacts
+    audit.capture("median_model_agl" if is_agl and learned else "median_model_relative", rel,
+                  "metre" if is_agl and learned else "relative", scale=learned or 1.0)
 
     # A tagged user raster wins over a source hint; untagged user rasters keep
     # the explicit source datum or "same as input DEM" when source is unknown.
@@ -165,6 +176,8 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         cal.dem_tile_names = dem_tiles
     log(f"  method={cal.method} ({cal.scale_source}) {cal.note}")
     datum = cal.vertical_datum if units == "metre" else None
+    audit.capture("calibrated_dsm", dsm, units)
+    audit.capture("calibrated_agl", cal.ndsm, units)
     if units == "metre" and cal.dtm is not None:
         from .analysis import water_mask
         wm = water_mask(img.rgb, gsd)
@@ -176,6 +189,9 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
     else:
         meta_water = 0.0
         wm = None
+    audit.capture("water_mask", wm, "relative")
+    audit.capture("post_water_dsm", dsm, units)
+    audit.capture("post_water_agl", cal.ndsm, units)
 
     cop_scale_dem = None
     if cop_scale and img.georeferenced and gsd < COARSE_GSD_M and units == "metre" and cal.dtm is not None:
@@ -200,6 +216,7 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
             cop_scale_dem = None
             log(f"  WARNING: Copernicus height scale skipped: {exc}")
 
+    audit.capture("post_cop_scale_agl", cal.ndsm, units)
     name = "dsm.tif" if units == "metre" else "rdsm.tif"
     dio.write_dsm(out / name, dsm, img, units=units,
                   description=f"DepthWizard {cal.method} ({backbone})", vertical_datum=datum)
@@ -452,6 +469,11 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
             view_h = dsm
             unc_view = unc_units
 
+    audit.capture("final_dsm", dsm, units)
+    audit.capture("final_agl", cal.ndsm, units)
+    audit.buildings(buildings)
+    meta["stage_audit"] = {"enabled": bool(audit_stages), "reference_used": False,
+                            "manifest": "stages/manifest.json" if audit_stages else None}
     ref = None
     metrics = {}
     if reference:
@@ -459,6 +481,17 @@ def run(image_path, out_dir, *, dem=None, gcp=None, reference=None, model="small
         ref = reference_on_grid(reference, img)
         baseline = getattr(cal, "extras", {}).get("dem") if units == "metre" else None
         metrics = evaluate(dsm, ref, units, rgb=img.rgb, gsd=gsd, baseline=baseline)
+        if units == "metre":
+            from .validation import stratified
+            sigma = None
+            if unc_units is not None:
+                from .uncertainty import calibrated_sigma
+                sigma = calibrated_sigma(unc_units)
+            metrics["stratified"] = stratified(dsm, ref,
+                agl=ref - cal.dtm if cal.dtm is not None else None,
+                sigma=sigma, route=cal.method)
+            metrics["stratified"]["height_band_basis"] = "reference DSM minus estimated/calibration DTM; not independent AGL truth"
+            metrics["stratified"]["class_basis"] = "unavailable: independent categorical labels required"
         if units == "metre" and labels is not None and buildings["count"] >= 5:
             est_nd = dsm - (cal.dtm if cal.dtm is not None else np.percentile(dsm, 2))
             bm = building_level(labels, est_nd, ref, gsd)

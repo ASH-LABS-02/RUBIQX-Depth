@@ -139,7 +139,7 @@ class Pairs(Dataset):
                 rgb = _panchromatic(np.ascontiguousarray(rgb), stretch=random.random() < 0.5)
         elif self.force_gray:
             rgb = _panchromatic(np.ascontiguousarray(rgb), stretch=True)
-        t = torch.from_numpy(np.ascontiguousarray(rgb)).permute(2, 0, 1).float() / 255
+        t = torch.from_numpy(np.array(rgb, copy=True, order="C")).permute(2, 0, 1).float() / 255
         if self.train:
             t = (t * random.uniform(0.8, 1.2) + random.uniform(-0.08, 0.08)).clamp(0, 1)
         return (t - MEAN) / STD, torch.from_numpy(np.ascontiguousarray(h)), torch.tensor(eff_gsd, dtype=torch.float32)
@@ -255,6 +255,7 @@ def evaluate(model, loader, device, pixel_height=LEGACY_PIXEL_HEIGHT):
     """Per-tile mean RMSE, both affine-aligned (shape) and absolute (no fitting)."""
     model.eval()
     aff, ab, n, skipped = 0.0, 0.0, 0, 0
+    bands = {name: [0, 0.0, 0.0] for name in ("0-2.5", "2.5-15", "15-30", "30-inf")}
     for x, h, g in loader:
         x, h, g = x.to(device), h.to(device), g.to(device)
         p = model(pixel_values=x).predicted_depth
@@ -267,12 +268,25 @@ def evaluate(model, loader, device, pixel_height=LEGACY_PIXEL_HEIGHT):
             a, b = _fit(pi[m], hi[m])
             aff += torch.sqrt(((pi[m] * a + b - hi[m]) ** 2).mean()).item()
             ab += torch.sqrt(((pi[m] * pixel_height * gi - hi[m]) ** 2).mean()).item()
+            error = pi * pixel_height * gi - hi
+            for name, lo, up in (("0-2.5", 0, 2.5), ("2.5-15", 2.5, 15),
+                                 ("15-30", 15, 30), ("30-inf", 30, float("inf"))):
+                bm = m & (hi >= lo) & (hi < up)
+                bands[name][0] += int(bm.sum())
+                bands[name][1] += float((error[bm].double()**2).sum())
+                bands[name][2] += float(error[bm].double().sum())
             n += 1
     model.train()
     print(f"Validation: {n} usable tiles, {skipped} skipped", flush=True)
     if not n:
         raise RuntimeError("No usable validation tiles")
-    return {"affine": aff / n, "absolute": ab / n}
+    by_height = {k: {"n": v[0], "rmse": math.sqrt(v[1] / v[0]), "bias": v[2] / v[0]}
+                 for k, v in bands.items() if v[0]}
+    tall = [v for k, v in bands.items() if k in ("15-30", "30-inf")]
+    count = sum(v[0] for v in tall)
+    tall_rmse = math.sqrt(sum(v[1] for v in tall) / count) if count else ab / n
+    return {"affine": aff / n, "absolute": ab / n, "height_bands": by_height,
+            "balanced_height": (ab / n + tall_rmse) / 2}
 
 
 def main():
@@ -287,6 +301,8 @@ def main():
                     help="ssi: shape only (original); metric: also learn real heights")
     ap.add_argument("--metric-weight", type=float, default=1.0)
     ap.add_argument("--tall-weight", type=float, default=0.0)
+    ap.add_argument("--require-improvement", action="store_true",
+                    help="save only a development improvement; all-height RMSE may worsen at most 0.05 m")
     ap.add_argument("--gsd", type=float, default=0.33, help="dataset ground sampling distance (m/px)")
     ap.add_argument("--net-gsd", type=float, default=0.0,
                     help="train at this network-pixel size (0 = native crops, original recipe)")
@@ -301,7 +317,7 @@ def main():
                     help="repeatable NAME:RGB_GLOB:HEIGHT_GLOB:GSD[:VAL_RGB_GLOB:VAL_HEIGHT_GLOB]")
     ap.add_argument("--extra-weight", type=float, default=0.3,
                     help="probability per batch item to sample from the extra datasets")
-    ap.add_argument("--select", choices=("affine", "absolute"), default="affine",
+    ap.add_argument("--select", choices=("affine", "absolute", "balanced_height"), default="affine",
                     help="validation score that picks the saved checkpoint")
     ap.add_argument("--out", default="checkpoints/da2-gamus")
     ap.add_argument("--epochs", type=int, default=10)
@@ -408,6 +424,8 @@ def main():
     scaler = torch.amp.GradScaler("cuda", enabled=device == "cuda" and a.amp_dtype == "fp16")
     best, step, start_epoch = float("inf"), 0, 0
     out = Path(a.out)
+    if out.resolve() == Path(a.model).resolve() and not a.resume:
+        raise SystemExit("Use a new output directory; do not overwrite the starting checkpoint")
     out.mkdir(parents=True, exist_ok=True)
     if a.resume:
         state = torch.load(out / "last.pt", map_location="cpu", weights_only=False)
@@ -418,14 +436,27 @@ def main():
         best, step, start_epoch = state["best"], state["step"], state["next_epoch"]
         print(f"Resuming from epoch {start_epoch + 1}, step {step}", flush=True)
     def evaluate_all(loaders, gray=False):
-        t_aff, t_abs = 0.0, 0.0
+        t_aff, t_abs, t_balanced = 0.0, 0.0, 0.0
+        details = {}
         for name, loader in loaders:
             res = evaluate(model, loader, device, pixel_height)
             suf = " greyscale" if gray else ""
             print(f"  {name} val{suf}: affine-RMSE {res['affine']:.3f} m, absolute-RMSE {res['absolute']:.3f} m", flush=True)
             t_aff += res['affine']; t_abs += res['absolute']
-        return {"affine": t_aff / len(loaders), "absolute": t_abs / len(loaders)}
+            t_balanced += res['balanced_height']
+            details[name] = res['height_bands']
+            print(f"    height bands: {json.dumps(res['height_bands'])}", flush=True)
+        return {"affine": t_aff / len(loaders), "absolute": t_abs / len(loaders),
+                "balanced_height": t_balanced / len(loaders), "height_bands": details}
 
+    baseline = None
+    selected_epoch, selected_scores = None, None
+    if a.require_improvement:
+        if not val_loaders or a.resume:
+            raise SystemExit("--require-improvement needs development validation and a fresh candidate run")
+        baseline = evaluate_all(val_loaders)
+        best = baseline[a.select]
+        (out / "baseline.json").write_text(json.dumps(baseline, indent=2))
     print(f"Training {len(train_concat)} tiles (from {len(datasets)} sets), validation {sum(len(l.dataset) for _, l in val_loaders)} tiles; "
           f"batch {a.batch}, accumulation {a.grad_accum}, {a.epochs} epochs", flush=True)
     if val_gray_loaders and start_epoch == 0 and not a.max_steps:
@@ -478,8 +509,16 @@ def main():
                                       "val_affine_rmse_m": scores["affine"] if val_loaders else None,
                                       "val_absolute_rmse_m": scores["absolute"] if val_loaders else None,
                                       "val_gray_absolute_rmse_m": scores.get("gray_absolute") if val_loaders else None,
+                                      "val_height_bands": scores.get("height_bands") if val_loaders else None,
                                       "minutes": minutes, "peak_vram_gib": peak_gib}) + "\n")
-        if score < best:
+        accepted = score < best and (baseline is None or scores["absolute"] <= baseline["absolute"] + 0.05)
+        if accepted:
+            selected_epoch, selected_scores = ep + 1, scores
+        (out / "acceptance.json").write_text(json.dumps({"accepted": bool(accepted),
+            "production_replaced": False, "baseline": baseline, "candidate": scores,
+            "selected_epoch": selected_epoch, "selected_scores": selected_scores,
+            "selection": a.select, "all_height_rmse_tolerance_m": 0.05}, indent=2))
+        if accepted:
             best = score
             model.save_pretrained(out)
             try:  # mark as an above-ground-height checkpoint for DepthWizard calibration

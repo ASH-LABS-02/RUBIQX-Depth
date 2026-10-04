@@ -172,7 +172,7 @@ class DepthBackbone:
             return mean, (stack.std(0) if len(outs) > 1 else np.zeros_like(mean))
         return mean
 
-    def predict_agl_metric(self, rgb: np.ndarray, gsd: float, tta: int = 1):
+    def predict_agl_metric(self, rgb: np.ndarray, gsd: float, tta: int = 1, check_cancel=None):
         """AGL checkpoints: tile the scene so the network sees roughly the
         ground resolution it was trained at, and convert each tile to metres
         with the learned pixel-footprint scale. No tile affine re-alignment is
@@ -191,6 +191,8 @@ class DepthBackbone:
         net_gsd = gsd
         for y0 in range(0, max(h - overlap, 1), T - overlap):
             for x0 in range(0, max(w - overlap, 1), T - overlap):
+                if check_cancel is not None:
+                    check_cancel()
                 y1, x1 = min(y0 + T, h), min(x0 + T, w)
                 y0a, x0a = max(0, y1 - T), max(0, x1 - T)
                 d, dstd = self._infer(rgb[y0a:y1, x0a:x1], tta=tta, return_std=True)
@@ -205,21 +207,30 @@ class DepthBackbone:
             (vacc / np.maximum(wsum, 1e-9)).astype(np.float32), net_gsd
 
     def predict(self, rgb: np.ndarray, tile: int = 1024, overlap: int = 256,
-                global_size: int = 1024, tta: int = 1, gsd: float | None = None) -> np.ndarray:
-        """Normalised relative height in [0, 1]. Raw-unit bookkeeping for
+                global_size: int = 1024, tta: int = 1, gsd: float | None = None, check_cancel=None,
+                preserve_metric_tail: bool = False, audit_raw: bool = False) -> np.ndarray:
+        """Normalised relative height (metric tail may exceed 1 when requested). Raw-unit bookkeeping for
         metric scale and the TTA uncertainty are stored in ``self.info``."""
         self.info = {}
+        if check_cancel is not None:
+            check_cancel()
         h, w = rgb.shape[:2]
         if self.agl and gsd:
-            metric, mstd, net_gsd = self.predict_agl_metric(rgb, gsd, tta=tta)
+            metric, mstd, net_gsd = self.predict_agl_metric(rgb, gsd, tta=tta, check_cancel=check_cancel)
             lo, hi = np.nanpercentile(metric, (0.5, 99.5))
             span = float(max(hi - lo, 1e-9))
             trusted = LEARNED_SCALE_RANGE[0] <= net_gsd <= LEARNED_SCALE_RANGE[1]
             self.info = {"raw_span": span, "net_factor": None, "tta": int(tta), "agl": True,
                          "net_gsd_m": float(net_gsd), "metric_direct": True,
                          "learned_trusted": bool(trusted),
+                         "metric_tail_preserved": bool(preserve_metric_tail),
+                         "normalisation_low_m": float(lo), "normalisation_high_m": float(hi),
+                         "upper_tail_pixels": int((metric > hi).sum()),
                          "std_rel": (mstd / span).astype(np.float32)}
-            return np.clip((metric - lo) / span, 0, 1).astype(np.float32)
+            normalized = (metric - lo) / span
+            if audit_raw:
+                self.info["metric_before_normalisation"] = metric
+            return (np.maximum(normalized, 0) if preserve_metric_tail else np.clip(normalized, 0, 1)).astype(np.float32)
         s = min(1.0, global_size / max(h, w))
         small = rgb if s == 1.0 else np.asarray(
             Image.fromarray(rgb).resize((int(w * s), int(h * s)), Image.LANCZOS))
@@ -238,6 +249,8 @@ class DepthBackbone:
             ramp = _feather(tile, overlap)
             for y0 in range(0, max(h - overlap, 1), step):
                 for x0 in range(0, max(w - overlap, 1), step):
+                    if check_cancel is not None:
+                        check_cancel()
                     y1, x1 = min(y0 + tile, h), min(x0 + tile, w)
                     y0a, x0a = max(0, y1 - tile), max(0, x1 - tile)
                     d, dstd = self._infer(rgb[y0a:y1, x0a:x1], tta=tta, return_std=True)
@@ -332,8 +345,9 @@ def heuristic_relative_height(rgb: np.ndarray) -> np.ndarray:
 
 def relative_height(rgb: np.ndarray, model: str = "small", allow_fallback: bool = False,
                     device: str | None = None, tta=1, return_uncertainty: bool = False,
-                    return_info: bool = False, gsd: float | None = None):
-    """Relative height in [0, 1].
+                    return_info: bool = False, gsd: float | None = None, check_cancel=None,
+                    preserve_metric_tail: bool = False, audit_raw: bool = False):
+    """Relative height in [0, 1], or an uncapped metric tail when explicitly enabled.
 
     Returns (rel, name), plus a normalised ensemble-spread map (or None without
     an ensemble) when ``return_uncertainty`` is set, plus an info dict when ``return_info`` is
@@ -345,8 +359,12 @@ def relative_height(rgb: np.ndarray, model: str = "small", allow_fallback: bool 
     try:
         bb = get_backbone(model, device)
         with _BB_LOCK:          # one prediction at a time per cached model
-            rel = bb.predict(rgb, tta=passes, gsd=gsd)
+            rel = bb.predict(rgb, tta=passes, gsd=gsd,
+                             **({"preserve_metric_tail": True} if preserve_metric_tail else {}),
+                             **({"audit_raw": True} if audit_raw else {}),
+                             **({"check_cancel": check_cancel} if check_cancel is not None else {}))
             info = dict(bb.info)
+            bb.info.pop("metric_before_normalisation", None)  # audit payload belongs to the caller, not the model cache
             snap = dict(bb.info)
             def learned_scale(g, _bb=bb, _snap=snap):
                 keep = _bb.info
@@ -358,6 +376,9 @@ def relative_height(rgb: np.ndarray, model: str = "small", allow_fallback: bool 
             info["learned_scale"] = learned_scale
         name = bb.name
     except Exception as exc:  # noqa: BLE001
+        from .job_control import JobCancelled
+        if isinstance(exc, JobCancelled):
+            raise
         if not allow_fallback:
             raise RuntimeError(
                 "Depth model inference failed. Check the checkpoint, dependencies and device. "

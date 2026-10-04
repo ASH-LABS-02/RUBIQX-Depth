@@ -6,6 +6,7 @@ not calibrated accuracy probabilities. No reference elevation enters inference.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -32,6 +33,12 @@ def label_mapping(id2label):
 
 class SemanticSegmenter:
     def __init__(self, checkpoint, *, device=None, threshold=0.6, tile_size=512, halo=64):
+        if os.environ.get('DEPTHWIZARD_PRODUCTION') == '1':
+            provenance_path = Path(checkpoint) / 'provenance.json'
+            provenance = json.loads(provenance_path.read_text()) if provenance_path.is_file() else {}
+            if not (provenance.get('license_verified') is True and provenance.get('license_url')
+                    and provenance.get('training_overlap_verified') is True):
+                raise ValueError('Semantic checkpoint licence and training provenance are unresolved; keep it disabled in production')
         import torch
         from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
 

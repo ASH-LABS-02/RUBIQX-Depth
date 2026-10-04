@@ -50,6 +50,8 @@ def main(argv=None):
     p.add_argument("--gsd", type=float, default=1.0, help="assumed m/pixel for non-georeferenced input")
     p.add_argument("--device", help="cuda | mps | cpu")
     p.add_argument("--semantic-model", help="optional experimental overhead SegFormer checkpoint; refines object masks only")
+    p.add_argument("--audit-stages", action="store_true", help="save reference-free intermediate height rasters for diagnosis")
+    p.add_argument("--preserve-metric-tail", action="store_true", help="experimental: keep heights above the metric 99.5 percentile; OFF by default")
     p.add_argument("--tta", type=int, default=4, choices=[1, 2, 4, 8],
                    help="rotation/flip test-time augmentation passes (uncertainty map needs >1)")
     p.add_argument("--dem-kind", default="auto", choices=["auto", "surface", "terrain"],
@@ -106,7 +108,8 @@ def main(argv=None):
                dem_kind=a.dem_kind, match_dem_30m=not a.no_consistency,
                sun_elevation=a.sun_elevation, sun_azimuth=a.sun_azimuth, anchors=anchors,
                gcp_height_type=a.gcp_height_type, vertical_datum=a.vertical_datum,
-               cop_scale=a.cop_scale, semantic_model=a.semantic_model, auto_anchors=a.auto_anchors)
+               cop_scale=a.cop_scale, semantic_model=a.semantic_model, auto_anchors=a.auto_anchors,
+               audit_stages=a.audit_stages, preserve_metric_tail=a.preserve_metric_tail)
     if "metrics" in meta:
         print(json.dumps(meta["metrics"], indent=2))
 
