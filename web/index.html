@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="style.css?v=20260929-studio-v1">
 <link rel="stylesheet" href="studio.css?v=20260930-mission-studio-v2">
 <link rel="stylesheet" href="mission.css?v=20260930-v9">
-<link rel="stylesheet" href="ui-v2.css?v=20261001-v1">
+<link rel="stylesheet" href="ui-v2.css?v=20261004-roadmap">
 <link rel="stylesheet" href="ui-v3.css?v=20261003-scene-polish">
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }
@@ -200,7 +200,7 @@
           <input type="range" id="exag" min="0.5" max="25" step="0.1" value="1"></label>
         <label class="row">Mesh smoothing <output id="smooth-v">0.0 m</output>
           <input type="range" id="smooth" min="0" max="3" step="0.25" value="0"></label>
-        <p class="note">Display only · the DSM export and validation use original heights.</p>
+        <p class="note" id="mesh-display-note">Display only · the DSM export and validation use original heights.</p>
         <label class="row">Sun azimuth <output id="sun-v">315°</output>
           <input type="range" id="sun" min="0" max="360" step="1" value="315"></label>
         <label class="row">Illustrative time of day <output id="time-v">12:00</output>
@@ -313,6 +313,8 @@
           <input type="range" id="rainfall-mm" min="0" max="300" step="5" value="50"></label>
         <button id="rainfall-play" class="compact-btn" type="button">▶ Storm time-lapse</button>
         <p class="note">Screening scenario: 60% runoff over the scene footprint, no drainage or upstream catchment model.</p>
+        <details><summary>Drainage screening</summary><label>Duration (minutes)<input id="storm-duration" type="number" min="1" max="1440" value="60"></label><label>Infiltration (mm/hour)<input id="storm-infiltration" type="number" min="0" max="100" value="5"></label><label>Drainage loss (mm/hour)<input id="storm-drainage" type="number" min="0" max="100" value="0"></label><button id="storm-run" type="button">Run surface runoff</button><div id="storm-result" class="note" role="status">Rainfall volume, infiltration and drainage losses; closed scene boundary. Screening only.</div></details>
+        <p class="note">Water-level scenario exposure · separate from the runoff depth overlay.</p>
         <div class="flood-metrics">
           <div class="metric-box">
             <div class="num" id="flood-submerged-pct">0.0%</div>
@@ -341,6 +343,7 @@
           <button id="relay-tool" type="button" title="Click a tower or drone location in the 3D scene">Comms relay</button>
         </div>
         <div id="mission-result" class="mission-result note">Choose a tool, then click the terrain where prompted.</div>
+        <details><summary>Route constraints</summary><label>Maximum height uncertainty σ (m)<input id="route-max-sigma" type="number" min="0.1" max="100" value="8" step="0.5"></label><p class="note">Aligned road/access masks are optional. Unknown access is not evidence of safety; estimated σ is provisional.</p><label>Road or access GeoTIFF<input id="route-mask-file" type="file" accept=".tif,.tiff"></label><label>Mask type<select id="route-mask-kind"><option value="roads">Road preference</option><option value="access">Access permission</option></select></label><button id="route-mask-upload" type="button">Attach route constraint</button><div id="route-mask-status" class="note" role="status">Exact DTM grid required. Values: 1=yes, 0=no, nodata=unknown.</div></details>
         <button id="change-toggle" class="details-toggle" type="button" aria-expanded="false">Change detection ⌄</button>
       </div>
 
@@ -421,6 +424,7 @@
         <button class="primary" type="submit">Generate DSM</button>
       </form>
       <pre id="job-log" class="log hidden"></pre>
+      <div id="job-controls" class="btns hidden"><button id="job-cancel" type="button">Cancel processing</button><button id="job-retry" type="button" class="hidden">Retry saved inputs</button><span id="job-stage" role="status" aria-live="polite"></span></div>
     </section>
   </div>
 
@@ -439,6 +443,6 @@
     <button id="help-close" class="primary">Got it</button>
   </div>
 </div>
-<script type="module" src="app.js?v=20261003-navigation-budget"></script>
+<script type="module" src="app.js?v=20261004-roadmap"></script>
 </body>
 </html>

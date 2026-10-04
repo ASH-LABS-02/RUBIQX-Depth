@@ -130,11 +130,11 @@ export function createMissionUi(ctx) {
     const log=(st.log||[]).join('\n').toLowerCase();
     const state=$('#import-job-state');
     state.textContent=st.state==='queued'?`Queued — ${st.position?`${st.position} job${st.position===1?'':'s'} ahead`:'starting next'}`
-      : st.state==='uploading'?'Uploading image…':st.state==='done'?'Scene ready':st.state==='error'?'Processing stopped':'Reconstructing scene…';
+      : st.state==='uploading'?'Uploading image…':st.state==='done'?'Scene ready':['error','cancelled'].includes(st.state)?'Processing stopped':st.stage||'Reconstructing scene…';
     // Backend logs are the evidence of progress; a timer never advances the stages.
     const checks=[/reading image/,/relative height/,/scale calibration/,/extracting lod1|validating against reference|analytics:/,/done in/,/done in/];
     let reached=-1;checks.forEach((re,i)=>{if(re.test(log))reached=i;});
-    const done=st.state==='done',active=!done&&st.state!=='error';
+    const done=st.state==='done',active=!done&&!['error','cancelled'].includes(st.state);
     $$('#import-stage-list span').forEach((e,i)=>{
       const completed=done||(i<reached);
       e.classList.toggle('complete',completed);e.classList.toggle('active',!done&&i===reached);
@@ -149,6 +149,10 @@ export function createMissionUi(ctx) {
     $('#job-progress').classList.toggle('hidden',!active);
     if(!active){clearInterval(jobTimer);elapsed();}
     if(done)run.textContent='Generate another scene';
+    if(st.state==='cancelled'){
+      state.textContent='Processing cancelled · saved inputs can be retried';
+      run.textContent=jobInputDem?'Open input DEM':form.dataset.inputPath==='geo'?'Generate metric scene':'Generate relative scene';
+    }
     if(st.state==='error'){
       const error=$('#import-error');error.replaceChildren();error.classList.remove('hidden');
       const message=document.createElement('p');message.textContent=humanError(st.error);error.append(message);

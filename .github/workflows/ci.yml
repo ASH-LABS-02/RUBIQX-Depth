@@ -15,5 +15,6 @@ jobs:
         run: pytest -q
       - name: Viewer syntax check
         run: |
-          node --check web/app.js
-          node --check web/city.js
+          for file in web/*.js; do node --check "$file"; done
+      - name: Frontend regression checks
+        run: node --test tests/*.test.mjs

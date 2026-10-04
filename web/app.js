@@ -9,22 +9,29 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
-import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg, lonLatAt } from './city.js?v=20260930-v3';
-import { createMissionUi } from './ui-v2.js?v=20261003-scene-polish';
+import { floodFill, boundarySeeds, waterMesh, waterUniforms, scatterSvg, histSvg, lonLatAt } from './city.js?v=20261004-roadmap';
+import { createCoordinateProbe } from './coordinates.js?v=20261004-roadmap';
+import { createFrameBudget } from './frame-budget.js?v=20261004-roadmap';
+import { createTerrainStream } from './terrain-stream.js?v=20261004-roadmap';
+import { createSavedViews } from './saved-views.js?v=20261004-roadmap';
+import { createMissionUi } from './ui-v2.js?v=20261004-roadmap';
+import { createRunoffOverlay } from './runoff-overlay.js?v=20261004-roadmap';
 import { createDiorama } from './diorama.js?v=20261001-bold-r4';
 import { createBoldUi } from './ui-v3.js?v=20261003-scene-polish';
-import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats, updateTreeLod, getTreeLodDiagnostics } from './trees.js?v=20261003-navigation-budget';
+import { analyzeCanopy, buildTreeGroup, disposeTreeGroup, flattenCanopyHeights, logTreeStats, updateTreeLod, getTreeLodDiagnostics } from './trees.js?v=20261004-roadmap';
 import { createWalkController } from './walk.js?v=20261003-navigation-budget';
 import { createRenderProfiler } from './render-profile.js?v=20261003-navigation-budget';
 import { createDialogManager } from './dialogs.js?v=20261003-navigation-budget';
 import { cinematicPath } from './cinematic.js?v=20261003-cinematic';
-import { coordinateAt, coordinateFrame, coordinateGrid } from './coordinates.js?v=20261003-grid';
+import { coordinateAt, coordinateFrame, coordinateGrid } from './coordinates.js?v=20261004-roadmap';
 // Same occupancy proxy as the server's population_exposure (mission 'population').
 const FLOOR_AREA_PER_PERSON_M2 = 30;
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 let missionUi = null, boldUi = null, dialogManager = null, renderProfiler = null, sceneGeneration = 0, sceneAbort = null, loadingSceneId = null;
+let terrainStream = null, terrainStreamScene = null;
+let savedViews = null;
 
 async function apiFetch(url, options = {}) {
   try {
@@ -411,6 +418,7 @@ function buildTerrain() {
 }
 
 function applyHeights() {
+  if(S.missionOverlay?.userData.runoff && S.missionOverlay.userData.exag!==S.exag) clearMissionOverlay();
   const pos = S.mesh.geometry.attributes.position;
   for (let i = 0; i < S.gw * S.gh; i++) pos.setY(i, worldY(S.renderH[i]));
   pos.needsUpdate = true;
@@ -773,6 +781,9 @@ function setSun(deg, elevDeg) {
 
 // ------------------------------------------------------------------ loading scenes
 async function loadScene(id) {
+  coordinateProbe?.reset();
+  terrainStream?.dispose(); if (terrainStream) scene.remove(terrainStream.group);
+  terrainStream = null; terrainStreamScene = null;
   const generation = ++sceneGeneration;
   sceneAbort?.abort(); sceneAbort = new AbortController();
   const signal = sceneAbort.signal; loadingSceneId = id;
@@ -906,7 +917,7 @@ async function loadScene(id) {
     S.sunEl = Number.isFinite(imageElevation) ? imageElevation : 35;
     if (Number.isFinite(imageAzimuth)) { $('#sun').value = Math.round(imageAzimuth); $('#sun-v').textContent = `${Math.round(imageAzimuth)}° (image)`; }
     setSun(+$('#sun').value);
-    resetView();
+    resetView(); savedViews?.refresh();
     $('#swipe-toggle').disabled = !demBase;
     $('#btn-landslide').disabled = !susc; $('#btn-change').disabled = !change;
     if ((S.mode === 'landslide' && !susc) || (S.mode === 'change' && !change) || S.mode === 'viewshed') setMode('optical');
@@ -1021,6 +1032,7 @@ function resetView() {
 
 function topDownView() {
   if (!S.mesh) return;
+  S.cameraFlight = null;
   setNav('orbit');
   const cy = worldY((S.hmin + S.hmax) / 2);
   orbit.target.set(0, cy, 0);
@@ -1057,7 +1069,7 @@ function makeWallMaterial() {
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, wallUniforms);
     sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying float vLy;\nvarying float vLu;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvLy = position.y;\nvLu = position.x + position.z;');
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvLy = position.y;\nvLu = abs(normal.x) > abs(normal.z) ? position.z : position.x;');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying float vLy;\nvarying float vLu;\nuniform float uFloor, uWin, uWinOn;')
       .replace('#include <color_fragment>', `#include <color_fragment>
@@ -1069,7 +1081,7 @@ function makeWallMaterial() {
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.20, 0.29, 0.37), 0.62 * win);
         diffuseColor.rgb *= 0.62 + 0.38 * smoothstep(0.0, uFloor * 1.3, vLy);`);
   };
-  m.customProgramCacheKey = () => 'dw-wall-v3';
+  m.customProgramCacheKey = () => 'dw-wall-v4-axis-projection';
   return m;
 }
 
@@ -1652,13 +1664,18 @@ function updateCoordinateReadout(x, z) {
   if (!S.meta) return;
   const frame = coordinateFrame(S.meta);
   $('#coordinate-crs').textContent = frame.crs;
-  $('#coordinate-readout').title = frame.georeferenced ? 'Native input CRS coordinates from the source affine; projected CRS units are unchanged. Lat/lon ≈ uses corner interpolation.' : 'Local image pixel coordinates; no geographic position is available.';
+  $('#coordinate-readout').title = frame.georeferenced ? 'Native input CRS from source affine; longitude/latitude from an exact PROJ CRS transform.' : 'Local image pixel coordinates; no geographic position is available.';
   if (!Number.isFinite(x) || !Number.isFinite(z)) { $('#coordinate-value').textContent = 'Move over terrain to inspect'; $('#coordinate-lonlat').textContent = ''; return; }
   const p = coordinateAt(S.meta, x / S.W + 0.5, z / S.H + 0.5), d = frame.geographic ? 6 : 1;
   $('#coordinate-value').textContent = frame.geographic ? `Lon ${p.E.toFixed(d)}° · Lat ${p.N.toFixed(d)}°`
     : `${frame.georeferenced ? 'E' : 'Col'} ${p.E.toFixed(d)} · ${frame.georeferenced ? 'N' : 'Row'} ${p.N.toFixed(d)}${frame.georeferenced ? '' : ' px'}`;
-  $('#coordinate-lonlat').textContent = p.ll && !frame.geographic ? `≈ Lat ${p.ll[1].toFixed(5)}° · Lon ${p.ll[0].toFixed(5)}°` : '';
+  $('#coordinate-lonlat').textContent = frame.georeferenced ? 'Transforming geographic coordinates…' : '';
+  if (frame.georeferenced) coordinateProbe.probe(x / S.W + .5, z / S.H + .5);
 }
+const coordinateProbe = createCoordinateProbe({ fetchApi: (...args) => apiFetch(...args),
+  getScene: () => S.id, onResult: ll => {
+    $('#coordinate-lonlat').textContent = `Lat ${ll[1].toFixed(6)}° · Lon ${ll[0].toFixed(6)}°`;
+  } });
 $('#coordinate-grid-toggle').onclick = () => setCoordinateGrid(!gridVisible);
 
 function placeMarker(x, z) {
@@ -1878,7 +1895,7 @@ function hoverUpdate(e) {
         const bh = raycaster.intersectObjects(S.buildingGroup.children, true)[0];
         bldg = bh?.object?.userData?.building || null;
       }
-      const ll = S.meta?.corners_lonlat ? lonLatAt?.(S.meta.corners_lonlat, (x / S.W) + 0.5, (z / S.H) + 0.5) : null;
+      const ll = null; // Native E/N here; exact PROJ latitude/longitude is in the coordinate readout.
       const metric = S.meta.units === 'metre';
       const rows = [
         [ll ? 'Lat, lon' : (mc ? 'E, N' : 'x, y'), ll ? `${ll[1].toFixed(5)}, ${ll[0].toFixed(5)}` : mc ? `${mc.E.toFixed(1)}, ${mc.N.toFixed(1)}` : `${(x + S.W / 2).toFixed(1)}, ${(z + S.H / 2).toFixed(1)} m`],
@@ -2096,9 +2113,20 @@ function renderMetrics() {
     (S.meta.validation_plot ? `<h3>Estimated vs reference</h3><div class="charts">${scatterSvg(S.meta.validation_plot, S.meta.units === 'metre' ? 'm' : 'rel')}${histSvg(S.meta.validation_plot)}</div>` : '') +
     `<details class="validation-details"><summary>Detailed accuracy breakdown</summary>` + calWarning + table +
     (m.buildings ? `<p class="note">Per-building: ${m.buildings.n} footprints · median roof ${fmt(m.buildings.est_median, 1)} m estimated vs ${fmt(m.buildings.ref_median, 1)} m reference.</p>` : '') +
-    landTable + heightTable + edgeHtml + acc + calHtml + `</details>` +
+    landTable + heightTable + renderStratifiedValidation(m.stratified) + edgeHtml + acc + calHtml + `</details>` +
     `<p class="note">The Truth layer colours signed error against the supplied reference; Profile compares a selected cross-section.</p>`;
   addDemComparison(el);
+}
+
+function renderStratifiedValidation(result) {
+  if (!result) return '<p class="note">Class-specific errors and uncertainty coverage need aligned reference labels and heights.</p>';
+  const coverage = Object.entries(result.uncertainty_coverage || {}).map(([name, row]) =>
+    `<tr><td>${escapeHtml(name)}</td><td>${row.n.toLocaleString()}</td><td>${fmt(row.one_sigma * 100,1)}%</td><td>${fmt(row.two_sigma * 100,1)}%</td></tr>`).join('');
+  const classes = Object.entries(result.classes || {}).map(([name, row]) =>
+    `<tr><td>${escapeHtml(name)}</td><td>${row.n.toLocaleString()}</td><td>${fmt(row.rmse)} m</td><td>${fmt(row.bias)} m</td></tr>`).join('');
+  return `<p class="note">Route: ${escapeHtml(result.route)}. ${escapeHtml(result.height_band_basis || '')} ${escapeHtml(result.class_basis || '')}</p>`
+    + (classes ? `<h3>Error by reference class</h3><table class="t"><tr><th>Class</th><th>Pixels</th><th>RMSE</th><th>Bias</th></tr>${classes}</table>` : '')
+    + (coverage ? `<h3>Provisional uncertainty coverage</h3><table class="t"><tr><th>Group</th><th>Pixels</th><th>±1σ</th><th>±2σ</th></tr>${coverage}</table><p class="note">Raw signed errors, including bias. Coverage is diagnostic and does not certify confidence probabilities.</p>` : '');
 }
 
 function addDemComparison(el) {
@@ -2188,6 +2216,7 @@ $('#trees')?.addEventListener('change', (e) => {
 $('#exposure').oninput = (e) => { renderer.toneMappingExposure = +e.target.value; $('#exposure-v').textContent = (+e.target.value).toFixed(2); };
 $('#quality').onchange = (e) => applyQuality(e.target.value);
 function applyQuality(q) {
+  frameBudget?.reset();
   S.quality = q;
   S.aoEnabled = true;
   const size = q === 'cinematic' ? 4096 : q === 'performance' ? 1024 : 2048;
@@ -2370,6 +2399,41 @@ form.image.onchange = () => { $('#drop-text').innerHTML = `<b>${escapeHtml(form.
 ['dragover', 'dragenter'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, () => drop.classList.remove('over')));
 drop.addEventListener('drop', (e) => { e.preventDefault(); form.image.files = e.dataTransfer.files; form.image.onchange(); });
+let activeProcessingJob = null;
+async function trackProcessingJob(id, log) {
+  activeProcessingJob = id;
+  $('#job-controls').classList.remove('hidden'); $('#job-cancel').classList.remove('hidden');
+  $('#job-cancel').disabled = false; $('#job-retry').classList.add('hidden');
+  $('#job-stage').textContent = 'Starting processing…';
+  for (;;) {
+    await new Promise(resolve => setTimeout(resolve,800));
+    const st = await (await apiFetch(`api/jobs/${id}`)).json();
+    missionUi?.jobUpdate(st);
+    $('#job-stage').textContent = st.state === 'cancelled' ? 'Cancelled · saved inputs are available for retry'
+      : st.cancel_requested && st.state === 'running' ? 'Cancelling at next processing boundary…'
+      : st.state === 'queued' ? `Queued · ${st.position || 0} ahead` : `${st.stage || st.state} · ${st.progress || 0}%`;
+    log.textContent = (st.log || []).join('\n'); log.scrollTop = log.scrollHeight;
+    if (st.state === 'done') { $('#job-controls').classList.add('hidden'); await refreshScenes(id); showTab('analyse'); return; }
+    if (['error','cancelled'].includes(st.state)) {
+      log.textContent += '\n'+(st.error || 'Cancelled');
+      $('#job-cancel').classList.add('hidden'); $('#job-retry').classList.remove('hidden'); return;
+    }
+  }
+}
+$('#job-cancel').onclick = async () => {
+  if (!activeProcessingJob) return;
+  await apiFetch(`api/jobs/${activeProcessingJob}/cancel`,{method:'POST'}); $('#job-cancel').disabled = true;
+};
+$('#job-retry').onclick = async () => {
+  if (!activeProcessingJob) return;
+  $('#job-retry').disabled = true;
+  const submit = form.querySelector('button[type=submit]'); submit.disabled = true;
+  missionUi?.jobStart();
+  try { const result = await (await apiFetch(`api/jobs/${activeProcessingJob}/retry`,{method:'POST'})).json();
+    await trackProcessingJob(result.id,$('#job-log')); }
+  catch (err) { missionUi?.jobUpdate({state:'error',error:err.message}); }
+  finally { $('#job-retry').disabled = false; submit.disabled = false; }
+};
 form.onsubmit = async (e) => {
   e.preventDefault();
   if(form.dataset.detecting==='true'||form.dataset.invalidInput==='true')return;
@@ -2390,16 +2454,7 @@ form.onsubmit = async (e) => {
     const res = await apiFetch('api/process', { method: 'POST', body: fd });
     if (!res.ok) throw new Error(await res.text());
     const { id } = await res.json();
-    for (;;) {
-      await new Promise((r) => setTimeout(r, 800));
-      const st = await (await apiFetch(`api/jobs/${id}`)).json();
-      missionUi?.jobUpdate(st);
-      const waitNote = st.state === 'queued' ? (st.position ? `Queued – ${st.position} job${st.position > 1 ? 's' : ''} ahead of this one…` : 'Queued – starting next…') : '';
-      log.textContent = (waitNote ? waitNote + '\n' : '') + st.log.join('\n') + (st.state === 'running' ? '\n…' : '');
-      log.scrollTop = log.scrollHeight;
-      if (st.state === 'done') { await refreshScenes(id); showTab('analyse'); break; }
-      if (st.state === 'error') { log.textContent += '\n✕ ' + st.error; break; }
-    }
+    await trackProcessingJob(id, log);
   } catch (err) { log.textContent += '\n✕ ' + err.message;missionUi?.jobUpdate({state:'error',error:err.message}); }
   finally { btn.disabled = false; }
 };
@@ -2414,10 +2469,24 @@ function resize() {
   if (post.composer) { post.composer.setSize(r.width, r.height); post.gtao.setSize(r.width, r.height); }
 }
 new ResizeObserver(resize).observe(canvas);
+const frameBudget = createFrameBudget();
+let budgetLastFrame = 0;
 let frames = 0, fpsT = 0, mmT = 0;
 let idleSkip = 0;
 renderer.setAnimationLoop(() => {
   const frameStarted = performance.now();
+  const adjustment = frameBudget.record(frameStarted - budgetLastFrame, frameStarted,
+    !document.hidden && S.quality === 'balanced' && !S.recording && !dialogManager?.isOpen()
+    && (S.nav !== 'orbit' || orbit.autoRotate || performance.now()-lastActivity < 1500 || renderProfiler?.active));
+  budgetLastFrame = frameStarted;
+  if (adjustment) {
+    S.aoEnabled = adjustment.level === 0;
+    renderer.setPixelRatio(adjustment.level === 2 ? 1 : Math.min(devicePixelRatio, 1.5));
+    renderer.shadowMap.enabled = adjustment.level < 2;
+    renderer.shadowMap.needsUpdate = true;
+    resize();
+    $('#hud-fps').title = `Adaptive Balanced: level ${adjustment.level}, P95 ${adjustment.p95.toFixed(1)} ms, target 33.3 ms`;
+  }
   const modalOpen = dialogManager?.isOpen();
   const busyAnim = S.nav !== 'orbit' || S.riseStart || S.cameraFlight || S.floodAnimating || S.missionOverlay
     || swipeDragging || S.recording || S.floodMesh || S.waterAnim || renderProfiler?.active;
@@ -2488,6 +2557,29 @@ renderer.setAnimationLoop(() => {
   }
   if (updateTreeLod(S.treeGroup, camera, { quality: S.quality === 'balanced' && S.aoEnabled === false ? 'performance' : S.quality,
     now: frameStarted, viewportHeight: canvas.clientHeight })) renderer.shadowMap.needsUpdate = true;
+  const streamEnabled = S.mesh && S.meta?.units === 'metre' && Math.max(S.meta.src_w,S.meta.src_h) > 2048
+    && S.viewGeometry === 'surface' && S.mode === 'optical' && !S.swipeActive && !$('#wire').checked;
+  const streamKey = `${S.id}:${S.exag}:${S.base}`;
+  if (streamEnabled && terrainStreamScene !== streamKey) {
+    terrainStream?.dispose(); if (terrainStream) scene.remove(terrainStream.group);
+    terrainStream = createTerrainStream({id:S.id,fetchApi:(...args)=>apiFetch(...args),W:S.W,H:S.H,
+      worldY: h => worldY(h),maxTiles:48,maxLevel:Math.min(7,Math.ceil(Math.log2(Math.max(S.meta.src_w,S.meta.src_h)/256)))});
+    terrainStreamScene = streamKey; scene.add(terrainStream.group);
+  }
+  if (terrainStream) {
+    terrainStream.group.visible = Boolean(streamEnabled);
+    const ready = streamEnabled && terrainStream.update(camera,canvas.clientHeight,frameStarted);
+    S.mesh.visible = !ready;
+  }
+  const streamControls = Boolean(streamEnabled && terrainStream && !S.mesh.visible);
+  if (S.streamControls !== streamControls) {
+    S.streamControls = streamControls;
+    $('#smooth').disabled = streamControls; $('#despike').disabled = streamControls;
+    $('#mesh-detail').disabled = streamControls;
+    $('#mesh-display-note').textContent = streamControls
+      ? 'Large-scene streaming uses original DSM heights. Display smoothing is available on other layers.'
+      : 'Display only · the DSM export and validation use original heights.';
+  }
   renderer.info.autoReset = false; renderer.info.reset();
   if (S.swipeActive && S.baseMesh && S.mesh) {
     const w = canvas.clientWidth, h = canvas.clientHeight, split = Math.round(w * S.swipeX);
@@ -2932,7 +3024,7 @@ function updateMissionAvailability() {
 async function missionRequest(action, point) {
   const u = point ? point.x / S.W + 0.5 : 0.5, v = point ? point.z / S.H + 0.5 : 0.5;
   const body = { action, u, v, water_level_m: +$('#flood-level').value,
-    flood_source: S.floodSource || 'edge' };
+    flood_source: S.floodSource || 'edge', max_uncertainty_m:+$('#route-max-sigma').value };
   if (S.floodSeed != null) {
     body.flood_seed_u = (S.floodSeed % S.gw) / Math.max(1, S.gw - 1);
     body.flood_seed_v = Math.floor(S.floodSeed / S.gw) / Math.max(1, S.gh - 1);
@@ -3416,6 +3508,7 @@ dialogManager = createDialogManager({
 const glContext = renderer.getContext(), gpuInfo = glContext.getExtension('WEBGL_debug_renderer_info');
 renderProfiler = createRenderProfiler({ getContext: () => ({ scene: S.id, view: S.viewGeometry, layer: S.mode,
   quality: S.quality, navigation: S.nav, grid: [S.gw, S.gh], viewport: [canvas.clientWidth, canvas.clientHeight],
+  adaptiveLevel:frameBudget.level, terrainStreaming:terrainStream?.group.visible ? terrainStream.diagnostics() : null,
   pixelRatio: renderer.getPixelRatio(), userAgent: navigator.userAgent,
   renderer: gpuInfo ? glContext.getParameter(gpuInfo.UNMASKED_RENDERER_WEBGL) : glContext.getParameter(glContext.RENDERER),
   hardwareNote: $('#profile-hardware').value.trim(), treeCandidates: getTreeLodDiagnostics(S.treeGroup)?.instanceCount ?? 0 }),
@@ -3435,5 +3528,49 @@ for (const el of $$('button,a,input,select,.brand')) {
     el[event]=function(...args){const result=handler.apply(this,args);if(result?.catch)result.catch(error=>toast(missionUi.humanError(error.message),'error',9000,()=>el.click()));return result;};
   }
 }
+$('#storm-run').onclick = async () => {
+  if (!S.id || S.meta.units !== 'metre' || !S.dtm) { toast('Drainage screening needs a metric scene and DTM.'); return; }
+  const id = S.id, button = $('#storm-run'); button.disabled = true; $('#storm-result').textContent = 'Computing runoff…';
+  try {
+    const r = await (await apiFetch(`api/scenes/${id}/mission`,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'rainfall',rainfall_mm:+$('#rainfall-mm').value,duration_min:+$('#storm-duration').value,
+        infiltration_mm_hr:+$('#storm-infiltration').value,drainage_mm_hr:+$('#storm-drainage').value})})).json();
+    if (S.id !== id) return;
+    const maxDepth = Math.max(...r.depth_m.flat());
+    $('#storm-result').textContent = `Rain ${fmt(r.rain_volume_m3,0)} m³ · losses ${fmt(r.loss_volume_m3,0)} m³ · stored ${fmt(r.stored_volume_m3,0)} m³ · maximum depth ${fmt(maxDepth,2)} m · mass balance ${fmt(r.mass_balance_error_m3,5)} m³. ${r.simulation_grid.join(' × ')} sampled cells. No upstream inflow/outfall; no real-event validation.`;
+    const download = document.createElement('button'); download.type='button'; download.textContent='Download runoff evidence';
+    download.onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(r,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`${id}-runoff.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+    $('#storm-result').append(document.createElement('br'),download);
+    const display=document.createElement('button');display.type='button';display.textContent='Show runoff depth in 3D';
+    display.onclick=()=>{
+      if(S.id!==id)return;
+      if(S.missionOverlay?.userData.runoff){clearMissionOverlay();display.textContent='Show runoff depth in 3D';}
+      else {clearMissionOverlay();S.missionOverlay=createRunoffOverlay(r,{W:S.W,H:S.H,worldY});
+        S.missionOverlay.userData.runoff=true;S.missionOverlay.userData.exag=S.exag;scene.add(S.missionOverlay);
+        display.textContent='Hide runoff depth';requestRender();}
+    };
+    $('#storm-result').append(display);
+  } catch (error) { $('#storm-result').textContent=missionUi.humanError(error.message); }
+  finally { button.disabled = false; }
+};
+savedViews = createSavedViews({getState:()=>S,camera,orbit,toast,restore:view=>{
+  S.cameraFlight = null;
+  $('#exag').value = view.exag; $('#exag').oninput({target:$('#exag')});
+  setViewGeometry(view.geometry); setMode(view.layer); setNav('orbit');
+  camera.up.fromArray(Array.isArray(view.up) && view.up.length===3 && view.up.every(Number.isFinite) ? view.up : [0,1,0]);
+  camera.position.fromArray(view.camera); orbit.target.fromArray(view.target); orbit.update(); requestRender();
+}});
+$('#surface-group').append(savedViews.section);
+const undoButton = document.createElement('button'); undoButton.type='button'; undoButton.textContent='Undo last calibration';
+undoButton.onclick=async()=>{ if(!S.id)return; try { await apiFetch(`api/scenes/${S.id}/calibration/undo`,{method:'POST'}); await reloadViewer(); toast('Previous calibration restored.'); } catch(error) { toast(missionUi.humanError(error.message),'error'); } };
+$('#gcp-group').append(undoButton);
+$('#route-mask-upload').onclick=async()=>{
+  const file=$('#route-mask-file').files[0]; if(!file || !S.id){toast('Choose a route constraint GeoTIFF first.');return;}
+  const id=S.id,button=$('#route-mask-upload'),body=new FormData(); body.append('mask',file);button.disabled=true;
+  try { const r=await(await apiFetch(`api/scenes/${id}/route-input/${$('#route-mask-kind').value}`,{method:'POST',body})).json();
+    if(S.id===id) $('#route-mask-status').textContent=`Attached ${r.kind}: ${r.known_cells} known cells, ${r.unknown_cells} unknown. Access still needs field verification.`;
+  } catch(error){$('#route-mask-status').textContent=missionUi.humanError(error.message);}
+  finally{button.disabled=false;}
+};
 // shareable links: #scene-id opens that scene (also when the hash changes)
 addEventListener('hashchange', () => { const id = decodeURIComponent(location.hash.slice(1)); if (id && id !== S.id && id !== loadingSceneId) loadScene(id); });

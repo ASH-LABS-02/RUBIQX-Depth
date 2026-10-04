@@ -54,3 +54,25 @@ export function coordinateGrid(meta) {
   }
   return lines;
 }
+
+// Exact source-CRS probes. Each request replaces the previous hover query.
+export function createCoordinateProbe({ fetchApi, getScene, onResult }) {
+  let timer, controller, sequence = 0;
+  return {
+    probe(u, v) {
+      clearTimeout(timer); controller?.abort();
+      const id = getScene(), seq = ++sequence;
+      timer = setTimeout(async () => {
+        controller = new AbortController();
+        try {
+          const response = await fetchApi(`api/scenes/${encodeURIComponent(id)}/coordinates`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({points:[[u,v]]}), signal: controller.signal, silent:true });
+          const result = await response.json();
+          if (response.ok && id === getScene() && seq === sequence) onResult(result.points[0]);
+        } catch (_) { /* Relative scenes or pointer moves have no geographic readout. */ }
+      }, 90);
+    },
+    reset() { sequence++; clearTimeout(timer); controller?.abort(); }
+  };
+}

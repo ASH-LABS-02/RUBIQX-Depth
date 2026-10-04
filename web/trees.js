@@ -198,10 +198,22 @@ export function updateTreeLod(group, camera, {
 } = {}) {
   const state = group && TREE_LOD_STATE.get(group);
   if (!state || !camera || (!group.visible && !force)) return false;
+  let fading = false;
+  for (const chunk of state.chunks) {
+    if (chunk.fadeStarted == null) continue;
+    const t = Math.min(1, (now - chunk.fadeStarted) / 250);
+    const nearOpacity = chunk.near ? t : 1 - t;
+    for (const mesh of chunk.detailed.children) mesh.material.opacity = nearOpacity;
+    for (const mesh of chunk.distant.children) mesh.material.opacity = 1 - nearOpacity;
+    chunk.detailed.visible = nearOpacity > 0;
+    chunk.distant.visible = nearOpacity < 1;
+    if (t === 1) chunk.fadeStarted = null;
+    fading = true;
+  }
   quality = Object.hasOwn(TREE_LOD_MIN_PIXELS, quality) ? quality : 'balanced';
   viewportHeight = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 720;
   const qualityChanged = quality !== state.quality;
-  if (!force && !qualityChanged && now - state.lastUpdate < Math.max(0, updateIntervalMs)) return false;
+  if (!force && !qualityChanged && now - state.lastUpdate < Math.max(0, updateIntervalMs)) return fading;
 
   camera.getWorldPosition(state.cameraWorld);
   group.updateWorldMatrix(true, false);
@@ -212,7 +224,7 @@ export function updateTreeLod(group, camera, {
     : camera.getEffectiveFOV?.() || camera.fov || 55;
   const viewChanged = state.lastViewportHeight !== viewportHeight || state.lastLens !== lens;
   if (!force && !qualityChanged && !viewChanged &&
-      state.cameraLocal.distanceToSquared(state.lastCamera) < 1e-8) return false;
+      state.cameraLocal.distanceToSquared(state.lastCamera) < 1e-8) return fading;
   state.lastUpdate = now;
   state.lastCamera.copy(state.cameraLocal);
   state.lastViewportHeight = viewportHeight;
@@ -226,7 +238,7 @@ export function updateTreeLod(group, camera, {
   const matrix = group.matrixWorld.elements;
   const groupScale = Math.max(Math.hypot(matrix[0], matrix[1], matrix[2]),
     Math.hypot(matrix[4], matrix[5], matrix[6]), Math.hypot(matrix[8], matrix[9], matrix[10]));
-  let changed = false;
+  let changed = fading;
   for (const chunk of state.chunks) {
     const distance = Math.max(1e-6, chunk.bounds.distanceToPoint(state.cameraLocal));
     const pixels = camera.isOrthographicCamera ? chunk.crownSize * groupScale * focalPixels
@@ -235,8 +247,8 @@ export function updateTreeLod(group, camera, {
     const near = pixels >= minPixels * (chunk.near ? .85 : 1.15);
     if (near !== chunk.near) {
       chunk.near = near;
-      chunk.detailed.visible = near;
-      chunk.distant.visible = !near;
+      chunk.fadeStarted = now;
+      chunk.detailed.visible = chunk.distant.visible = true;
       changed = true;
     }
     const shadows = quality !== 'performance';
@@ -491,6 +503,13 @@ export function buildTreeGroup({ h, dtm, buildingMask, gw, gh, W, H, groundWm = 
     detailed.name = `treeDetailChunk${key}`; distant.name = `treeDistantChunk${key}`;
     detailed.add(trunkMesh, branchMesh, crownMesh);
     distant.add(distantTrunkMesh, distantCrownMesh);
+    // Independent chunk uniforms allow opaque alpha-hashed crossfades without
+    // changing measured tops or sorting overlapping transparent crowns.
+    for (const mesh of [...detailed.children, ...distant.children]) {
+      mesh.material = mesh.material.clone();
+      mesh.material.alphaHash = true;
+      mesh.material.opacity = detailed.children.includes(mesh) ? 0 : 1;
+    }
     detailed.visible = false;
     group.add(detailed, distant);
     const nearTriangles = chunkTrees.length * (triangleCount(trunkGeo) + 4 * triangleCount(branchGeo))
@@ -503,6 +522,7 @@ export function buildTreeGroup({ h, dtm, buildingMask, gw, gh, W, H, groundWm = 
     });
   }
   TREE_LOD_STATE.set(group, state);
+  trunkMat.dispose(); crownMat.dispose();
   stats.lodChunkCount = state.chunks.length;
   stats.detailedTriangles = state.detailedTriangles;
   return { group, instanceCount: trees.length, stats };
