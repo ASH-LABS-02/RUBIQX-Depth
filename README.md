@@ -172,15 +172,16 @@ Find model versions, raw results, overlap/date caveats and failed experiments in
 
 ## Gallery
 
-| City reconstruction | Coarse terrain |
+| Reference validation and City trees | Bengaluru terrain and calibration evidence |
 |---|---|
-| ![City view](docs/images/city-gallery-current.jpg) | ![Bengaluru terrain view](docs/images/bengaluru-gallery-current.jpg) |
-| Flood screening | Reference validation |
-| ![Flood scenario](docs/images/flood-gallery-current.jpg) | ![Validation panel](docs/images/validate-gallery-current.jpg) |
+| ![Glover Park validation with trees](docs/images/gallery-validate.png) | ![Bengaluru terrain and Copernicus consistency](docs/images/gallery-bengaluru.png) |
+| Flood screening | Pretrained versus DepthWizard |
+| ![Flood exposure scenario with trees](docs/images/gallery-flood.png) | ![Pretrained and DepthWizard surface comparison](docs/images/gallery-compare.png) |
 
-Gallery refreshed from the local application on **4 October 2026**, including the
-current City trees, flood tools and validation panel. Validation values shown are
-for the selected Glover Park job, not the aggregate benchmark above.
+User-supplied screenshots of the current interface. Values shown belong to the
+selected jobs and scenarios, not the aggregate benchmark above. Bengaluru's
+Copernicus agreement measures calibration consistency, not independent accuracy.
+Flood exposure is a screening estimate.
 
 <details>
 <summary>Pipeline overview</summary>
