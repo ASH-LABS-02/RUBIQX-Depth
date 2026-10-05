@@ -8,6 +8,7 @@ services:
       DEPTHWIZARD_AUTH_PASSWORD: ${DEPTHWIZARD_AUTH_PASSWORD:?Set a strong production password}
       DEPTHWIZARD_BUILD_SHA: ${DEPTHWIZARD_BUILD_SHA:?Set the deployed commit SHA}
       DEPTHWIZARD_CHECKPOINT: /app/models/da2-gamus-full
+      DEPTHWIZARD_MODEL_CACHE: /app/data/model-cache
       DEPTHWIZARD_MAX_MP: "32"
     volumes:
       - ./data:/app/data
